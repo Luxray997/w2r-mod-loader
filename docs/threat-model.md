@@ -23,8 +23,9 @@
 6. Plugins and the manager install per-user. Nothing requires administrator rights, and nothing
    adds antivirus exclusions.
 7. Archives are extracted with traversal, symlink and size checks.
-8. Plugins that change the simulation are flagged and their combined hash is exchanged in the
-   lobby; mismatched players are warned or refused.
+8. Plugins that change the simulation are flagged and their combined fingerprint is exchanged in
+   the lobby; players whose fingerprint differs from the host's are warned, and refused when the
+   host requires matching (see `docs/load-policy.md`).
 
 ## Out of scope / known limits
 - Hash pinning does not protect against malware running as the same user: it can edit
