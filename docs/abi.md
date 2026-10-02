@@ -128,6 +128,13 @@ Plugins send through `peer_send`; the host builds the envelope:
   plugin that faults is disabled for the rest of the session, and the reason is logged. Which
   mechanism does this (structured exception handling or a vectored handler) is the first spike of
   Phase 2.
+- **Hook detours are outside this guard.** A detour installed with `hook_install` is called by the
+  game, on whatever thread the game uses, not by the host. The host cannot wrap it, and the
+  main-thread rule does not apply to it: a detour must be thread-safe and must not call host
+  functions from a thread other than the main thread. A fault inside a detour can crash the game.
+  This is part of why `hooks.raw` is shown as dangerous.
+- When a plugin is disabled after a fault in one of its callbacks, the host also removes all of
+  its hooks, cancels its event subscriptions and stops calling `on_ui`.
 - A plugin must not unwind across the boundary. The Rust SDK catches panics; other languages must
   do the equivalent.
 - `on_unload` is best effort and may be skipped after a fault. The host never relies on it to keep

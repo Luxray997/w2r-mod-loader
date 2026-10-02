@@ -13,9 +13,10 @@ test vectors.
 - A signature file has four lines: `untrusted comment: ...`, base64 of `"ED" || key id (8) ||
   signature (64)`, `trusted comment: ...`, base64 of the global signature over `signature ||
   trusted comment`. Both signatures must verify, and the key id must match the embedded public key.
-  Extra non-empty lines are refused.
-- The signature file is read with a hard cap of 1,024 bytes; anything larger is refused before it
-  is parsed or decoded.
+  The file is exactly four lines plus one final newline; CRLF line endings are accepted (as minisign
+  does), anything else after the fourth line is refused.
+- The signature file has a hard cap of 4,096 bytes (minisign allows trusted comments of about 1 KiB);
+  anything larger is refused before it is parsed or decoded.
 - Order of work: check the size limit, verify the signature over the exact received bytes, and only
   then parse the JSON. Nothing in an unsigned index is ever interpreted.
 - **Interoperability is not yet verified.** The reference implementation was written from the
@@ -57,15 +58,15 @@ public key body (`null` is refused). Omit it when no rotation is planned.
 |---|---|---|
 | size | index at most 8 MiB (8,388,608 bytes), checked first | `too_large` |
 | signature | see above | `bad_signature` |
-| JSON | strict rules from [manifest.md](manifest.md) (no duplicate keys, `NaN`, BOM, runaway nesting) | `not_json`, `duplicate_key` |
+| JSON | strict rules from [manifest.md](manifest.md) (no duplicate keys, `NaN`, BOM, lone surrogates, nesting deeper than 32) | `not_json`, `duplicate_key` |
 | top level | an object; exactly the fields above (`next_key` optional) | `bad_type`, `unknown_field`, `missing_field` |
 | `schema` | integer 1 | `bad_schema` |
-| `serial` | integer, 0 or more | `bad_type` |
+| `serial` | integer, 0 to 9,007,199,254,740,991 (2^53 - 1) | `bad_type` |
 | `generated`, `expires` | exactly `YYYY-MM-DDTHH:MM:SSZ`, a real calendar date and time, UTC; `generated` <= `expires` | `bad_time` |
 | freshness | `serial` not lower than the cached serial (equal is accepted); `expires` later than now | `rollback`, `expired` |
 | `next_key` | base64 of 42 bytes starting `Ed` | `bad_key` |
-| `plugins` | list, at most 1,000; each entry exactly `id`, `versions`; `id` follows the manifest id rule and is unique | `bad_type`, `too_many`, `bad_id`, `duplicate` |
-| `versions` | non-empty list, at most 200 per plugin; `version` and `min_manager` are SemVer; `(id, version)` unique | `bad_type`, `too_many`, `bad_version`, `duplicate` |
+| `plugins` | list, at most 1,000; each entry exactly `id`, `versions` (else `unknown_field`/`missing_field`); `id` follows the manifest id rule (device names refused) and is unique | `bad_type`, `too_many`, `bad_id`, `duplicate` |
+| `versions` | non-empty list, at most 200 per plugin; `version` and `min_manager` are SemVer with the manifest's length and range limits; `(id, version)` unique | `bad_type`, `too_many`, `bad_version`, `duplicate` |
 | `manifest` | passes [manifest.md](manifest.md); its `id` and `version` equal the entry's | `bad_manifest`, `mismatch` |
 | `url` | ASCII, at most 2,048 characters, no whitespace, scheme `https`, a host, no userinfo (even an empty one) | `bad_url` |
 | `sha256` | 64 lowercase hex characters | `bad_hash` |

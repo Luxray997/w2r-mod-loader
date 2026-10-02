@@ -4,15 +4,16 @@ Reviewed against the finished specs (`abi.md`, `manifest.md`, `index.md`, `load-
 `threat-model.md`. Status per question: **OK**, **FIXED** (a spec change made during this review), or
 **OPEN** (needs work in a later phase).
 
-1. **Bounds before allocation: OK, one FIXED.** Manifest 64 KiB and index 8 MiB are checked before
+1. **Bounds before allocation: OK, FIXED after independent review.** Manifest 64 KiB and index 8 MiB are checked before
    any parsing; the index is size-checked before the signature and verified before JSON parsing
    (`index.md`). Plugin count (1,000), versions (200), dependencies (16), builds (16), strings and
    package size (64 MiB) are bounded; archive rules bound entries, total size and ratio. Nesting
-   depth is bounded by the JSON parser (vector and unit tests). FIXED: the signature file had no
-   stated cap; `index.md` now caps it at 1,024 bytes.
-2. **Identifiers reaching paths: OK.** `id`, `entry` and data file names have path-safe regexes
-   (`manifest.md`, `abi.md`); devices, `..`, separators, drive and UNC forms are refused with vectors
-   for the manifest fields. Settings keys never name files. Package URLs are never used as paths.
+   depth is capped at 32 and lone surrogates are refused (vectors). FIXED: the signature file is
+   capped at 4,096 bytes and enforced (vector); integer and SemVer ranges are bounded.
+2. **Identifiers reaching paths: OK, FIXED after independent review.** `id`, `entry` and data file
+   names have path-safe patterns matched against the whole string (`manifest.md`, `abi.md`);
+   devices (for `id` too, since it names `config\<id>.json`), `..`, separators, drive and UNC forms
+   and trailing newlines are refused with vectors for the manifest fields. Settings keys never name files. Package URLs are never used as paths.
    OPEN (Phase 2): the data-file-name rule in `abi.md` ("not a device name") has no vector yet; the
    host implementation must add one. Map names are a Phase 3 concern.
 3. **Capabilities map to enforced functions: OK.** `game.read` -> `symbol_lookup/read`;
@@ -44,3 +45,13 @@ Reviewed against the finished specs (`abi.md`, `manifest.md`, `index.md`, `load-
 
 Also noted: the 32-bit header check could not run in this environment (no 32-bit toolchain);
 Windows CI must run `tools/check_abi.sh`.
+
+## Independent review
+
+A fresh reviewer examined the branch. Its Important findings were fixed with failing vectors first:
+trailing-newline acceptance in patterns, device names as plugin ids, a crash on lone surrogates,
+undefined nesting depth, the unenforced signature-file cap and CRLF handling, and unbounded integer
+and version ranges. Spec changes: dependency failures now propagate (`load-policy.md`), hook
+detours are documented as outside the crash guard (`abi.md`), and the fingerprint now includes
+`hooks.raw` plugins, covers settings only by documented limitation, and warns about players who did
+not announce the handshake (`load-policy.md`).

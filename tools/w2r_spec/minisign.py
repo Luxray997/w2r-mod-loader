@@ -14,6 +14,15 @@ ALG = b"ED"
 LEGACY_ALG = b"Ed"
 KEY_ALG = b"Ed"
 TRUSTED_PREFIX = "trusted comment: "
+MAX_SIG_BYTES = 4096
+
+
+def _lines(text):
+    """CRLF is accepted (as minisign does); only a single trailing newline may follow the last line."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if lines[-1] != "":
+        raise ValueError("missing final newline")
+    return lines[:-1]
 
 
 def make_keypair(seed):
@@ -41,8 +50,8 @@ def sign(message, priv, key_id, trusted_comment, legacy=False):
 
 
 def _parse_public(text):
-    lines = text.split("\n")
-    if len(lines) < 2 or not lines[0].startswith("untrusted comment:") or any(lines[2:]):
+    lines = _lines(text)
+    if len(lines) != 2 or not lines[0].startswith("untrusted comment:"):
         raise ValueError("bad public key file")
     raw = base64.b64decode(lines[1], validate=True)
     if len(raw) != 42 or raw[:2] != KEY_ALG:
@@ -53,9 +62,11 @@ def _parse_public(text):
 def verify(message, sig_text, pubkey_text):
     try:
         key_id, pk = _parse_public(pubkey_text)
-        lines = sig_text.split("\n")
-        if (len(lines) < 4 or not lines[0].startswith("untrusted comment:")
-                or not lines[2].startswith(TRUSTED_PREFIX) or any(lines[4:])):
+        if len(sig_text.encode("utf-8")) > MAX_SIG_BYTES:
+            return False
+        lines = _lines(sig_text)
+        if (len(lines) != 4 or not lines[0].startswith("untrusted comment:")
+                or not lines[2].startswith(TRUSTED_PREFIX)):
             return False
         raw = base64.b64decode(lines[1], validate=True)
         if len(raw) != 74 or raw[:2] != ALG or raw[2:10] != key_id:

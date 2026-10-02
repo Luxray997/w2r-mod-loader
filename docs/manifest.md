@@ -8,8 +8,13 @@ The rules below are normative; `tools/w2r_spec/manifest.py` is the executable re
 ## Encoding and size
 
 - UTF-8, no byte order mark, at most 65,536 bytes.
-- Strict JSON: duplicate keys, `NaN`/`Infinity`, a BOM, invalid UTF-8 and nesting deeper than the
-  parser supports are all refused.
+- Strict JSON: duplicate keys, `NaN`/`Infinity`, a BOM, invalid UTF-8, lone surrogates (`\ud800`
+  without its pair, in a string or a key) and nesting deeper than **32** containers (the root object
+  is depth 1) are all refused as `not_json` (`duplicate_key` for repeated keys). While parsing, the
+  first problem met in document order wins; the surrogate and depth checks run after a successful
+  parse. Every implementation must use these exact limits so results match.
+- Every pattern below must match the **whole** string. A trailing newline is not accepted (use
+  full-match semantics, not an end-of-line anchor).
 
 ## Example
 
@@ -37,13 +42,13 @@ All twelve fields are required. No other fields are allowed.
 | Field | Type | Rule | Reason code |
 |---|---|---|---|
 | `schema` | integer | exactly `1`; any other value, type or a boolean is refused | `bad_schema` |
-| `id` | string | `[a-z0-9][a-z0-9-]{1,62}[a-z0-9]` (3 to 64 characters) | `bad_id` |
+| `id` | string | `[a-z0-9][a-z0-9-]{1,62}[a-z0-9]` (3 to 64 characters) and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`) | `bad_id` |
 | `name` | string | 1 to 64 bytes UTF-8, no control characters (U+0000-U+001F, U+007F) | `bad_string`, `too_long`, `bad_type` |
 | `author` | string | same as `name` | same |
 | `description` | string | 1 to 256 bytes, same character rule | same |
-| `version` | string | SemVer 2.0.0 without build metadata (`1.2.0`, `2.0.0-beta.1`); no leading zeros | `bad_version` |
+| `version` | string | SemVer 2.0.0 without build metadata (`1.2.0`, `2.0.0-beta.1`); no leading zeros; at most 64 bytes; major, minor and patch at most 4,294,967,295 | `bad_version` |
 | `entry` | string | `[A-Za-z0-9_][A-Za-z0-9_.-]{0,59}.dll`, no `..`, stem not a Windows device name | `bad_entry` |
-| `abi` | integer | at least 1; the minimum ABI version the plugin needs | `bad_abi` |
+| `abi` | integer | 1 to 4,294,967,295; the minimum ABI version the plugin needs | `bad_abi` |
 | `game_builds` | array | 1 to 16 entries, each `a.b.c.d` or an inclusive range `a.b.c.d-w.x.y.z` | `bad_build`, `bad_type` |
 | `capabilities` | array | duplicate-free subset of `game.read`, `chat.read`, `chat.write`, `net.send`, `hooks.raw` | `bad_capability`, `bad_type` |
 | `affects_simulation` | boolean | must be a JSON boolean (`1` is refused) | `bad_type` |
@@ -51,7 +56,8 @@ All twelve fields are required. No other fields are allowed.
 
 Notes:
 
-- **`id`** is used to name folders and settings files, so it is restricted to a path-safe set.
+- **`id`** is used to name folders and settings files (`plugins\<id>\`, `config\<id>.json`), so it
+  is restricted to a path-safe set and may not be a Windows device name.
   It never reaches a path unchecked.
 - **`entry`** is a plain file name inside the plugin's own folder. Separators, drive letters, UNC
   forms, a leading dot, `..` and Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`,
@@ -62,8 +68,9 @@ Notes:
 - **`capabilities`** lists only capabilities that need approval. The implicit capabilities
   (`log`, `settings`, `ui`, `fs.data`) are not listed; listing one is refused as unknown.
 - **`dependencies`** entries are exactly `{"id": ..., "version_req": ...}`. `id` follows the id
-  rule, is not the plugin's own id and does not repeat. `version_req` is 1 to 4 comparators
-  `(>=|<=|>|<|=)MAJOR.MINOR.PATCH` joined by `,` with no spaces, for example `>=1.0.0,<2.0.0`.
+  rule (device names included), is not the plugin's own id and does not repeat. `version_req` is 1
+  to 4 comparators `(>=|<=|>|<|=)MAJOR.MINOR.PATCH` joined by `,` with no spaces, for example
+  `>=1.0.0,<2.0.0`; numbers have no leading zeros and are at most 4,294,967,295.
 
 ## Reason codes
 

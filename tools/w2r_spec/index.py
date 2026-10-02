@@ -6,12 +6,13 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from . import jsonutil, minisign
-from .manifest import ID_RE, SEMVER_RE, validate_manifest
+from .manifest import valid_id, valid_semver, validate_manifest
 
 MAX_INDEX_BYTES = 8 * 1024 * 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 MAX_PLUGINS = 1000
 MAX_VERSIONS = 200
+MAX_SERIAL = 2**53 - 1
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 TIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -42,7 +43,7 @@ def _keys(obj, required, optional=frozenset()):
 
 
 def _time(s):
-    if not isinstance(s, str) or not TIME_RE.match(s):
+    if not isinstance(s, str) or not TIME_RE.fullmatch(s):
         raise jsonutil.Reject("bad_time")
     try:
         return datetime.strptime(s, TIME_FORMAT).replace(tzinfo=timezone.utc)
@@ -74,9 +75,7 @@ def _check_version(plugin_id, v, seen):
     err = _keys(v, VERSION_KEYS)
     if err:
         return err
-    if not isinstance(v["version"], str) or not SEMVER_RE.match(v["version"]):
-        return "bad_version"
-    if not isinstance(v["min_manager"], str) or not SEMVER_RE.match(v["min_manager"]):
+    if not valid_semver(v["version"]) or not valid_semver(v["min_manager"]):
         return "bad_version"
     if v["version"] in seen:
         return "duplicate"
@@ -90,7 +89,7 @@ def _check_version(plugin_id, v, seen):
         return "mismatch"
     if not _url_ok(v["url"]):
         return "bad_url"
-    if not isinstance(v["sha256"], str) or not SHA256_RE.match(v["sha256"]):
+    if not isinstance(v["sha256"], str) or not SHA256_RE.fullmatch(v["sha256"]):
         return "bad_hash"
     if not _is_int(v["size"]):
         return "bad_type"
@@ -112,7 +111,7 @@ def _check_plugins(plugins):
         if err:
             return err
         pid = p["id"]
-        if not isinstance(pid, str) or not ID_RE.match(pid):
+        if not valid_id(pid):
             return "bad_id"
         if pid in seen_ids:
             return "duplicate"
@@ -144,7 +143,7 @@ def verify_index(index_raw, sig_text, pubkey_text, cached_serial, now):
             return err
         if not _is_int(doc["schema"]) or doc["schema"] != 1:
             return "bad_schema"
-        if not _is_int(doc["serial"]) or doc["serial"] < 0:
+        if not _is_int(doc["serial"]) or not 0 <= doc["serial"] <= MAX_SERIAL:
             return "bad_type"
         generated, expires = _time(doc["generated"]), _time(doc["expires"])
     except jsonutil.Reject as r:

@@ -89,7 +89,24 @@ def build_cases():
     add("trusted_comment_tampered", "bad_signature",
         (body, sig.replace("timestamp:1790000000", "timestamp:1790000001")))
 
+    add("sig_crlf_accepted", "ok", (body, sig.replace("\n", "\r\n")))
+    add("sig_trailing_blank_lines", "bad_signature", (body, sig + "\n\n"))
+    add("sig_long_trusted_comment_ok", "ok",
+        (body, minisign.sign(body.encode(), PRIV, KID, "c" * 3000)))
+    add("sig_over_size_cap", "bad_signature",
+        (body, minisign.sign(body.encode(), PRIV, KID, "c" * 5000)))
     add("not_json", "not_json", signed("{"))
+    add("lone_surrogate", "not_json", signed('{"schema": 1, "x": "\\ud800"}'))
+    add("depth_32_reaches_field_checks", "unknown_field",
+        signed('{"schema": 1, "x": ' + "[" * 31 + "]" * 31 + "}"))
+    add("depth_33_refused", "not_json",
+        signed('{"schema": 1, "x": ' + "[" * 32 + "]" * 32 + "}"))
+    add("serial_max_safe_integer", "ok", signed(index(serial=2**53 - 1)))
+    add("serial_too_large", "bad_type", signed(index(serial=2**53)))
+    add("hash_trailing_newline", "bad_hash", signed(index(**plugins_with(sha256="ab" * 32 + "\n"))))
+    add("min_manager_trailing_newline", "bad_version", signed(index(**plugins_with(min_manager="0.1.0\n"))))
+    add("plugin_id_device", "bad_id",
+        signed(index(plugins=[{"id": "con", "versions": [entry()]}])))
     add("duplicate_key", "duplicate_key", signed('{"schema": 1, "schema": 1}'))
     add("not_object", "bad_type", signed("[]"))
     add("unknown_top_field", "unknown_field", signed(index(extra=1)))

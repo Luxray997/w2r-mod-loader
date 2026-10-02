@@ -21,8 +21,29 @@ SEMVER_RE = re.compile(
 _BUILD = r"[0-9]{1,5}(?:\.[0-9]{1,5}){3}"
 BUILD_RE = re.compile(r"^(" + _BUILD + r")(?:-(" + _BUILD + r"))?$")
 ENTRY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,59}\.dll$")
-_CMP = r"(?:>=|<=|>|<|=)[0-9]+\.[0-9]+\.[0-9]+"
+_NUM = r"(?:0|[1-9][0-9]*)"
+_CMP = r"(?:>=|<=|>|<|=)" + _NUM + r"\." + _NUM + r"\." + _NUM
 REQ_RE = re.compile(r"^" + _CMP + r"(?:," + _CMP + r"){0,3}$")
+
+U32_MAX = 2**32 - 1
+
+
+def valid_id(s):
+    return isinstance(s, str) and ID_RE.fullmatch(s) is not None and s.upper() not in RESERVED_DEVICES
+
+
+def valid_semver(s):
+    """SemVer without build metadata, at most 64 bytes, numeric parts at most 2**32 - 1."""
+    if not isinstance(s, str) or len(s) > 64:
+        return False
+    m = SEMVER_RE.fullmatch(s)
+    return m is not None and all(int(m.group(i)) <= U32_MAX for i in (1, 2, 3))
+
+
+def _req_ok(req):
+    return (isinstance(req, str) and REQ_RE.fullmatch(req) is not None
+            and all(int(n) <= U32_MAX for n in re.findall(r"[0-9]+", req)))
+
 
 REASONS = {
     "too_large", "not_json", "duplicate_key", "not_object", "unknown_field", "missing_field",
@@ -55,7 +76,7 @@ def _builds_ok(builds):
     if not 1 <= len(builds) <= 16:
         return "bad_build"
     for b in builds:
-        m = BUILD_RE.match(b) if isinstance(b, str) else None
+        m = BUILD_RE.fullmatch(b) if isinstance(b, str) else None
         if not m:
             return "bad_build"
         if m.group(2) and _build_tuple(m.group(1)) > _build_tuple(m.group(2)):
@@ -64,7 +85,7 @@ def _builds_ok(builds):
 
 
 def _entry_ok(e):
-    if not isinstance(e, str) or not ENTRY_RE.match(e) or ".." in e:
+    if not isinstance(e, str) or not ENTRY_RE.fullmatch(e) or ".." in e:
         return False
     return e.split(".")[0].upper() not in RESERVED_DEVICES
 
@@ -79,9 +100,7 @@ def _deps_ok(deps, own_id):
         if not isinstance(d, dict) or set(d) != {"id", "version_req"}:
             return "bad_dependency"
         did, req = d["id"], d["version_req"]
-        if not isinstance(did, str) or not ID_RE.match(did) or did == own_id or did in seen:
-            return "bad_dependency"
-        if not isinstance(req, str) or not REQ_RE.match(req):
+        if not valid_id(did) or did == own_id or did in seen or not _req_ok(req):
             return "bad_dependency"
         seen.add(did)
     return None
@@ -112,17 +131,17 @@ def validate_manifest(raw):
         return "missing_field"
     if not _is_int(doc["schema"]) or doc["schema"] != 1:
         return "bad_schema"
-    if not isinstance(doc["id"], str) or not ID_RE.match(doc["id"]):
+    if not valid_id(doc["id"]):
         return "bad_id"
     for field, limit in (("name", 64), ("author", 64), ("description", 256)):
         err = _text(doc[field], limit)
         if err:
             return err
-    if not isinstance(doc["version"], str) or not SEMVER_RE.match(doc["version"]):
+    if not valid_semver(doc["version"]):
         return "bad_version"
     if not _entry_ok(doc["entry"]):
         return "bad_entry"
-    if not _is_int(doc["abi"]) or doc["abi"] < 1:
+    if not _is_int(doc["abi"]) or not 1 <= doc["abi"] <= U32_MAX:
         return "bad_abi"
     err = _builds_ok(doc["game_builds"]) or _caps_ok(doc["capabilities"])
     if err:

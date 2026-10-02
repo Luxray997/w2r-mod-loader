@@ -28,8 +28,14 @@ Details:
 
 - **Build matching.** A build is `a.b.c.d`. An entry matches when it is equal to the running build,
   or when it is a range and min <= build <= max, compared numerically component by component.
-- **Order.** Plugins load in dependency order; ties are broken by plugin id (bytewise). Checks 1 to
-  7 run for every enabled plugin first, so check 8 can see which dependencies survived.
+- **Order.** Checks 1 to 7 run for every enabled plugin first. The plugins that passed are then
+  loaded in dependency order, ties broken by plugin id (bytewise), and checks 8 to 10 run for each
+  plugin at its turn. A plugin whose dependency did **not end up loaded**, for any reason (checks
+  1-10, including `E_ENTRY` and `E_LOAD` of the dependency), fails check 8 itself; this propagates
+  through chains. A dependency that is loaded must also satisfy `version_req`.
+- **Tag refusal is not revisited.** `E_TAG` is decided among plugins that passed checks 1 to 6, by
+  id order. If the earlier plugin later fails check 8, 9 or 10, the later one stays refused for this
+  launch.
 - **Peer tag.** `tag = first 4 bytes of SHA-256(UTF-8 plugin id)` (see [abi.md](abi.md)).
 - **No live changes.** `state.json` is read at startup only. The in-game toggle may flip `enabled`
   and takes effect at the next launch. There is no live load or unload in version 1.
@@ -56,8 +62,9 @@ index/package mismatch; the [threat model](threat-model.md) says what it does no
 Plugins with `affects_simulation: true` change what the game simulates, so players must agree on
 them.
 
-- **Input:** every plugin that is *loaded this session* and has `affects_simulation: true`, as
-  `(id, version, dll sha256)`.
+- **Input:** every plugin that is *loaded this session* and either has `affects_simulation: true`
+  or was approved `hooks.raw` (a raw hook can change anything, so it is always treated as
+  simulation-affecting), as `(id, version, dll sha256)`.
 - **Encoding:** sort by `id` (bytewise UTF-8). For each plugin append `id`, `0x00`, `version`,
   `0x00`, then the 32 raw bytes of the DLL SHA-256. Hash the concatenation with SHA-256 and keep the
   first 4 bytes. The empty set gives `00 00 00 00` without hashing. Duplicate ids cannot occur.
@@ -69,6 +76,12 @@ them.
 - **Policy:** a player whose fingerprint differs from the host's sees a clear warning in the lobby.
   When the host has the strict bit set, the host refuses that player. The check applies only
   between players who announced the handshake; players without the mod are never affected.
+- A host with simulation-affecting plugins loaded also sees a lobby warning when any joiner has not
+  announced the handshake, because the mod cannot detect or refuse mismatch with a player who does
+  not run it (such players are never affected by the strict bit).
+- The fingerprint covers plugin identity and binary only, **not plugin settings**. A plugin that
+  affects the simulation must not let local settings change it, or must agree them between players
+  itself through peer messages; otherwise two players with the same plugin can desync unwarned.
 - The fingerprint only detects mismatch. It does not authenticate anyone, and a collision at worst
   misses a warning.
 
