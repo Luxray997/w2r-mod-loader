@@ -1,0 +1,155 @@
+# Plugin ABI (version 1)
+
+The plugin interface is a C ABI so plugin authors can use any language. The header is
+[`crates/w2r-abi/include/w2r_abi.h`](../crates/w2r-abi/include/w2r_abi.h); this document gives the
+rules and limits the header cannot express. The ABI is **add-only**.
+
+Capabilities are a consent prompt and a guardrail, **not a sandbox**. A native plugin runs inside
+the game process and can do anything that process can. The host enforces the limits below on the
+functions it provides; it cannot stop a plugin from using the operating system directly.
+
+## Conventions
+
+- Calling convention `__cdecl` on 32-bit Windows (`W2R_CALL`). Only fixed-width C types cross the
+  boundary; no C++ or Rust types.
+- **Threading:** every host function and every plugin callback runs on the game's main thread. A
+  host function called from any other thread returns `W2R_E_STATE`.
+- Status codes (`W2rStatus`, `int32_t`): `0` is success, every failure is negative.
+
+| Code | Meaning |
+|---|---|
+| `W2R_OK` 0 | success |
+| `W2R_E_DENIED` -1 | the capability was not approved |
+| `W2R_E_INVALID` -2 | bad argument, or a game-memory access failed |
+| `W2R_E_LIMIT` -3 | a size or count limit was exceeded |
+| `W2R_E_STATE` -4 | not allowed right now (wrong thread, not in a lobby, ...) |
+| `W2R_E_UNSUPPORTED` -5 | the host knows the function but cannot do it |
+| `W2R_E_NOT_FOUND` -6 | no such symbol, handle or event |
+| `W2R_E_RATE` -7 | rate limit hit; the call had no effect |
+| `W2R_E_CONFLICT` -8 | the hook overlaps an existing patch |
+
+## Loading and versioning
+
+1. The host loads the DLL (after the checks in [load-policy.md](load-policy.md)) and calls its one
+   export, `w2r_plugin_main(const W2rHost *host)`.
+2. The plugin returns a pointer to a static `W2rPlugin` table. Null means "refuse to load".
+3. The host calls `on_load(host)`. A non-zero return fails the load (`E_LOAD`).
+
+`W2rHost`, `W2rPlugin`, `W2rUi` and `W2rEvent` begin with `struct_size`. Fields are only ever
+appended; nothing is removed, reordered or resized.
+
+- A plugin must check that `host->struct_size` covers a field before using it (and that the
+  function pointer is non-null). A newer plugin on an older host sees a smaller `struct_size`.
+- The host calls a plugin callback only if the plugin's `struct_size` covers it and it is non-null.
+- A function the host provides but whose capability was not approved returns `W2R_E_DENIED`; the
+  host logs this once per function per plugin.
+- `W2R_ABI_VERSION` increases only for a change that cannot be made by appending. The manifest `abi`
+  field is the minimum ABI the plugin needs; the host refuses a greater value (`E_ABI`).
+- Each plugin receives its own `W2rHost` instance. Pass `host->token` back as the first argument of
+  every call; it tells the host which plugin is calling.
+
+## Host functions
+
+Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
+
+| Function | Capability | Rules |
+|---|---|---|
+| `log` | implicit | message at most 512 bytes; throttled to 20 lines/s per plugin with a burst of 40; excess lines are dropped and one summary line per second is logged |
+| `settings_get_i64`, `settings_set_i64`, `settings_get_str`, `settings_set_str` | implicit | the plugin's own settings only; key 1-64 bytes of `[a-z0-9_.]`; at most 128 keys; string value at most 1,024 bytes; stored in `config\<plugin-id>.json`, at most 256 KiB |
+| `data_open`, `data_read`, `data_write`, `data_close` | implicit (`fs.data`) | flat files in the plugin's own `data\` folder; name 1-64 bytes of `[A-Za-z0-9_.-]`, not starting with `.`, not a device name; at most 64 files, 16 MiB in total, 8 open handles; at most 65,536 bytes per read or write call; the plugin never sees a path |
+| `subscribe`, `unsubscribe` | per event | see Events; unknown ids return `W2R_E_NOT_FOUND` |
+| `symbol_lookup`, `symbol_read` | `game.read` | symbol name at most 64 bytes; the handle is valid for the session; at most 4,096 bytes per read; a read that faults returns `W2R_E_INVALID` and never crashes the game |
+| `chat_send` | `chat.write` | at most 200 bytes of printable ASCII; at most 4 per 5 s per plugin; only when the game's chat is available |
+| `peer_send` | `net.send` | payload at most 960 bytes; at most 32 messages/s per plugin and 128/s overall; lobby only; the target slot must have announced the handshake, or `W2R_SLOT_ALL` for every such peer |
+| `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | target inside the game module's code; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
+
+The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,
+`button`, `checkbox` and `slider_int`; strings are at most 128 bytes. A plugin's section appears in
+the in-game plugin list.
+
+## Strings and untrusted data
+
+- `W2rStr` is UTF-8 and length-delimited, not NUL-terminated.
+- Player names and chat text from other players are reduced to printable ASCII before the plugin
+  sees them (anything else becomes `?`), as in wc2r-plus.
+- Plugins never receive raw peer buffers except the bounded payload of `W2rEvtPeerMessage`, and
+  never receive filesystem paths.
+- Lifetime: pointers the host passes in an event or UI call are valid only during that call. The
+  host copies plugin-provided data that it keeps.
+
+## Events
+
+Delivered to `on_event` on the main thread, only to plugins that subscribed.
+
+| Event | Payload | Capability | Fires |
+|---|---|---|---|
+| `W2R_EVT_LOBBY_ENTER` 1 | none | none | the local player enters a lobby |
+| `W2R_EVT_LOBBY_LEAVE` 2 | none | none | the local player leaves a lobby |
+| `W2R_EVT_LOBBY_PLAYER_JOIN` 3 | `W2rEvtPlayer` | none; `name` is empty without `chat.read` | another player joins |
+| `W2R_EVT_LOBBY_PLAYER_LEAVE` 4 | `W2rEvtPlayer` | same | another player leaves |
+| `W2R_EVT_CHAT_RECEIVED` 5 | `W2rEvtChat` | `chat.read` | a chat line arrives |
+| `W2R_EVT_PEER_MESSAGE` 6 | `W2rEvtPeerMessage` | `net.send` | a plugin message with this plugin's tag arrives |
+| `W2R_EVT_MATCH_START` 7 | none | none | a match begins |
+| `W2R_EVT_MATCH_END` 8 | none | none | a match ends |
+| `W2R_EVT_SETTINGS_CHANGED` 9 | none | none | the user changed this plugin's settings in the UI |
+| `W2R_EVT_SHUTDOWN` 10 | none | none | the game is exiting |
+
+`subscribe` for an event whose capability is not approved returns `W2R_E_DENIED`. New events are
+only added, with new ids.
+
+## Peer messages
+
+Plugins send through `peer_send`; the host builds the envelope:
+
+```
+[0]      0xE7            message type (unused by the base game)
+[1..3]   'W' '2' 'R'     magic
+[4]      'P'             subsystem: plugin message
+[5..8]   tag             first 4 bytes of SHA-256 of the plugin id (UTF-8)
+[9..]    payload         at most 960 bytes
+```
+
+- The tag is the same on every machine, so peers agree without negotiating. The host drops a
+  message whose tag matches no loaded plugin. Two plugins with the same tag cannot both load
+  (`E_TAG`).
+- A plugin receives only messages carrying its own tag, only from peers that announced the
+  handshake, and only while in a lobby. The sender slot is the one the transport reports, never one
+  named inside a message.
+- Subsystems `'H'`, `'M'` and `'L'` are reserved for the first-party handshake, map-sharing and
+  lobby-settings features; Phase 3 decides how those ports reach them. `'P'` is the only subsystem
+  third-party plugins use.
+- A whole message is at most 969 bytes, below the game's 989-byte limit for its reliable channel.
+  Messages are removed from the stream before the game sees them, and the host never sends
+  outside a lobby.
+
+## Crash and unload contract
+
+- Every call into a plugin runs under a host guard that contains panics and access violations. A
+  plugin that faults is disabled for the rest of the session, and the reason is logged. Which
+  mechanism does this (structured exception handling or a vectored handler) is the first spike of
+  Phase 2.
+- A plugin must not unwind across the boundary. The Rust SDK catches panics; other languages must
+  do the equivalent.
+- `on_unload` is best effort and may be skipped after a fault. The host never relies on it to keep
+  its own state consistent.
+- The host cannot preempt a slow callback. It logs callbacks over 50 ms, and after 10 in a row the
+  plugin list shows a slow-plugin warning.
+
+## Minimal plugin
+
+```c
+#include "w2r_abi.h"
+
+static W2rStatus W2R_CALL on_load(const W2rHost *host) {
+    W2rStr msg = {"hello", 5};
+    return host->log(host->token, W2R_LOG_INFO, msg);
+}
+static const W2rPlugin kPlugin = {sizeof(W2rPlugin), on_load, 0, 0, 0};
+
+W2R_EXPORT const W2rPlugin *W2R_CALL w2r_plugin_main(const W2rHost *host) {
+    return host->abi_version >= 1 ? &kPlugin : 0;
+}
+```
+
+This is compiled as part of `crates/w2r-abi/tests/abi_layout.c` by `bash tools/check_abi.sh`, which
+also checks struct layout as C11, C++17 and, when a 32-bit toolchain is installed, 32-bit.
