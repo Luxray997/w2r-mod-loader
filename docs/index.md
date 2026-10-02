@@ -28,7 +28,6 @@ test vectors.
   "serial": 7,
   "generated": "2026-10-02T00:00:00Z",
   "expires": "2026-11-02T00:00:00Z",
-  "next_key": null,
   "plugins": [
     {
       "id": "example-plugin",
@@ -47,9 +46,8 @@ test vectors.
 }
 ```
 
-`next_key` is optional; when present it is a base64 minisign public key body. (The example shows
-`null` for illustration only; the validator requires a valid key string when the field is present,
-so omit the field when no rotation is planned.)
+`next_key` is optional and left out of the example; when present it must be a base64 minisign
+public key body (`null` is refused). Omit it when no rotation is planned.
 
 ## Rules and reason codes
 
