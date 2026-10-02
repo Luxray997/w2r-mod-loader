@@ -88,13 +88,15 @@ Each event states the thread it fires on (the game's main/UI thread) and its pay
 
 ### Peer messages
 
-Reuses the wc2r-plus envelope: `0xE7`, magic `'W' '2' 'R'`, then a **subsystem byte**. The host
-reserves first-party subsystems (`'H'`, `'M'`, `'L'`) and assigns each plugin a subsystem id from a
-documented range at load. The plugin supplies only the payload. The host enforces, for every
-plugin: payload at most 989 bytes minus header, per-plugin and global rate limits, lobby-only
-sending, and use of the transport-reported sender slot (never a slot inside a message). Unknown
-subsystem ids are dropped before any plugin sees them. A plugin only receives messages for its own
-subsystem, from peers who announced the handshake.
+Reuses the wc2r-plus envelope: `0xE7`, magic `'W' '2' 'R'`, then a subsystem byte. Plugin messages
+use subsystem `'P'` followed by a 4-byte tag (first 4 bytes of SHA-256 of the plugin id), so every
+machine derives the same tag without negotiation; a per-machine load-order id would not match across
+peers. Two plugins with the same tag cannot both load (`E_TAG`). The first-party subsystems `'H'`,
+`'M'` and `'L'` stay reserved. The plugin supplies only the payload. The host enforces, for every
+plugin: payload at most 960 bytes, per-plugin and global rate limits, lobby-only sending, and use of
+the transport-reported sender slot (never a slot inside a message). Messages whose tag matches no
+loaded plugin are dropped before any plugin sees them. A plugin only receives messages for its own
+tag, from peers who announced the handshake.
 
 ### Crash and unload contract
 
@@ -116,7 +118,7 @@ The `plugin.json` sketch in `layout.md` is normative; this spec adds field rules
 - `abi`: integer, see ABI versioning.
 - `game_builds`: list of exact build strings or `min-max` ranges (four-part numeric versions).
 - `capabilities`: subset of the settled set; unknown capability names refused.
-- `dependencies`: `{id, version_req}` entries using SemVer requirements; cycles are refused.
+- `dependencies`: `{id, version_req}` entries using SemVer requirements; cycles cannot be seen in one manifest and are refused by the load policy (`E_DEP`).
 - Size limits: manifest at most 64 KiB; string fields length-bounded; list lengths bounded.
 - File hashes: the manifest carries no hashes. The DLL hash lives in `state.json` (the pin) and the
   signed index (the package hash). This avoids a manifest that vouches for itself.

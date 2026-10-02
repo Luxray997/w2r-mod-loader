@@ -14,6 +14,8 @@ test vectors.
   signature (64)`, `trusted comment: ...`, base64 of the global signature over `signature ||
   trusted comment`. Both signatures must verify, and the key id must match the embedded public key.
   Extra non-empty lines are refused.
+- The signature file is read with a hard cap of 1,024 bytes; anything larger is refused before it
+  is parsed or decoded.
 - Order of work: check the size limit, verify the signature over the exact received bytes, and only
   then parse the JSON. Nothing in an unsigned index is ever interpreted.
 - **Interoperability is not yet verified.** The reference implementation was written from the

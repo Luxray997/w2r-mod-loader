@@ -34,10 +34,13 @@ w2rpm/
 ### 0. Decisions (done)
 Threat model, file locations, capability set. Settled: JSON manifest (`plugin.json`), a single
 `state.json` for enabled/pinned/approved state, least-privilege capabilities (see `docs/layout.md`).
-Still open: exact meaning of the simulation flag in the lobby handshake (Phase 1).
+Settled in Phase 1: the handshake's simulation field is a fingerprint; warn by default, and the
+host may require matching.
 Exit: `docs/threat-model.md`, `docs/layout.md`.
 
 ### 1. Specs
+Status: written (`docs/abi.md`, `manifest.md`, `index.md`, `load-policy.md`); vectors in
+`docs/vectors/`; run `bash tools/run_all.sh`.
 - Plugin ABI (C header, add-only): entry point, `Host` function table (log, settings, events, UI
   widgets, peer messages, symbol lookup, hook registry), event list.
 - Plugin manifest (`plugin.json`): id, version, author, game-build range, capabilities,
@@ -75,7 +78,9 @@ picker. No logic of its own; it calls `w2rpm-lib`.
 ### 6. Plugin repository and CI
 `w2r-plugins` repo: source + manifest per plugin, CI builds binaries and publishes hashes, PR
 review before listing, offline release-signing key with a documented rotation process.
-Exit: one third-party-style plugin goes through the whole pipeline.
+Exit: one third-party-style plugin goes through the whole pipeline, and the index signature is
+verified against the real `minisign` binary (the Phase 1 reference implementation was written from
+the format description).
 
 ## Cross-cutting
 - Tests: unit tests for parsers/validators on Linux; `cargo-fuzz` targets for manifest, index,

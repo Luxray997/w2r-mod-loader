@@ -43,6 +43,9 @@ The host closes it:
 2. Hash the file from that handle and compare it with the pin.
 3. Call `LoadLibrary` on the same path while the handle is still open, then close it.
 
+The load uses an absolute path and `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+LOAD_LIBRARY_SEARCH_SYSTEM32`, so a DLL the plugin itself depends on is looked up only in the
+plugin's own folder and the system folder, never the game folder or the current directory.
 Writers cannot touch the file between the hash and the load. This does not protect against malware
 running as the same user, which can edit `state.json` as well, or act before the open or after the
 load. The pin catches corrupted, half-written and out-of-band-modified files and an
