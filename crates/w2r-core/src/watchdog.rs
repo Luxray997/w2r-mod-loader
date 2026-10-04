@@ -51,9 +51,9 @@ pub fn mark(stage: u32) {
 
 const POLL: Duration = Duration::from_millis(250);
 /// Logged once per stall.
-const WARN_AFTER_MS: u64 = 3000;
-/// One dump per process, when the stall is clearly not a loading screen.
-const DUMP_AFTER_MS: u64 = 8000;
+const WARN_AFTER_MS: u64 = 5000;
+/// One dump per process, when the stall is longer than a match load (about 4 s on this machine).
+const DUMP_AFTER_MS: u64 = 15000;
 
 /// Starts the monitor thread (once). `dump_dir` receives `hang-<unix seconds>.dmp`.
 pub fn start(dump_dir: std::path::PathBuf) {

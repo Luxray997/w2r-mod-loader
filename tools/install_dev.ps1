@@ -18,6 +18,11 @@ is left in place.
 Also installs the crash_plugin fixture, which faults on lobby entry; the log should show it
 disabled while the game and hello_plugin carry on.
 
+.PARAMETER WithHostCheck
+Also installs the hostcheck_plugin fixture (game.read and hooks.raw approved; it installs no
+hook). Its load logs a settings round trip, a data file written and read back, and the runtime
+address of three symbols; it logs again when a match starts.
+
 .PARAMETER Simulation
 Marks the hello_plugin fixture affects_simulation, so the session's simulation fingerprint is
 non-zero and the handshake (Phase 3) has something to compare: the log shows the fingerprint,
@@ -30,6 +35,7 @@ The game's x86 folder. Defaults to D:\Games\Warcraft II Remastered\x86.
 param(
     [switch]$Uninstall,
     [switch]$WithCrasher,
+    [switch]$WithHostCheck,
     [switch]$Simulation,
     [string]$GameDir = "D:\Games\Warcraft II Remastered\x86"
 )
@@ -134,6 +140,7 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities,
 
 $entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write") $Simulation.IsPresent)
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
+if ($WithHostCheck) { $entries += Install-Fixture "host-check" "hostcheck_plugin" @("game.read", "hooks.raw") }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
 $statePath = Join-Path $root "config\state.json"
 if (Test-Path $statePath) {

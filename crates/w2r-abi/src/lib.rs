@@ -237,6 +237,14 @@ pub struct W2rHost {
         out: *mut W2rHandle,
     ) -> W2rStatus,
     pub hook_remove: unsafe extern "C" fn(token: *mut c_void, hook: W2rHandle) -> W2rStatus,
+
+    // hooks.raw (dangerous): the runtime address of any symbol, for a plugin that calls game
+    // functions or writes game memory itself (docs/chat-plugin.md)
+    pub symbol_address: unsafe extern "C" fn(
+        token: *mut c_void,
+        symbol: W2rHandle,
+        address_out: *mut usize,
+    ) -> W2rStatus,
 }
 
 // ---- plugin table: returned by the plugin --------------------------------------------------
@@ -295,8 +303,8 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 12);
         assert_eq!(size_of::<W2rPlugin>(), 20);
         assert_eq!(size_of::<W2rUi>(), 24);
-        assert_eq!(size_of::<W2rHost>(), 80);
-        assert_eq!(W2R_HOST_V1_SIZE, 80);
+        assert_eq!(size_of::<W2rHost>(), 84);
+        assert_eq!(W2R_HOST_V1_SIZE, 84);
         assert_eq!(W2R_PLUGIN_V1_SIZE, 20);
     }
 
@@ -308,6 +316,6 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 16);
         assert_eq!(size_of::<W2rPlugin>(), 40);
         assert_eq!(size_of::<W2rUi>(), 48);
-        assert_eq!(size_of::<W2rHost>(), 152);
+        assert_eq!(size_of::<W2rHost>(), 160);
     }
 }

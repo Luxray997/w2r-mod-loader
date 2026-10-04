@@ -28,3 +28,7 @@ crate-type = ["cdylib"]
 [[example]]
 name = "load_fails"
 crate-type = ["cdylib"]
+
+[[example]]
+name = "hostcheck_plugin"
+crate-type = ["cdylib"]

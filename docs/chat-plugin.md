@@ -57,20 +57,24 @@ already there.
 | Settings | `settings_*` exist in the ABI but the host returns `W2R_E_UNSUPPORTED` | implement them (stored in `config\<plugin-id>.json`, rules already in abi.md) |
 | Disk log | `data_*` (`fs.data`) exist in the ABI, host returns `W2R_E_UNSUPPORTED` | implement them |
 
-**`symbol_address`.** Appended at the end of `W2rHost` (so no `W2R_ABI_VERSION` bump; older
-hosts report a smaller `struct_size`). It needs `hooks.raw`, not `game.read`: a raw address
+**`symbol_address`.** Appended at the end of `W2rHost` (ABI is still pre-release, so no
+`W2R_ABI_VERSION` bump; a later host appends the same way and reports a larger `struct_size`).
+The handle still comes from `symbol_lookup`, so the plugin declares `game.read` as well as
+`hooks.raw`. It needs `hooks.raw`, not `game.read`: a raw address
 lets a plugin read and write any game memory, which is exactly what `hooks.raw` is already
 shown as **dangerous** for, and the consent prompt must say so. It returns the runtime
-address (image base added) of a symbol of any kind and `W2R_E_NOT_FOUND` for a bad handle.
+address (image base added) of a symbol of any kind, always inside the game image, and
+`W2R_E_NOT_FOUND` for a bad handle.
 Because the plugin then calls into the game and writes game memory outside the host's guard,
 the chat plugin carries its own protection: every detour wraps its body in `catch_unwind`, and
 every access to Nuklear structure offsets is bounds-checked against the structure sizes the
 plugin was built for. The manifest pins `game_builds` to `1.0.2.2818` (the offsets are
 build-specific, like wc2r-plus).
 
-`MATCH_START`, `MATCH_END` and `SETTINGS_CHANGED` are in the ABI, but the host never fires the
-match events today (only subscription is implemented and tested). Firing them is a host
-prerequisite: wc2r-plus clears the backlog and writes the log marker on match start.
+`MATCH_START` is now fired by the host from the same call wc2r-plus uses as its match-start signal
+(`ResetMapMessageSlots`, see `matchstart.rs`), which is all chat needs: it clears the backlog and
+writes the log marker on match start. `MATCH_END` has no proven source in wc2r-plus and stays
+reserved and unfired (docs/abi.md).
 
 ## Hooks the plugin installs
 
@@ -114,7 +118,7 @@ the Nuklear context offsets in wc2r-plus `struct_offsets.h` (`kCtxScrollH`, `kCt
 
 - Crate `crates/chat-plugin` (cdylib, i686, Rust; builds against `w2r-abi`, with the SDK pieces
   it needs inline until `w2r-sdk` exists). It moves to the `w2r-plugins` repo in Phase 6.
-- Manifest: id `w2r-chat`, capabilities `hooks.raw`, `chat.read` is **not** needed (the plugin
+- Manifest: id `w2r-chat`, capabilities `game.read` and `hooks.raw`; `chat.read` is **not** needed (the plugin
   sees chat through its own hooks, with the game's raw text; it must therefore apply the same
   printable-ASCII reduction the host applies for other plugins before storing or drawing),
   `affects_simulation: false` (it only changes display and the target mode of an outgoing
@@ -128,7 +132,7 @@ Each slice ends with an in-game check by the user (they cannot easily run a seco
 player, so checks are single-player or against a vanilla peer, and the host's watchdog
 ([watchdog.rs](../crates/w2r-core/src/watchdog.rs)) is on).
 
-0. **Host prerequisites.** `symbol_address`; `settings_*`; `data_*`; fire `MATCH_START` and `MATCH_END`.
+0. **Host prerequisites.** `symbol_address`; `settings_*`; `data_*`; fire `MATCH_START` (done in the same slice).
    Unit and integration tests in `w2r-core/tests`, an ABI doc update, and a
    capability-prompt wording update for `hooks.raw`. Exit: a fixture plugin round-trips each.
 1. **Capture and history.** `PushMapMessage`, `DisplayChatOrGameMessage`,
@@ -156,6 +160,5 @@ host's guard, see the abi.md "Hook detours" note).
 ## Open questions
 
 1. Which player-colour and name tables to read for name colouring (settled in slice 4).
-2. Whether `symbol_address` should also accept a `size`, so the host can refuse an address
-   range outside the game's image (cheap, and keeps the plugin from being handed a stack
-   address by mistake). Recommended: yes, a lookup returns base plus size of the symbol.
+2. (Settled.) `symbol_address` returns only the address, and the host checks it is inside the
+   game image; the symbol table has no sizes, so the plugin bounds its own accesses.

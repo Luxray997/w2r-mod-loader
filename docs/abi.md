@@ -55,12 +55,13 @@ Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
 | Function | Capability | Rules |
 |---|---|---|
 | `log` | implicit | message at most 512 bytes; throttled to 20 lines/s per plugin with a burst of 40; excess lines are dropped and one summary line per second is logged |
-| `settings_get_i64`, `settings_set_i64`, `settings_get_str`, `settings_set_str` | implicit | the plugin's own settings only; key 1-64 bytes of `[a-z0-9_.]`; at most 128 keys; string value at most 1,024 bytes; stored in `config\<plugin-id>.json`, at most 256 KiB |
-| `data_open`, `data_read`, `data_write`, `data_close` | implicit (`fs.data`) | flat files in the plugin's own `data\` folder; name 1-64 bytes of `[A-Za-z0-9_.-]`, not starting with `.`, not a device name; at most 64 files, 16 MiB in total, 8 open handles; at most 65,536 bytes per read or write call; the plugin never sees a path |
+| `settings_get_i64`, `settings_set_i64`, `settings_get_str`, `settings_set_str` | implicit | the plugin's own settings only; key 1-64 bytes of `[a-z0-9_.]`; at most 128 keys; string value at most 1,024 bytes; stored in `config\<plugin-id>.json`, at most 256 KiB. Statuses: a missing key is `W2R_E_NOT_FOUND`, a key holding the other type is `W2R_E_INVALID`, a bad key `W2R_E_INVALID` (too long `W2R_E_LIMIT`), the 129th key or an oversized value `W2R_E_LIMIT`, a failed save `W2R_E_STATE` (and the old value stays). `settings_get_str` copies the value with no terminator and always sets `len_out` to the full length; a value longer than `cap` leaves `buf` untouched and returns `W2R_E_LIMIT`. Changes are written to disk immediately |
+| `data_open`, `data_read`, `data_write`, `data_close` | implicit (`fs.data`) | flat files in the plugin's own `data\` folder; name 1-64 bytes of `[A-Za-z0-9_.-]`, not starting with `.`, not a device name; at most 64 files, 16 MiB in total, 8 open handles; at most 65,536 bytes per read or write call; the plugin never sees a path. `flags` is exactly `W2R_FILE_READ` (the file must exist, `W2R_E_NOT_FOUND` otherwise; read from the start) or `W2R_FILE_WRITE` (create or truncate; writes append from there); a handle cannot do the other (`W2R_E_STATE`), anything else is `W2R_E_INVALID`. Names ending in `.` are refused too (Windows drops the dot). A link or non-regular file in the folder is never followed. `data_read` sets `read_out` to 0 at end of file. Without a host root (tests) all of these report `W2R_E_STATE` |
 | `subscribe`, `unsubscribe` | per event | see Events; unknown ids return `W2R_E_NOT_FOUND` |
 | `symbol_lookup`, `symbol_read` | `game.read` | symbol name at most 64 bytes; the handle is valid for the session; at most 4,096 bytes per read; a read that faults returns `W2R_E_INVALID` and never crashes the game |
 | `chat_send` | `chat.write` | at most 200 bytes of printable ASCII; at most 4 per 5 s per plugin; only when the game's chat is available |
 | `peer_send` | `net.send` | payload 1 to 960 bytes (`W2R_E_INVALID` empty, `W2R_E_LIMIT` over); at most 32 messages/s per plugin and 128/s overall (`W2R_E_RATE`); lobby only, with the session connected (`W2R_E_STATE`); the target slot (0-7, else `W2R_E_INVALID`) must have announced the handshake, or `W2R_SLOT_ALL` for every such peer; no announced peer is `W2R_E_STATE` |
+| `symbol_address` | `hooks.raw` (shown as **dangerous**) | the runtime address (image base plus the symbol's RVA) of any symbol, function or global, always inside the game module; `W2R_E_NOT_FOUND` for a bad handle; the handle still comes from `symbol_lookup`, which needs `game.read`, so a plugin that calls game functions or writes game memory declares both. The address makes every later access the plugin's own, outside the host's guard |
 | `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | `target` is a `symbol_lookup` handle of a function symbol (`W2R_E_NOT_FOUND` for a bad handle, `W2R_E_INVALID` for a global), so a hook is always inside the game module's code; `original_out` receives the trampoline before the hook goes live; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
 
 The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,
@@ -94,8 +95,8 @@ messages per second has the excess dropped before any plugin sees them.
 | `W2R_EVT_LOBBY_PLAYER_LEAVE` 4 | `W2rEvtPlayer` | same | another player leaves |
 | `W2R_EVT_CHAT_RECEIVED` 5 | `W2rEvtChat` | `chat.read` | a chat line arrives |
 | `W2R_EVT_PEER_MESSAGE` 6 | `W2rEvtPeerMessage` | `net.send` | a plugin message with this plugin's tag arrives |
-| `W2R_EVT_MATCH_START` 7 | none | none | a match begins |
-| `W2R_EVT_MATCH_END` 8 | none | none | a match ends |
+| `W2R_EVT_MATCH_START` 7 | none | none | a match begins (the game resets its map-message slots, as wc2r-plus detects it); delivered before the game's own reset runs |
+| `W2R_EVT_MATCH_END` 8 | none | none | reserved: **not fired yet**, no proven source for it |
 | `W2R_EVT_SETTINGS_CHANGED` 9 | none | none | the user changed this plugin's settings in the UI |
 | `W2R_EVT_SHUTDOWN` 10 | none | none | the game is exiting |
 

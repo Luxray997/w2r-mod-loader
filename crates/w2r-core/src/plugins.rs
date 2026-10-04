@@ -162,8 +162,9 @@ pub fn load_all(
     running: Build,
     log: Rc<dyn Log>,
     game: Option<Game>,
-    services: Services,
+    mut services: Services,
 ) -> Loaded {
+    services.root = Some(root.to_path_buf());
     let mut registry = Registry::with(log.clone(), game, services);
     let state_path = root.join("config").join("state.json");
     let state = match read_bounded(&state_path, state::MAX_BYTES) {

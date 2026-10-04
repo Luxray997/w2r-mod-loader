@@ -1,7 +1,7 @@
 //! The per-plugin host table (`W2rHost`) and the host functions it serves: `log`, events,
 //! `symbol_lookup`/`symbol_read` (`game.read`), `hook_install`/`hook_remove` (`hooks.raw`),
-//! `chat_send` (`chat.write`) and `peer_send` (`net.send`). Settings and data files return
-//! `W2R_E_UNSUPPORTED` until their step lands; a plugin must handle that status anyway.
+//! `chat_send` (`chat.write`) and `peer_send` (`net.send`), plus the implicit settings and data-file
+//! functions (backed by `store.rs`).
 //!
 //! Rule for every callback here: validate first, borrow a `RefCell` last, and never hold a
 //! borrow across anything that can fault. A fault abandons frames without running destructors,
@@ -11,6 +11,7 @@ use core::ffi::{c_char, c_void};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use w2r_abi::*;
@@ -23,6 +24,7 @@ use crate::peer::{
     self, NoPeers, NoTransport, Nowhere, Presence, Roster, SlidingWindow, Target, TargetError,
     Transport,
 };
+use crate::store::{DataDir, DataError, SetError, Settings, Val};
 use crate::symbols::Symbols;
 use crate::target::Kind;
 
@@ -62,6 +64,9 @@ pub struct Services {
     pub transport: Rc<dyn Transport>,
     pub roster: Rc<dyn Roster>,
     pub presence: Rc<dyn Presence>,
+    /// The host root (docs/layout.md), for the settings and data stores. `None` outside the
+    /// game's startup path (tests); those host functions then report `W2R_E_STATE`.
+    pub root: Option<PathBuf>,
 }
 
 impl Services {
@@ -72,6 +77,7 @@ impl Services {
             transport: Rc::new(NoTransport),
             roster: Rc::new(NoPeers),
             presence: Rc::new(Nowhere),
+            root: None,
         }
     }
 }
@@ -135,6 +141,9 @@ pub struct Slot {
     /// Plugin log lines dropped since the last summary line.
     log_dropped: Cell<u32>,
     log_notice_ms: Cell<u64>,
+    /// Opened on first use: `config\<id>.json` and `plugins\<id>\data\`.
+    settings: RefCell<Option<Settings>>,
+    data: RefCell<Option<DataDir>>,
     /// The plugin's peer-message tag (docs/abi.md).
     pub tag: [u8; 4],
     /// Consecutive callbacks over [`Slot::SLOW_MS`].
@@ -159,6 +168,8 @@ impl Slot {
             log_rate: RefCell::new(SlidingWindow::new(LOG_BURST, LOG_WINDOW_MS)),
             log_dropped: Cell::new(0),
             log_notice_ms: Cell::new(0),
+            settings: RefCell::new(None),
+            data: RefCell::new(None),
             tag: peer::peer_tag(id),
             slow: Cell::new(0),
             shared,
@@ -285,6 +296,7 @@ fn host_table(token: *mut c_void) -> W2rHost {
         peer_send: cb::peer_send,
         hook_install: cb::hook_install,
         hook_remove: cb::hook_remove,
+        symbol_address: cb::symbol_address,
     }
 }
 
@@ -602,6 +614,41 @@ mod cb {
         Err(HookError::Engine(-1))
     }
 
+    /// The runtime address of any symbol, for a plugin that calls game functions or writes game
+    /// memory itself. Needs `hooks.raw`, not `game.read`: the address makes every access the
+    /// plugin's own, outside the host's guard.
+    pub unsafe extern "C" fn symbol_address(
+        token: *mut c_void,
+        symbol: W2rHandle,
+        address_out: *mut usize,
+    ) -> W2rStatus {
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if let Err(e) = require(slot, "symbol_address", caps::HOOKS_RAW) {
+                return e;
+            }
+            if address_out.is_null() {
+                return W2R_E_INVALID;
+            }
+            let game = match game(slot) {
+                Ok(g) => g,
+                Err(e) => return e,
+            };
+            let Some(sym) = Symbols::by_handle(symbol) else {
+                return W2R_E_NOT_FOUND;
+            };
+            let addr = game.symbols.address_of(sym);
+            if !game.image.contains(addr, 1) {
+                return W2R_E_INVALID;
+            }
+            unsafe { *address_out = addr };
+            W2R_OK
+        })
+    }
+
     pub unsafe extern "C" fn hook_remove(token: *mut c_void, hook: W2rHandle) -> W2rStatus {
         run(|| {
             let slot = match enter(token) {
@@ -715,53 +762,303 @@ mod cb {
         })
     }
 
-    // ---- not implemented yet; each is a later Phase 2 step ------------------------------------
+    // ---- settings and data files (implicit capabilities) ----------------------------------------
 
-    pub unsafe extern "C" fn settings_get_i64(_: *mut c_void, _: W2rStr, _: *mut i64) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+    /// Runs `f` on the plugin's settings, opening them on first use. The borrow ends before this
+    /// returns and nothing in `f` can reach the plugin or the game.
+    fn with_settings<R>(
+        slot: &Slot,
+        f: impl FnOnce(&mut Settings) -> Result<R, W2rStatus>,
+    ) -> Result<R, W2rStatus> {
+        let Some(root) = slot.shared.services.root.as_ref() else {
+            return Err(W2R_E_STATE);
+        };
+        let mut guard = slot.settings.borrow_mut();
+        if guard.is_none() {
+            let (settings, warning) =
+                Settings::open(root.join("config").join(format!("{}.json", slot.id)));
+            if let Some(w) = warning {
+                slot.log(W2R_LOG_WARN, &w);
+            }
+            *guard = Some(settings);
+        }
+        f(guard.as_mut().expect("just opened"))
     }
-    pub unsafe extern "C" fn settings_set_i64(_: *mut c_void, _: W2rStr, _: i64) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+
+    fn set_status(e: SetError) -> W2rStatus {
+        match e {
+            SetError::BadKey => W2R_E_INVALID,
+            SetError::TooManyKeys | SetError::TooLarge => W2R_E_LIMIT,
+            SetError::Io => W2R_E_STATE,
+        }
     }
+
+    fn key<'a>(k: W2rStr) -> Result<&'a str, W2rStatus> {
+        if k.len > W2R_MAX_SETTING_KEY {
+            return Err(W2R_E_LIMIT);
+        }
+        let k = unsafe { text(k) }?;
+        if crate::store::valid_key(k) {
+            Ok(k)
+        } else {
+            Err(W2R_E_INVALID)
+        }
+    }
+
+    pub unsafe extern "C" fn settings_get_i64(
+        token: *mut c_void,
+        key_: W2rStr,
+        out: *mut i64,
+    ) -> W2rStatus {
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if out.is_null() {
+                return W2R_E_INVALID;
+            }
+            let k = match key(key_) {
+                Ok(k) => k,
+                Err(e) => return e,
+            };
+            let got = with_settings(slot, |s| match s.get(k) {
+                None => Err(W2R_E_NOT_FOUND),
+                Some(Val::Int(i)) => Ok(*i),
+                Some(Val::Str(_)) => Err(W2R_E_INVALID),
+            });
+            match got {
+                Ok(v) => {
+                    unsafe { *out = v };
+                    W2R_OK
+                }
+                Err(e) => e,
+            }
+        })
+    }
+
+    pub unsafe extern "C" fn settings_set_i64(
+        token: *mut c_void,
+        key_: W2rStr,
+        value: i64,
+    ) -> W2rStatus {
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            let k = match key(key_) {
+                Ok(k) => k,
+                Err(e) => return e,
+            };
+            match with_settings(slot, |s| s.set(k, Val::Int(value)).map_err(set_status)) {
+                Ok(()) => W2R_OK,
+                Err(e) => e,
+            }
+        })
+    }
+
+    /// Copies the value without a terminator. `len_out` always receives the full length; a
+    /// value longer than `cap` leaves `buf` untouched and returns `W2R_E_LIMIT`.
     pub unsafe extern "C" fn settings_get_str(
-        _: *mut c_void,
-        _: W2rStr,
-        _: *mut c_char,
-        _: u32,
-        _: *mut u32,
+        token: *mut c_void,
+        key_: W2rStr,
+        buf: *mut c_char,
+        cap: u32,
+        len_out: *mut u32,
     ) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if len_out.is_null() || (buf.is_null() && cap > 0) {
+                return W2R_E_INVALID;
+            }
+            let k = match key(key_) {
+                Ok(k) => k,
+                Err(e) => return e,
+            };
+            let got = with_settings(slot, |s| match s.get(k) {
+                None => Err(W2R_E_NOT_FOUND),
+                Some(Val::Str(v)) => Ok(v.clone()),
+                Some(Val::Int(_)) => Err(W2R_E_INVALID),
+            });
+            let value = match got {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            unsafe { *len_out = value.len() as u32 };
+            if value.len() > cap as usize {
+                return W2R_E_LIMIT;
+            }
+            if !value.is_empty() {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(value.as_ptr(), buf.cast::<u8>(), value.len())
+                };
+            }
+            W2R_OK
+        })
     }
-    pub unsafe extern "C" fn settings_set_str(_: *mut c_void, _: W2rStr, _: W2rStr) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+
+    pub unsafe extern "C" fn settings_set_str(
+        token: *mut c_void,
+        key_: W2rStr,
+        value: W2rStr,
+    ) -> W2rStatus {
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            let k = match key(key_) {
+                Ok(k) => k,
+                Err(e) => return e,
+            };
+            if value.len > W2R_MAX_SETTING_STR {
+                return W2R_E_LIMIT;
+            }
+            let v = match unsafe { text(value) } {
+                Ok(v) => v.to_owned(),
+                Err(e) => return e,
+            };
+            match with_settings(slot, |s| s.set(k, Val::Str(v)).map_err(set_status)) {
+                Ok(()) => W2R_OK,
+                Err(e) => e,
+            }
+        })
     }
+
+    fn with_data<R>(
+        slot: &Slot,
+        f: impl FnOnce(&mut DataDir) -> Result<R, DataError>,
+    ) -> Result<R, W2rStatus> {
+        let Some(root) = slot.shared.services.root.as_ref() else {
+            return Err(W2R_E_STATE);
+        };
+        let mut guard = slot.data.borrow_mut();
+        let dir = guard
+            .get_or_insert_with(|| DataDir::new(root.join("plugins").join(&slot.id).join("data")));
+        f(dir).map_err(|e| match e {
+            DataError::BadName | DataError::BadFlags => W2R_E_INVALID,
+            DataError::TooManyOpen | DataError::TooManyFiles | DataError::TooLarge => W2R_E_LIMIT,
+            DataError::NotFound | DataError::BadHandle => W2R_E_NOT_FOUND,
+            DataError::WrongMode | DataError::Io => W2R_E_STATE,
+        })
+    }
+
+    /// `flags` is `W2R_FILE_READ` (the file must exist) or `W2R_FILE_WRITE` (create or truncate).
     pub unsafe extern "C" fn data_open(
-        _: *mut c_void,
-        _: W2rStr,
-        _: u32,
-        _: *mut W2rHandle,
+        token: *mut c_void,
+        name: W2rStr,
+        flags: u32,
+        out: *mut W2rHandle,
     ) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if out.is_null() {
+                return W2R_E_INVALID;
+            }
+            if name.len > W2R_MAX_FILE_NAME {
+                return W2R_E_LIMIT;
+            }
+            let name = match unsafe { text(name) } {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            match with_data(slot, |d| d.open(name, flags)) {
+                Ok(h) => {
+                    unsafe { *out = h };
+                    W2R_OK
+                }
+                Err(e) => e,
+            }
+        })
     }
+
+    /// Reads up to `cap` bytes from the current position; `read_out` is 0 at end of file.
     pub unsafe extern "C" fn data_read(
-        _: *mut c_void,
-        _: W2rHandle,
-        _: *mut c_void,
-        _: u32,
-        _: *mut u32,
+        token: *mut c_void,
+        file: W2rHandle,
+        dst: *mut c_void,
+        cap: u32,
+        read_out: *mut u32,
     ) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if read_out.is_null() || (dst.is_null() && cap > 0) {
+                return W2R_E_INVALID;
+            }
+            if cap > W2R_MAX_IO_BYTES {
+                return W2R_E_LIMIT;
+            }
+            match with_data(slot, |d| d.read(file, cap as usize)) {
+                Ok(bytes) => {
+                    if !bytes.is_empty() {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                dst.cast::<u8>(),
+                                bytes.len(),
+                            )
+                        };
+                    }
+                    unsafe { *read_out = bytes.len() as u32 };
+                    W2R_OK
+                }
+                Err(e) => e,
+            }
+        })
     }
+
     pub unsafe extern "C" fn data_write(
-        _: *mut c_void,
-        _: W2rHandle,
-        _: *const c_void,
-        _: u32,
+        token: *mut c_void,
+        file: W2rHandle,
+        src: *const c_void,
+        len: u32,
     ) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if src.is_null() && len > 0 {
+                return W2R_E_INVALID;
+            }
+            if len > W2R_MAX_IO_BYTES {
+                return W2R_E_LIMIT;
+            }
+            // Copied first: a bad plugin pointer faults here, inside the plugin's guard, before
+            // any host borrow is live.
+            let bytes = if len == 0 {
+                Vec::new()
+            } else {
+                unsafe { core::slice::from_raw_parts(src.cast::<u8>(), len as usize) }.to_vec()
+            };
+            match with_data(slot, |d| d.write(file, &bytes)) {
+                Ok(()) => W2R_OK,
+                Err(e) => e,
+            }
+        })
     }
-    pub unsafe extern "C" fn data_close(_: *mut c_void, _: W2rHandle) -> W2rStatus {
-        W2R_E_UNSUPPORTED
+
+    pub unsafe extern "C" fn data_close(token: *mut c_void, file: W2rHandle) -> W2rStatus {
+        run(|| {
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            match with_data(slot, |d| d.close(file)) {
+                Ok(()) => W2R_OK,
+                Err(e) => e,
+            }
+        })
     }
 }
 
@@ -955,7 +1252,28 @@ mod tests {
                 W2R_E_STATE
             );
             assert_eq!((h.hook_remove)(h.token, 99), W2R_E_NOT_FOUND);
+            let mut addr = 0usize;
+            assert_eq!(
+                (h.symbol_address)(h.token, 1, core::ptr::null_mut()),
+                W2R_E_INVALID
+            );
+            assert_eq!((h.symbol_address)(h.token, 1, &mut addr), W2R_E_STATE);
         }
+    }
+
+    #[test]
+    fn symbol_address_needs_hooks_raw_not_game_read() {
+        let log = Rc::new(Lines::default());
+        let mut reg = Registry::new(log);
+        let read_only = reg
+            .load_entry_with_caps("ro", entry, &[caps::GAME_READ])
+            .unwrap();
+        let h = unsafe { &*reg.slot(read_only).host() };
+        let mut addr = 0usize;
+        unsafe {
+            assert_eq!((h.symbol_address)(h.token, 1, &mut addr), W2R_E_DENIED);
+        }
+        assert_eq!(addr, 0);
     }
 
     /// Uses this test process as the "game": its own image, with the symbol table relocated to
@@ -1009,6 +1327,18 @@ mod tests {
                 (h.symbol_read)(h.token, 0, 0, buf.as_mut_ptr().cast(), 16),
                 W2R_E_NOT_FOUND
             );
+            // The address is the image base plus the symbol's RVA, for a function and a global.
+            let mut addr = 0usize;
+            assert_eq!((h.symbol_address)(h.token, handle, &mut addr), W2R_OK);
+            assert_eq!(addr, base + rva);
+            assert_eq!((h.symbol_address)(h.token, 0, &mut addr), W2R_E_NOT_FOUND);
+            let some_global = SYMBOLS.iter().find(|s| s.kind == Kind::Object).unwrap();
+            let gh = Symbols::handle(some_global.name).unwrap();
+            let grva = some_global.static_addr as usize - crate::target::PREFERRED_IMAGE_BASE;
+            if image.contains(base + grva, 1) {
+                assert_eq!((h.symbol_address)(h.token, gh, &mut addr), W2R_OK);
+                assert_eq!(addr, base + grva);
+            }
             assert_eq!(
                 (h.symbol_read)(h.token, handle, 0x7FFF_FFFF, buf.as_mut_ptr().cast(), 16),
                 W2R_E_INVALID,
@@ -1038,5 +1368,192 @@ mod tests {
                 W2R_E_NOT_FOUND
             );
         }
+    }
+
+    fn registry_with_root(tag: &str) -> (Registry, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("w2r-host-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let log = Rc::new(Lines::default());
+        let services = Services {
+            root: Some(root.clone()),
+            ..Services::none()
+        };
+        (Registry::with(log, None, services), root)
+    }
+
+    #[test]
+    fn settings_functions_follow_the_abi_rules() {
+        let (mut reg, root) = registry_with_root("settings");
+        let i = reg.load_entry("chatty", entry).unwrap();
+        let h = unsafe { &*reg.slot(i).host() };
+        let mut n = 0i64;
+        let mut buf = [0u8; 8];
+        let mut len = 0u32;
+        let long_key = "k".repeat(W2R_MAX_SETTING_KEY as usize + 1);
+        let long_val = "v".repeat(W2R_MAX_SETTING_STR as usize + 1);
+        unsafe {
+            assert_eq!(
+                (h.settings_get_i64)(h.token, s("lines"), &mut n),
+                W2R_E_NOT_FOUND
+            );
+            assert_eq!((h.settings_set_i64)(h.token, s("lines"), 12), W2R_OK);
+            assert_eq!((h.settings_get_i64)(h.token, s("lines"), &mut n), W2R_OK);
+            assert_eq!(n, 12);
+            assert_eq!(
+                (h.settings_set_i64)(h.token, s("Bad Key"), 1),
+                W2R_E_INVALID
+            );
+            assert_eq!((h.settings_set_i64)(h.token, s(&long_key), 1), W2R_E_LIMIT);
+            assert_eq!(
+                (h.settings_get_i64)(h.token, s("lines"), core::ptr::null_mut()),
+                W2R_E_INVALID
+            );
+
+            assert_eq!((h.settings_set_str)(h.token, s("name"), s("hello")), W2R_OK);
+            assert_eq!(
+                (h.settings_set_str)(h.token, s("name"), s(&long_val)),
+                W2R_E_LIMIT
+            );
+            assert_eq!(
+                (h.settings_get_str)(h.token, s("name"), buf.as_mut_ptr().cast(), 8, &mut len),
+                W2R_OK
+            );
+            assert_eq!(&buf[..len as usize], b"hello");
+            // Too small a buffer: the full length comes back and the buffer is untouched.
+            buf = [0; 8];
+            assert_eq!(
+                (h.settings_get_str)(h.token, s("name"), buf.as_mut_ptr().cast(), 3, &mut len),
+                W2R_E_LIMIT
+            );
+            assert_eq!((len, buf), (5, [0; 8]));
+            // A value of the other type is refused, not converted.
+            assert_eq!(
+                (h.settings_get_i64)(h.token, s("name"), &mut n),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.settings_get_str)(h.token, s("lines"), buf.as_mut_ptr().cast(), 8, &mut len),
+                W2R_E_INVALID
+            );
+        }
+        // Stored under the plugin's own id, and read back by a fresh registry.
+        assert!(root.join("config").join("chatty.json").is_file());
+        drop(reg);
+        let log = Rc::new(Lines::default());
+        let services = Services {
+            root: Some(root.clone()),
+            ..Services::none()
+        };
+        let mut again = Registry::with(log, None, services);
+        let j = again.load_entry("chatty", entry).unwrap();
+        let h = unsafe { &*again.slot(j).host() };
+        unsafe {
+            assert_eq!((h.settings_get_i64)(h.token, s("lines"), &mut n), W2R_OK);
+        }
+        assert_eq!(n, 12);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_and_data_report_state_without_a_root() {
+        let log = Rc::new(Lines::default());
+        let mut reg = Registry::new(log);
+        let i = reg.load_entry("p", entry).unwrap();
+        let h = unsafe { &*reg.slot(i).host() };
+        let mut n = 0i64;
+        let mut handle = 0;
+        unsafe {
+            assert_eq!((h.settings_get_i64)(h.token, s("a"), &mut n), W2R_E_STATE);
+            assert_eq!((h.settings_set_i64)(h.token, s("a"), 1), W2R_E_STATE);
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), W2R_FILE_WRITE, &mut handle),
+                W2R_E_STATE
+            );
+        }
+    }
+
+    #[test]
+    fn data_functions_follow_the_abi_rules() {
+        let (mut reg, root) = registry_with_root("data");
+        let i = reg.load_entry("logger", entry).unwrap();
+        let h = unsafe { &*reg.slot(i).host() };
+        let mut file = 0;
+        let mut got = 0u32;
+        let mut buf = [0u8; 16];
+        let long_name = "n".repeat(W2R_MAX_FILE_NAME as usize + 1);
+        unsafe {
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), W2R_FILE_READ, &mut file),
+                W2R_E_NOT_FOUND
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s("../a"), W2R_FILE_WRITE, &mut file),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s("con"), W2R_FILE_WRITE, &mut file),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s(&long_name), W2R_FILE_WRITE, &mut file),
+                W2R_E_LIMIT
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), 3, &mut file),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), W2R_FILE_WRITE, core::ptr::null_mut()),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), W2R_FILE_WRITE, &mut file),
+                W2R_OK
+            );
+            let w = file;
+            assert_eq!(
+                (h.data_write)(h.token, w, b"hello\n".as_ptr().cast(), 6),
+                W2R_OK
+            );
+            assert_eq!(
+                (h.data_write)(h.token, w, core::ptr::null(), 1),
+                W2R_E_INVALID
+            );
+            assert_eq!(
+                (h.data_write)(h.token, w, buf.as_ptr().cast(), W2R_MAX_IO_BYTES + 1),
+                W2R_E_LIMIT
+            );
+            assert_eq!(
+                (h.data_read)(h.token, w, buf.as_mut_ptr().cast(), 16, &mut got),
+                W2R_E_STATE,
+                "a write handle cannot read"
+            );
+            assert_eq!((h.data_close)(h.token, w), W2R_OK);
+            assert_eq!((h.data_close)(h.token, w), W2R_E_NOT_FOUND);
+            assert_eq!(
+                (h.data_open)(h.token, s("a.log"), W2R_FILE_READ, &mut file),
+                W2R_OK
+            );
+            assert_eq!(
+                (h.data_read)(h.token, file, buf.as_mut_ptr().cast(), 16, &mut got),
+                W2R_OK
+            );
+            assert_eq!(&buf[..got as usize], b"hello\n");
+            assert_eq!(
+                (h.data_read)(h.token, file, buf.as_mut_ptr().cast(), 16, &mut got),
+                W2R_OK
+            );
+            assert_eq!(got, 0, "end of file");
+            assert_eq!((h.data_close)(h.token, file), W2R_OK);
+        }
+        // It landed in this plugin's own data folder.
+        assert!(
+            root.join("plugins")
+                .join("logger")
+                .join("data")
+                .join("a.log")
+                .is_file()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

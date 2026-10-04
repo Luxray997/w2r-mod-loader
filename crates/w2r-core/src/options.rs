@@ -146,7 +146,6 @@ pub struct GameWidgets<'a> {
 }
 
 impl<'a> GameWidgets<'a> {
-
     fn call<R: Default>(what: &str, f: impl FnOnce() -> R) -> R {
         match guarded(f) {
             Ok(r) => r,

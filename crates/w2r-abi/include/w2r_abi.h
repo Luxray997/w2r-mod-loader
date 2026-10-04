@@ -163,6 +163,10 @@ typedef struct W2rHost {
     W2rStatus (W2R_CALL *hook_install)(void *token, uint32_t target, void *detour, void **original_out,
                                        W2rHandle *out);
     W2rStatus (W2R_CALL *hook_remove)(void *token, W2rHandle hook);
+
+    /* hooks.raw (dangerous): the runtime address of any symbol (function or global), always inside
+       the game module. For plugins that call game functions or write game memory themselves. */
+    W2rStatus (W2R_CALL *symbol_address)(void *token, W2rHandle symbol, uintptr_t *address_out);
 } W2rHost;
 
 /* ---- plugin table: returned by the plugin ---------------------------------------------- */

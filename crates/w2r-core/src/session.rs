@@ -12,7 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use w2r_abi::{
-    W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN,
+    W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_EVT_MATCH_START, W2R_LOG_ERROR, W2R_LOG_INFO,
+    W2R_LOG_WARN,
 };
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
@@ -163,6 +164,25 @@ fn nonce() -> u32 {
     h.write_u32(std::process::id());
     let n = h.finish() as u32;
     if n == 0 { 1 } else { n }
+}
+
+/// The game is starting a match (`ResetMapMessageSlots`): tell the plugins that subscribed.
+pub fn on_match_start() {
+    if !on_main_thread() {
+        return;
+    }
+    SESSION.with(|cell| {
+        // Busy means a plugin callback is on the stack and drew something; the event is lost
+        // rather than delivered into a half-finished callback.
+        let Ok(slot) = cell.try_borrow() else {
+            return;
+        };
+        if let Some(session) = slot.as_ref() {
+            session
+                .registry
+                .dispatch(W2R_EVT_MATCH_START, core::ptr::null());
+        }
+    });
 }
 
 /// One `BeginNamedWindow` call on the main thread. `name` is the window the game is starting,
@@ -553,9 +573,12 @@ fn start() -> Session {
         transport,
         roster: Rc::new(HandshakeRoster(net.clone())),
         presence: Rc::new(LobbyPresence(lobby.clone())),
+        root: None,
     };
     if let Some(image) = &startup.image {
         peer::hook::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::matchstart::install(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {

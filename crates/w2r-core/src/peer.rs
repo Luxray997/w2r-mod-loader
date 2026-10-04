@@ -761,6 +761,7 @@ mod tests {
             transport: net.clone(),
             roster: Rc::new(Announced(vec![2, 5])),
             presence: here.clone(),
+            root: None,
         };
         let mut reg = Registry::with(Rc::new(Quiet), None, services);
         let a = reg
