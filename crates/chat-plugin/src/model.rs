@@ -182,6 +182,12 @@ pub const CHANNELS: Spec = Spec {
     min: 0,
     max: 1,
 };
+pub const CLICK_UNFOCUS: Spec = Spec {
+    key: "click_unfocus",
+    default: 0,
+    min: 0,
+    max: 1,
+};
 pub const LOG: Spec = Spec {
     key: "log",
     default: 0,
@@ -206,6 +212,7 @@ pub struct Settings {
     pub log: bool,
     pub name_colours: bool,
     pub channels: bool,
+    pub click_unfocus: bool,
 }
 
 impl Default for Settings {
@@ -220,6 +227,7 @@ impl Default for Settings {
             log: LOG.default != 0,
             name_colours: NAME_COLOURS.default != 0,
             channels: CHANNELS.default != 0,
+            click_unfocus: CLICK_UNFOCUS.default != 0,
         }
     }
 }
@@ -237,6 +245,7 @@ impl Settings {
             "log" => self.log = LOG.clamp(value) != 0,
             "name_colours" => self.name_colours = NAME_COLOURS.clamp(value) != 0,
             "channels" => self.channels = CHANNELS.clamp(value) != 0,
+            "click_unfocus" => self.click_unfocus = CLICK_UNFOCUS.clamp(value) != 0,
             _ => {}
         }
     }

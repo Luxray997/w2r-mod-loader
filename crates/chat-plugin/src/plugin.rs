@@ -53,6 +53,12 @@ mod off {
     pub const SCROLLBAR_SHOW_BUTTONS: usize = 0xe8;
     pub const MESSAGE_SLOT_STRIDE: usize = 0xd0;
     pub const MESSAGE_SLOT_HIGHLIGHT: usize = 0xcc;
+    pub const CTX_MOUSE_BUTTONS: usize = 0x17c;
+    pub const MOUSE_BUTTON_STRIDE: usize = 0x10;
+    pub const MOUSE_BUTTON_DOWN: usize = 0x00;
+    pub const MOUSE_BUTTON_CLICKED: usize = 0x04;
+    pub const MOUSE_LEFT: usize = 0;
+    pub const MOUSE_RIGHT: usize = 2;
 }
 
 const SLOT_STICKY: usize = 15;
@@ -163,6 +169,7 @@ type BuildMapMessagesPanelFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, 
 type DisplayChatOrGameMessageFn = unsafe extern "C" fn(*const c_char, u8, u32, c_char);
 type WriteStickyMessageFn = unsafe extern "C" fn(*const c_char, u32);
 type PauseCommandFn = unsafe extern "C" fn();
+type ToggleChatComposeFn = unsafe extern "C" fn(*mut c_void, *mut u8, c_char);
 type KeyProcFn = unsafe extern "C" fn(*mut c_void, *mut u8) -> u32;
 type SendComposedChatFn = unsafe extern "C" fn(*const c_char);
 type WriteChatPromptLineFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char);
@@ -188,6 +195,8 @@ struct Game {
     wrap_separators: *const u32,
     chat_target_mode: *mut u8,
     chat_recipient_mask: *mut u8,
+    chat_dialog: *const *mut c_void,
+    toggle_compose: ToggleChatComposeFn,
     pause_flags: *const u8,
     slots: *mut u8,
     player_names: *const u8,
@@ -282,6 +291,8 @@ fn resolve() -> Result<Game, &'static str> {
         widget_text: need!("NkWidgetText", WidgetTextFn),
         wrap_separators: lookup("NkWrapSeparators").ok_or("NkWrapSeparators")? as *const u32,
         chat_target_mode: lookup("ChatTargetMode").ok_or("ChatTargetMode")? as *mut u8,
+        chat_dialog: lookup("ChatDialog").ok_or("ChatDialog")? as *const *mut c_void,
+        toggle_compose: need!("ToggleChatCompose", ToggleChatComposeFn),
         chat_recipient_mask: lookup("ChatRecipientMask").ok_or("ChatRecipientMask")? as *mut u8,
         pause_flags: lookup("MatchPauseFlags").ok_or("MatchPauseFlags")? as *const u8,
         slots: lookup("MapMessageSlots").ok_or("MapMessageSlots")? as *mut u8,
@@ -409,8 +420,6 @@ static ORIG_PROMPT: AtomicUsize = AtomicUsize::new(0);
 /// True while the game's own pause or resume handler runs: its sticky message is ours to
 /// replace with an announcement.
 static IN_PAUSE_HANDLER: AtomicBool = AtomicBool::new(false);
-/// Diagnostic: log the player tables again on the first frame of a match (slice 3/4 offsets).
-static LOG_PLAYERS_AGAIN: AtomicBool = AtomicBool::new(false);
 
 macro_rules! original {
     ($slot:expr, $t:ty) => {{
@@ -1194,6 +1203,41 @@ unsafe extern "C" fn write_chat_prompt_line(
     unsafe { original(c"%s".as_ptr(), line.as_ptr().cast(), core::ptr::null()) };
 }
 
+/// True when the mouse button was pressed this frame (wc2r-plus `nk::MousePressed`).
+unsafe fn mouse_pressed(ctx: *const u8, button: usize) -> bool {
+    let b = off::CTX_MOUSE_BUTTONS + button * off::MOUSE_BUTTON_STRIDE;
+    unsafe {
+        rd::<i32>(ctx, b + off::MOUSE_BUTTON_DOWN) != 0
+            && rd::<u32>(ctx, b + off::MOUSE_BUTTON_CLICKED) != 0
+    }
+}
+
+/// "Click closes chat": a left or right click while composing discards the draft and returns the
+/// keyboard to the game (wc2r-plus `CloseComposeOnClick`).
+unsafe fn close_compose_on_click(g: &Game, ctx: *mut c_void) {
+    if !with_state(|st| st.settings.click_unfocus) || target_mode(g) == 0 {
+        return;
+    }
+    let ctx = ctx as *const u8;
+    let left = unsafe { mouse_pressed(ctx, off::MOUSE_LEFT) };
+    if !left && !unsafe { mouse_pressed(ctx, off::MOUSE_RIGHT) } {
+        return;
+    }
+    let dialog = unsafe { *g.chat_dialog };
+    if dialog.is_null() {
+        return;
+    }
+    let mut unread = [0u8; 16];
+    unsafe { (g.toggle_compose)(dialog, unread.as_mut_ptr(), 0) };
+    log(
+        W2R_LOG_INFO,
+        &format!(
+            "compose closed by a {} click",
+            if left { "left" } else { "right" }
+        ),
+    );
+}
+
 /// One prompt line in the channel's colour; returns the lines used so far (the game's
 /// `DrawMapMessageLine` contract), `0x11` when it does not fit (wc2r-plus `DrawLineInColour`).
 unsafe fn draw_line_in_colour(
@@ -1302,6 +1346,9 @@ unsafe extern "C" fn build_map_messages_panel(
     if !enabled() || ctx.is_null() || line_height <= 0 {
         return unsafe { original(ctx, x, y, w, h, line_height) };
     }
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        close_compose_on_click(g, ctx)
+    }));
 
     // The game's style fields are borrowed for the duration and always put back, even if our
     // drawing panics.
@@ -1337,10 +1384,6 @@ unsafe fn draw_panel(
     scroll_style: *mut u8,
 ) {
     let lh = line_height as f32;
-    if LOG_PLAYERS_AGAIN.swap(false, Ordering::Relaxed) {
-        log(W2R_LOG_INFO, "players at the first frame of the match:");
-        log_players(g);
-    }
     let now = unsafe { (g.get_clock_ms)() };
     for i in 0..15 {
         unsafe { (g.expire_slot)(g.slots.add(i * off::MESSAGE_SLOT_STRIDE).cast(), now) };
@@ -1479,6 +1522,7 @@ fn load_settings() -> Settings {
             model::LOG.key,
             model::NAME_COLOURS.key,
             model::CHANNELS.key,
+            model::CLICK_UNFOCUS.key,
         ] {
             let mut v = 0i64;
             if unsafe { (h.settings_get_i64)(h.token, s(key), &mut v) } == W2R_OK {
@@ -1606,36 +1650,6 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     W2R_OK
 }
 
-/// Diagnostic for slices 3 and 4: at match start, log what the game's player tables say, so the
-/// offsets taken from wc2r-plus can be checked against this build. Remove once slice 4 is done.
-fn log_players(g: &Game) {
-    let local = unsafe { *g.local_player } as usize;
-    log(W2R_LOG_INFO, &format!("players: local player {local}"));
-    for i in 0..PLAYER_COUNT as usize {
-        let (name, owner, colour, team, stance) = unsafe {
-            let slot =
-                core::slice::from_raw_parts(g.player_names.add(i * NAME_STRIDE), NAME_STRIDE);
-            (
-                model::player_name(slot).unwrap_or_default(),
-                *g.player_owner.add(i),
-                *g.colour_reorder.add(i),
-                *g.lobby_slots.add(i * LOBBY_SLOT_STRIDE + LOBBY_SLOT_TEAM),
-                if local < PLAYER_COUNT as usize {
-                    *g.diplomacy.add(local * DIPLOMACY_ROW_STRIDE + i)
-                } else {
-                    0xff
-                },
-            )
-        };
-        log(
-            W2R_LOG_INFO,
-            &format!(
-                "players: p{i} name={name:?} owner={owner} colour={colour} lobby_team={team} stance_from_local={stance}"
-            ),
-        );
-    }
-}
-
 unsafe extern "C" fn on_event(event: *const W2rEvent) {
     let id = unsafe { (*event).id };
     if id == W2R_EVT_MATCH_START {
@@ -1654,10 +1668,6 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
             W2R_LOG_INFO,
             &format!("match start: backlog cleared, teammates mask 0x{mask:02x}"),
         );
-        if let Some(g) = game() {
-            let _ = catch_unwind(AssertUnwindSafe(|| log_players(g)));
-        }
-        LOG_PLAYERS_AGAIN.store(true, Ordering::Relaxed);
     }
 }
 
@@ -1673,6 +1683,7 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         mut log_on,
         mut names_on,
         mut channels,
+        mut click,
     ) = with_state(|st| {
         (
             st.settings.lines,
@@ -1683,6 +1694,7 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
             st.settings.log as i32,
             st.settings.name_colours as i32,
             st.settings.channels as i32,
+            st.settings.click_unfocus as i32,
         )
     });
     unsafe {
@@ -1735,6 +1747,9 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         }
         if (ui.checkbox)(ui.ctx, s("Enhanced chat channels"), &mut channels) != 0 {
             changed.push((model::CHANNELS.key, channels as i64));
+        }
+        if (ui.checkbox)(ui.ctx, s("Click closes chat"), &mut click) != 0 {
+            changed.push((model::CLICK_UNFOCUS.key, click as i64));
         }
         if (ui.checkbox)(ui.ctx, s("Log chat to disk"), &mut log_on) != 0 {
             changed.push((model::LOG.key, log_on as i64));
