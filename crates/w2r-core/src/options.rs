@@ -114,20 +114,6 @@ impl Nk {
         unsafe { *self.ctx_slot }
     }
 
-    /// Widgets placed by rectangle inside the window the game is currently building (its
-    /// layout space is opened and closed here), the way wc2r-plus draws on the create screen.
-    /// `draw` gets the widgets and a function that places the next one.
-    pub(crate) fn in_window(&self, draw: impl FnOnce(&GameWidgets, &dyn Fn(f32, f32, f32, f32))) {
-        let ctx = self.ctx();
-        if ctx.is_null() {
-            return;
-        }
-        unsafe { (self.space_begin)(ctx, 1, 0.0, 1000) };
-        let place = |x: f32, y: f32, w: f32, h: f32| unsafe { (self.rect)(ctx, x, y, w, h) };
-        draw(&GameWidgets { nk: self, ctx }, &place);
-        unsafe { (self.space_end)(ctx) };
-    }
-
     pub(crate) fn push_skin(&self, id: u32) -> u32 {
         unsafe { (self.set_skin)(self.skin_manager, id) }
     }

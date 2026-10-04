@@ -19,8 +19,8 @@ the maps folder, and a row per map; picking one publishes it into the game's sel
 is drawn from the map file itself (a PUD parsed by us, painted as coloured rectangles into a game
 texture), not from the game's own preview.
 
-The lock buttons already work (slice 4a); here they move into the options column, and the 4a overlay
-is drawn only when this screen is off.
+The lock buttons first appeared as an overlay on the stock screen (slice 4a); they now live in the
+options column here, and the overlay is gone.
 
 ## What it stands on, and what is new here
 
@@ -86,9 +86,9 @@ Each slice ends with an in-game check by the user, behind the setting.
    map from a subfolder and from search, create the game with it, the lobby shows that map.
 3. **Preview and details.** `pud.rs`, `mappreview.rs`, the details block. Exit: the preview matches
    the chosen map for each era; a malformed PUD in the folder shows no preview and no crash.
-4. **Default on.** Done: the default is true. The 4a overlay (`lobbycreate.rs`) is kept as the
-   fallback: it draws the two lock buttons over the stock screen only when the replacement is off,
-   missing a symbol, or has faulted, so the locks stay reachable there too.
+4. **Default on.** Done: the default is true. The 4a overlay is removed: the lock buttons exist only
+   on the replacement screen (and as checkboxes on the plugin screen), so with the replacement off
+   the game draws its own screen untouched.
 
 ## Open questions
 

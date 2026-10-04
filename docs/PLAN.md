@@ -161,8 +161,8 @@ plugins over the public ABI (chat may well be the latter).
    `browserview.rs`: folders, up, reload, size filter, search, publish; no disk index cache yet)
    verified; slice 3 (`pud.rs`, `mappreview.rs`, `previewdraw.rs`: bounds-checked PUD reader,
    tileset-colour preview painted into a game texture, shown on the screen and in the browser)
-   verified, and slice 4 is done: `enhanced_create_screen` defaults to on, the 4a buttons stay as the
-   fallback when the replacement is off or faults. Lobby policy slices 1 to 3 (locks, broadcast,
+   verified, and slice 4 is done: `enhanced_create_screen` defaults to on, the 4a overlay was removed (the
+   lock buttons exist only on the replacement screen and the plugin screen). Lobby policy slices 1 to 3 (locks, broadcast,
    host menus) still await a second-player check.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.

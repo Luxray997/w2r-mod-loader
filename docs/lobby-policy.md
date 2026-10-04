@@ -85,7 +85,9 @@ host side is checkable alone.
    events in the log.
 3. **Host menus.** "Move to Slot N" and the Closed rendering through the `LobbySlotDropdown` hook.
    The in-lobby banner stays parked (reason in PLAN.md).
-4. **Lock choice on the Create Multiplayer Game screen.** See "Slice 4" below.
+4. **Lock choice on the Create Multiplayer Game screen.** See "Slice 4" below. Done: the buttons are
+   part of the replacement screen ([create-screen.md](create-screen.md)); the interim overlay on the
+   stock screen (4a) was removed.
 
 ## Slice 4: the Create Multiplayer Game screen
 
