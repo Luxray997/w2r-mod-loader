@@ -149,7 +149,9 @@ plugins over the public ABI (chat may well be the latter).
    the `players:` diagnostic is removed. Known limit: the host's data
    folder cap (64 files, 16 MiB) stops the disk log after about 64 launches with logging on.
 3. Lobby policy: a host feature, spec in [lobby-policy.md](lobby-policy.md) (four slices, the last
-   is the Create Multiplayer Game screen). **Spec written 2026-10-04, nothing implemented yet.**
+   is the Create Multiplayer Game screen). **Slice 1 written 2026-10-04 (`lobbypolicy.rs`: wire format, state, the
+   two request hooks, `lock_team_changes`/`lock_slot_swaps` in `host.json` and two plugin-screen
+   checkboxes), awaiting the in-game check; slices 2 to 4 not started.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 

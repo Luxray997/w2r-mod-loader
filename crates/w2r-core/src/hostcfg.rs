@@ -15,6 +15,10 @@ pub const MAX_BYTES: usize = 64 * 1024;
 pub struct HostConfig {
     /// When hosting, refuse players whose simulation fingerprint differs from ours.
     pub require_matching_plugins: bool,
+    /// When hosting, refuse other players' team changes (docs/lobby-policy.md).
+    pub lock_team_changes: bool,
+    /// When hosting, refuse other players' slot swaps.
+    pub lock_slot_swaps: bool,
 }
 
 /// Exactly `schema` (1) and the known boolean fields; anything else refuses the file.
@@ -39,6 +43,8 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "require_matching_plugins" => {
                 cfg.require_matching_plugins = value.as_bool().ok_or("bad_field")?;
             }
+            "lock_team_changes" => cfg.lock_team_changes = value.as_bool().ok_or("bad_field")?,
+            "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
             _ => return Err("unknown_field"),
         }
     }
@@ -58,6 +64,14 @@ impl HostConfig {
             (
                 "require_matching_plugins".to_owned(),
                 Value::Bool(self.require_matching_plugins),
+            ),
+            (
+                "lock_team_changes".to_owned(),
+                Value::Bool(self.lock_team_changes),
+            ),
+            (
+                "lock_slot_swaps".to_owned(),
+                Value::Bool(self.lock_slot_swaps),
             ),
         ])
         .to_json()
@@ -111,8 +125,14 @@ mod tests {
     fn parses_round_trips_and_refuses_the_unknown() {
         let cfg = HostConfig {
             require_matching_plugins: true,
+            lock_team_changes: true,
+            lock_slot_swaps: false,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"lock_slot_swaps\": 1}"),
+            Err("bad_field")
+        );
         assert_eq!(
             parse(b"{\"schema\": 1}"),
             Ok(HostConfig::default()),
@@ -148,6 +168,8 @@ mod tests {
         );
         let cfg = HostConfig {
             require_matching_plugins: true,
+            lock_team_changes: false,
+            lock_slot_swaps: true,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

@@ -26,6 +26,7 @@ use crate::handshake::{self, Handshake, Out};
 use crate::host::{Game, Log, Services, State as SlotState};
 use crate::hostcfg::{self, HostConfig};
 use crate::lobby::{self, Event, Lobby};
+use crate::lobbypolicy::{self, Locks};
 use crate::manifest::Build;
 #[cfg(target_arch = "x86")]
 use crate::options;
@@ -227,6 +228,11 @@ pub fn on_window(name: Option<&str>) {
         }
         if name == Some(lobby::WINDOW) {
             let net = session.net.clone();
+            let chosen = Locks {
+                teams: session.config.lock_team_changes,
+                slots: session.config.lock_slot_swaps,
+            };
+            lobbypolicy::with(|p| p.frame(now, net.transport.is_host(), chosen));
             let f = handshake::Frame {
                 now,
                 connected: net.transport.connected(),
@@ -450,6 +456,8 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             fingerprint: session.fingerprint,
             simulation: session.simulation.clone(),
             strict: session.config.require_matching_plugins,
+            lock_teams: session.config.lock_team_changes,
+            lock_slots: session.config.lock_slot_swaps,
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -504,6 +512,26 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                     Err(_) => Vec::new(),
                 };
                 net.run(outs);
+            }
+            Action::ToggleLocks => {
+                session.config.lock_team_changes = host.lock_teams;
+                session.config.lock_slot_swaps = host.lock_slots;
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "lobby locks: team changes {}, slot swaps {}",
+                            if host.lock_teams { "locked" } else { "open" },
+                            if host.lock_slots { "locked" } else { "open" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
+                }
             }
             Action::None | Action::Back => {}
         }
@@ -577,6 +605,8 @@ fn start() -> Session {
     };
     if let Some(image) = &startup.image {
         peer::hook::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        lobbypolicy::hook::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::matchstart::install(image, &symbols, &*log);
     }

@@ -188,11 +188,16 @@ pub struct HostRow {
     pub simulation: Vec<String>,
     /// `require_matching_plugins` (`host.json`); takes effect at once.
     pub strict: bool,
+    /// `lock_team_changes` and `lock_slot_swaps` (`host.json`); take effect at once when hosting.
+    pub lock_teams: bool,
+    pub lock_slots: bool,
     /// The handshake's current lobby warnings, if any.
     pub lobby: Vec<String>,
 }
 
 pub const STRICT_LABEL: &str = "When hosting, remove players whose simulation plugins differ";
+pub const LOCK_TEAMS_LABEL: &str = "When hosting, lock team changes";
+pub const LOCK_SLOTS_LABEL: &str = "When hosting, lock slot swaps";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -202,6 +207,8 @@ pub enum Action {
     Toggle(usize),
     /// The user flipped `require_matching_plugins`.
     ToggleStrict,
+    /// The user flipped one of the lobby locks.
+    ToggleLocks,
 }
 
 /// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
@@ -230,6 +237,18 @@ pub fn draw_plugin_screen(
     if w.checkbox(STRICT_LABEL, &mut strict) {
         host.strict = strict;
         action = Action::ToggleStrict;
+    }
+    w.row(ROW_H, 1);
+    let mut lock_teams = host.lock_teams;
+    if w.checkbox(LOCK_TEAMS_LABEL, &mut lock_teams) {
+        host.lock_teams = lock_teams;
+        action = Action::ToggleLocks;
+    }
+    w.row(ROW_H, 1);
+    let mut lock_slots = host.lock_slots;
+    if w.checkbox(LOCK_SLOTS_LABEL, &mut lock_slots) {
+        host.lock_slots = lock_slots;
+        action = Action::ToggleLocks;
     }
     for line in &host.lobby {
         w.row(ROW_H, 1);
@@ -448,6 +467,8 @@ mod tests {
             fingerprint: [0xaa, 0xbb, 0xcc, 0xdd],
             simulation: vec!["a".into(), "c".into()],
             strict: false,
+            lock_teams: false,
+            lock_slots: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
@@ -464,11 +485,13 @@ mod tests {
             "label \"Simulation fingerprint: aabbccdd (a, c)\""
         );
         assert_eq!(calls[5], format!("checkbox {STRICT_LABEL:?} false"));
+        assert_eq!(calls[7], format!("checkbox {LOCK_TEAMS_LABEL:?} false"));
+        assert_eq!(calls[9], format!("checkbox {LOCK_SLOTS_LABEL:?} false"));
         assert_eq!(
-            calls[7],
+            calls[11],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[9], "label \"Plugins (3)\"");
+        assert_eq!(calls[13], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
         assert!(
             calls
@@ -488,6 +511,8 @@ mod tests {
             fingerprint: [0; 4],
             simulation: Vec::new(),
             strict: false,
+            lock_teams: false,
+            lock_slots: false,
             lobby: Vec::new(),
         };
         assert_eq!(
@@ -512,5 +537,14 @@ mod tests {
             Action::ToggleStrict
         );
         assert!(host.strict);
+
+        // So are the two locks.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(LOCK_SLOTS_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleLocks
+        );
+        assert!(host.lock_slots && !host.lock_teams);
     }
 }

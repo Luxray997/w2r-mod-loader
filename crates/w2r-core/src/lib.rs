@@ -14,6 +14,7 @@ pub mod host;
 pub mod hostcfg;
 pub mod json;
 pub mod lobby;
+pub mod lobbypolicy;
 pub mod log;
 pub mod manifest;
 pub mod pe;

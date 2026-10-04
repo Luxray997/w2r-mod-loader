@@ -5,8 +5,8 @@
 //! game sees them; everything else passes through, except the stock `0x2A` legacy file
 //! transfer, which wc2r-plus drops and so do we.
 //!
-//! Subsystem `'H'` is the host's own handshake (`handshake` module); `'M'` and `'L'` are
-//! reserved for the other first-party features (Phase 3). Only `'P'` reaches plugins, routed by
+//! Subsystem `'H'` is the host's own handshake (`handshake` module), `'L'` its lobby policy
+//! (`lobbypolicy` module) and `'M'` is reserved for map download (Phase 3). Only `'P'` reaches plugins, routed by
 //! the 4-byte tag that is SHA-256 of the plugin id.
 
 use std::collections::VecDeque;
@@ -541,7 +541,16 @@ pub mod hook {
                 crate::session::deliver_handshake(sender, body);
                 true
             }
-            // 'M' and 'L' have no handler yet; still ours, still consumed.
+            Packet::Ours {
+                subsystem: crate::lobbypolicy::SUBSYSTEM,
+                body,
+            } => {
+                if let Err(fault) = guarded(|| crate::lobbypolicy::deliver(sender, body)) {
+                    crate::session::host_fault("lobby policy", &fault);
+                }
+                true
+            }
+            // 'M' has no handler yet; still ours, still consumed.
             Packet::Ours { .. } => true,
         }
     }
