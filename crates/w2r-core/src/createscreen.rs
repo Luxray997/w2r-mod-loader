@@ -16,6 +16,8 @@ use crate::browserview::{Theme, View};
 use crate::guard::guarded;
 use crate::host::Log;
 use crate::mapbrowser::Browser;
+use crate::mappreview::tileset_for_key;
+use crate::previewdraw::{self, PreviewGame, Request};
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
 use crate::symbols::Symbols;
@@ -24,6 +26,7 @@ use crate::symbols::Symbols;
 const ENTRY_PLAYERS: usize = 0x04;
 const ENTRY_DIM: usize = 0x06;
 const ENTRY_NAME: usize = 0x08;
+const ENTRY_PATH: usize = 0x20;
 const ENTRY_DESC: usize = 0x50;
 const PASSWORD_CAPACITY: i32 = 0x18;
 const MAP_PANEL_FRACTION: f32 = 0.47;
@@ -61,6 +64,7 @@ struct Screen {
     options: [Option4; 4],
     view: View,
     browser: Mutex<Browser>,
+    preview: PreviewGame,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -170,6 +174,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
         ],
         view: View::new(symbols)?,
         browser: Mutex::new(Browser::default()),
+        preview: PreviewGame::new(symbols)?,
     })
 }
 
@@ -190,7 +195,14 @@ pub fn try_draw() -> bool {
     if last != 0 && now.saturating_sub(last) > REENTRY_GAP_MS {
         screen.browser().close();
     }
-    match guarded(|| unsafe { screen.draw(window) }) {
+    let drawn = guarded(|| {
+        let request = unsafe { screen.draw(window) };
+        // The picture goes straight onto the window's canvas, after the layout space has ended.
+        if let Some(r) = request {
+            previewdraw::draw(&screen.preview, &screen.kit, &r);
+        }
+    });
+    match drawn {
         Ok(()) => {
             if !ANNOUNCED.swap(true, Ordering::Relaxed) {
                 crate::session::log_info(
@@ -219,7 +231,7 @@ impl Screen {
         self.browser.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    unsafe fn draw(&self, window: Rect) {
+    unsafe fn draw(&self, window: Rect) -> Option<Request> {
         let k = &self.kit;
         let previous = k.push_skin(unsafe { *self.skin_screen });
         k.space_begin();
@@ -232,10 +244,14 @@ impl Screen {
                     text_edit: unsafe { *self.skin_text_edit },
                     heading_font: unsafe { *self.font_heading },
                 };
-                unsafe { self.view.draw(k, &mut browser, window, theme) };
+                let shown = unsafe { self.view.draw(k, &mut browser, window, theme) };
                 k.space_end();
                 k.pop_skin(previous);
-                return;
+                return shown.map(|(area, path)| Request {
+                    area,
+                    path,
+                    tileset: None,
+                });
             }
         }
 
@@ -258,7 +274,7 @@ impl Screen {
         let right_w = content_right - right_x;
         let options_h = fl(CAPTION_H + ROW_H + GAP) * 4.0;
 
-        self.draw_map_column(Rect::new(content_x, content_y, map_w, content_h));
+        let preview = self.draw_map_column(Rect::new(content_x, content_y, map_w, content_h));
         unsafe { self.draw_options(Rect::new(right_x, content_y, right_w, options_h)) };
         let details_y = content_y + options_h + GAP;
         unsafe {
@@ -273,13 +289,15 @@ impl Screen {
 
         k.space_end();
         k.pop_skin(previous);
+        preview
     }
 
     unsafe fn selected_name(&self) -> String {
         unsafe { str_data(self.selected.add(ENTRY_NAME)) }
     }
 
-    fn draw_map_column(&self, column: Rect) {
+    /// The name, the picture's square and the Change map button. Returns what to paint.
+    fn draw_map_column(&self, column: Rect) -> Option<Request> {
         let k = &self.kit;
         let name = unsafe { self.selected_name() };
         k.heading_at(
@@ -301,6 +319,13 @@ impl Screen {
             let selected = self.view.selected_choice();
             self.browser().open(Some(selected));
         }
+        let path = unsafe { str_data(self.selected.add(ENTRY_PATH)) };
+        let tileset = tileset_for_key(&unsafe { str_data(self.options[2].current as *const u8) });
+        (!path.is_empty()).then_some(Request {
+            area: b,
+            path,
+            tileset,
+        })
     }
 
     unsafe fn draw_options(&self, column: Rect) {

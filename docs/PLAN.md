@@ -159,6 +159,8 @@ plugins over the public ABI (chat may well be the latter).
    in [create-screen.md](create-screen.md), four slices; slice 1 (`screenkit.rs`, `createscreen.rs`,
    the `enhanced_create_screen` setting, off by default) verified; slice 2 (`mapbrowser.rs`,
    `browserview.rs`: folders, up, reload, size filter, search, publish; no disk index cache yet)
+   verified; slice 3 (`pud.rs`, `mappreview.rs`, `previewdraw.rs`: bounds-checked PUD reader,
+   tileset-colour preview painted into a game texture, shown on the screen and in the browser)
    written, awaiting the in-game check.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.

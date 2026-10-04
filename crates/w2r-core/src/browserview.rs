@@ -295,11 +295,18 @@ impl View {
     }
 
     /// Draws the "Select Map" panel. `window` is the screen's window. A confirmed choice is
-    /// published and the browser closed.
+    /// published and the browser closed. Returns the square for the highlighted map's preview
+    /// and its file, to be painted once the layout space has ended.
     ///
     /// # Safety
     /// Must run inside the screen's layout space, on the game's main thread.
-    pub unsafe fn draw(&self, k: &Kit, b: &mut Browser, window: Rect, theme: Theme) {
+    pub unsafe fn draw(
+        &self,
+        k: &Kit,
+        b: &mut Browser,
+        window: Rect,
+        theme: Theme,
+    ) -> Option<(Rect, String)> {
         let mut src = self.source;
         b.observe_root(&src.rel_path());
 
@@ -443,5 +450,20 @@ impl View {
             }
             b.close();
         }
+
+        // The preview goes on after the layout ends; hand back where and what.
+        if b.is_open()
+            && preview_side > 0.0
+            && let Some(c) = &choice
+        {
+            let area = Rect::new(
+                dx + (dw - preview_side) * 0.5,
+                preview_y,
+                preview_side,
+                preview_side,
+            );
+            return Some((area, c.path.clone()));
+        }
+        None
     }
 }

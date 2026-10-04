@@ -18,8 +18,10 @@ pub mod lobbypolicy;
 pub mod log;
 pub mod manifest;
 pub mod mapbrowser;
+pub mod mappreview;
 pub mod pe;
 pub mod peer;
+pub mod pud;
 pub mod screenkit;
 pub mod semver;
 pub mod state;
@@ -50,6 +52,8 @@ pub mod options;
 pub mod paths;
 #[cfg(windows)]
 pub mod plugins;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod previewdraw;
 #[cfg(all(windows, target_arch = "x86", target_env = "msvc"))]
 pub mod proxy;
 #[cfg(windows)]

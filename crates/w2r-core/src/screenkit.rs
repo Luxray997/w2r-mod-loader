@@ -277,7 +277,7 @@ pub mod game {
             }
         }
 
-        fn canvas(&self) -> *mut c_void {
+        pub fn canvas(&self) -> *mut c_void {
             let ctx = self.ctx() as *const u8;
             if ctx.is_null() {
                 return core::ptr::null_mut();
@@ -318,6 +318,11 @@ pub mod game {
             if !canvas.is_null() {
                 unsafe { (self.fill_rect)(canvas, x, y, w, h, round, col) };
             }
+        }
+
+        /// A filled rectangle on the window being built.
+        pub fn fill_rect(&self, r: Rect, colour: u32) {
+            self.fill(self.canvas(), r.x, r.y, r.w, r.h, 0.0, colour);
         }
 
         /// A scrolling group at `r`; true when it opened (then draw rows and call `end_list`).
