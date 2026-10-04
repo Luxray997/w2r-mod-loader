@@ -170,6 +170,7 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
     // The frame hook is the host's way onto the main thread; everything plugin-related follows
     // from there (later steps).
     let startup = STARTUP.get().expect("just set");
+    crate::watchdog::start(startup.root.join("logs"));
     if let Some(image) = &startup.image {
         crate::frame::install(image, &Symbols::new(game_base), &startup.log);
     }

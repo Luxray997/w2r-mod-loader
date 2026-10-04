@@ -125,9 +125,13 @@ plugins over the public ABI (chat may well be the latter).
    re-HELLO on joiners, leavers forgotten), `fingerprint.rs` (checked against
    docs/vectors/fingerprint.json; `plugins.rs` computes it over loaded `affects_simulation` or
    `hooks.raw` plugins and logs it), `hostcfg.rs` (`config\host.json`,
-   `require_matching_plugins`), the strict kick through `KickLobbyPeer`, lobby warnings drawn
-   in a window of ours after the lobby window ends (`notice.rs`, hook on `EndCurrentWindow`)
-   and listed on the plugin screen next to a strict-mode checkbox. `session.rs` now queues
+   `require_matching_plugins`), the strict kick through `KickLobbyPeer`, lobby warnings listed
+   on the plugin screen next to a strict-mode checkbox and logged. **The in-lobby banner is parked:**
+   a Nuklear window begun from an `EndCurrentWindow` hook froze the game's lobby (2026-10-04; even
+   an empty window did; the hang is in the game's own combo code, not ours). wc2r-plus never
+   draws one either; it uses the game's own `NKPopup`. Follow-up step: show the warning through
+   `GameListPopup` (see wc2r-plus `features/ui/game_list_message.cpp`). `watchdog.rs` logs the
+   last host stage and writes a minidump when the main thread stops reaching our hooks. `session.rs` now queues
    messages that arrive off the main thread or while the session is busy (bounded, 256) and
    drains them on the next frame, closing the Phase 2 gap. `Transport` gained `is_host`,
    `peers` (EnumPeers vtable slot, freed through the game's sized `operator delete`),

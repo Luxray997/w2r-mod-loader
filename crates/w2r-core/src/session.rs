@@ -4,8 +4,6 @@
 //! thread touches the session, which is why a `thread_local` holds it; messages that arrive
 //! elsewhere wait in a queue for the next frame.
 
-#[cfg(target_arch = "x86")]
-use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -132,7 +130,7 @@ pub fn host_fault(site: &str, fault: &Fault) {
 }
 
 /// Routes to the startup log; the registry needs an `Rc<dyn Log>`.
-struct StartupLog;
+pub(crate) struct StartupLog;
 
 impl Log for StartupLog {
     fn line(&self, level: u32, plugin: &str, msg: &str) {
@@ -381,7 +379,8 @@ pub fn with_nk(f: impl FnOnce(&options::Nk)) {
     }
 }
 
-/// What the lobby should tell the local player right now (docs/load-policy.md, "Policy").
+/// What the lobby should tell the local player right now (docs/load-policy.md, "Policy"). Shown
+/// on the plugin screen; the in-lobby banner is parked (docs/PLAN.md, Phase 3 step 1).
 pub fn lobby_warnings() -> Vec<String> {
     NET.with(|n| {
         n.borrow()
@@ -394,16 +393,6 @@ pub fn lobby_warnings() -> Vec<String> {
             })
             .unwrap_or_default()
     })
-}
-
-/// Draws the handshake's warnings over the lobby, after the game's lobby window ended.
-#[cfg(target_arch = "x86")]
-pub fn draw_lobby_notice(ctx: *mut c_void) {
-    let lines = lobby_warnings();
-    if lines.is_empty() {
-        return;
-    }
-    with_nk(|nk| crate::notice::draw(nk, ctx, &lines));
 }
 
 /// Draws the plugin list with `w` and applies the user's toggles. Called from the options
@@ -574,7 +563,6 @@ fn start() -> Session {
         match (&nk, &startup.image) {
             (Some(_), Some(image)) => {
                 options::install(image, &symbols, &*log);
-                crate::notice::install(image, &symbols, &*log);
             }
             _ => log.line(
                 W2R_LOG_ERROR,

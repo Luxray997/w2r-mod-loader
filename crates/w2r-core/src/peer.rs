@@ -335,6 +335,7 @@ pub mod game {
             let Some((_, transport)) = self.transport() else {
                 return false;
             };
+            crate::watchdog::mark(crate::watchdog::BROADCAST_GAME);
             guarded(|| unsafe {
                 let f: BroadcastFn =
                     core::mem::transmute(Self::vtable_entry(transport, VT_BROADCAST));
@@ -347,6 +348,7 @@ pub mod game {
             let Some((_, transport)) = self.transport() else {
                 return false;
             };
+            crate::watchdog::mark(crate::watchdog::SEND_GAME);
             guarded(|| unsafe {
                 let f: SendToFn =
                     core::mem::transmute(Self::vtable_entry(transport, VT_SEND_TO_PEER));
@@ -365,6 +367,7 @@ pub mod game {
 
         fn peers(&self) -> Option<Vec<u32>> {
             let (_, transport) = self.transport()?;
+            crate::watchdog::mark(crate::watchdog::PEERS_GAME);
             guarded(|| unsafe {
                 let f: EnumPeersFn =
                     core::mem::transmute(Self::vtable_entry(transport, VT_ENUM_PEERS));
@@ -488,7 +491,9 @@ pub mod hook {
         let original: GetNextPeerPacketFn =
             unsafe { core::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
         for _ in 0..MAX_CONSUMED_PER_CALL {
+            crate::watchdog::mark(crate::watchdog::PACKET_GAME);
             let got = unsafe { original(sender, buf, len) };
+            crate::watchdog::mark(crate::watchdog::PACKET_HOST);
             if got == 0 {
                 return 0;
             }

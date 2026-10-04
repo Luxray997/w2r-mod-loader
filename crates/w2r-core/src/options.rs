@@ -127,29 +127,6 @@ impl Nk {
             }
         }
     }
-
-    pub(crate) fn ui_width(&self) -> f32 {
-        unsafe { (self.ui_width)() }
-    }
-
-    /// Begins a window of ours; true when it is visible. `end_window` must follow either way.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin_window(
-        &self,
-        ctx: *mut c_void,
-        name: &core::ffi::CStr,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        flags: u32,
-    ) -> bool {
-        unsafe { (self.begin_window)(ctx, name.as_ptr(), x, y, w, h, flags) != 0 }
-    }
-
-    pub(crate) fn end_window(&self, ctx: *mut c_void) {
-        unsafe { (self.end_window)(ctx) }
-    }
 }
 
 /// NUL-terminated copy for the game's C-string widgets.
@@ -169,9 +146,6 @@ pub struct GameWidgets<'a> {
 }
 
 impl<'a> GameWidgets<'a> {
-    pub(crate) fn new(nk: &'a Nk, ctx: *mut c_void) -> GameWidgets<'a> {
-        GameWidgets { nk, ctx }
-    }
 
     fn call<R: Default>(what: &str, f: impl FnOnce() -> R) -> R {
         match guarded(f) {

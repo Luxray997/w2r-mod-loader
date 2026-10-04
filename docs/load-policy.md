@@ -95,8 +95,8 @@ them.
   A joiner with such plugins sees the same warning about a host that has not announced.
 - Implementation: `crates/w2r-core/src/fingerprint.rs` computes it after startup loading
   (`plugins.rs` logs it as `simulation fingerprint <hex> (<ids>)`), `handshake.rs` exchanges and
-  compares it ([peer-protocol.md](peer-protocol.md)), and the warnings are drawn over the lobby
-  (`notice.rs`) and listed on the plugin screen.
+  compares it ([peer-protocol.md](peer-protocol.md)), and the warnings are listed on the plugin screen and
+  logged. A lobby banner is not drawn yet (see docs/PLAN.md, Phase 3 step 1).
 - The fingerprint covers plugin identity and binary only, **not plugin settings**. A plugin that
   affects the simulation must not let local settings change it, or must agree them between players
   itself through peer messages; otherwise two players with the same plugin can desync unwarned.
