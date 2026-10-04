@@ -114,37 +114,18 @@ impl Nk {
         unsafe { *self.ctx_slot }
     }
 
-    /// A small named window at `(x, y)` over whatever screen is being built, with one dynamic
-    /// row of `row_h` and `cols` columns; `draw` runs inside it. The game's own overlay pattern
-    /// (the Plugins button): the window is always ended, drawn or not.
-    pub(crate) fn overlay(
-        &self,
-        name: &core::ffi::CStr,
-        rect: (f32, f32, f32, f32),
-        row_h: f32,
-        cols: i32,
-        draw: impl FnOnce(&GameWidgets),
-    ) {
+    /// Widgets placed by rectangle inside the window the game is currently building (its
+    /// layout space is opened and closed here), the way wc2r-plus draws on the create screen.
+    /// `draw` gets the widgets and a function that places the next one.
+    pub(crate) fn in_window(&self, draw: impl FnOnce(&GameWidgets, &dyn Fn(f32, f32, f32, f32))) {
         let ctx = self.ctx();
         if ctx.is_null() {
             return;
         }
-        unsafe {
-            if (self.begin_window)(
-                ctx,
-                name.as_ptr(),
-                rect.0,
-                rect.1,
-                rect.2,
-                rect.3,
-                WINDOW_NO_SCROLLBAR,
-            ) != 0
-            {
-                (self.row)(ctx, row_h, cols);
-                draw(&GameWidgets { nk: self, ctx });
-            }
-            (self.end_window)(ctx);
-        }
+        unsafe { (self.space_begin)(ctx, 1, 0.0, 1000) };
+        let place = |x: f32, y: f32, w: f32, h: f32| unsafe { (self.rect)(ctx, x, y, w, h) };
+        draw(&GameWidgets { nk: self, ctx }, &place);
+        unsafe { (self.space_end)(ctx) };
     }
 
     pub(crate) fn ui_size(&self) -> (f32, f32) {

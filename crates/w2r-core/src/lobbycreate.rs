@@ -1,8 +1,8 @@
 //! "Create Multiplayer Game" lock buttons (docs/lobby-policy.md, slice 4a). The game's own
-//! screen is drawn by `LobbyCreationContent`; the host calls it unchanged and then lays a small
-//! window over a corner with two buttons, Teams and Slots, that flip `lock_team_changes` and
-//! `lock_slot_swaps` in `host.json`. The same overlay pattern as the options screen's Plugins
-//! button. x86 only (`cdecl`).
+//! screen is drawn by `LobbyCreationContent`, inside the game's own window; the host calls it
+//! unchanged and then places two buttons, Teams and Slots, by rectangle in that same window
+//! (wc2r-plus's way; a second named window began from here nests badly). They flip
+//! `lock_team_changes` and `lock_slot_swaps` in `host.json`. x86 only (`cdecl`).
 
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,7 +21,6 @@ pub const SYMBOL: &str = "LobbyCreationContent";
 /// Bottom-left of the 2160-high UI space, clear of the centred Cancel and Create buttons.
 const MARGIN: f32 = 40.0;
 const WINDOW_W: f32 = 760.0;
-const WINDOW_H: f32 = 120.0;
 const ROW_H: f32 = 100.0;
 
 type ContentFn = unsafe extern "C" fn() -> i8;
@@ -87,9 +86,12 @@ fn draw_buttons(nk: &Nk) {
         return;
     };
     let (_, height) = nk.ui_size();
-    let rect = (MARGIN, height - WINDOW_H - MARGIN, WINDOW_W, WINDOW_H);
-    nk.overlay(c"w2rpm_locks", rect, ROW_H, 2, |w| {
+    let (x, y) = (MARGIN, height - ROW_H - MARGIN);
+    let half = (WINDOW_W - MARGIN) / 2.0;
+    nk.in_window(|w, place| {
+        place(x, y, half, ROW_H);
         let flip_teams = w.button(&format!("Teams: {}", label(teams)));
+        place(x + half + MARGIN, y, half, ROW_H);
         let flip_slots = w.button(&format!("Slots: {}", label(slots)));
         if flip_teams || flip_slots {
             crate::session::set_lock_choice(teams ^ flip_teams, slots ^ flip_slots);
