@@ -15,6 +15,8 @@ w2r-abi.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Structured exception handling around every call into a plugin. See src/guard.rs for why.
 microseh = "1.2"
+# Inline hooks (bundled MinHook, BSD-2). See src/hooks.rs.
+minhook-sys = "0.1"
 sha2 = "0.10"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -22,5 +24,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }

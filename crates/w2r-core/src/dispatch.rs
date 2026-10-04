@@ -12,7 +12,7 @@ use std::rc::Rc;
 use w2r_abi::*;
 
 use crate::guard::guarded;
-use crate::host::{Log, Slot};
+use crate::host::{Game, Log, Shared, Slot};
 
 /// A load-policy refusal: `code` is the table's code, `detail` the logged explanation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub struct Registry {
     /// when the vector grows.
     #[allow(clippy::vec_box)]
     slots: Vec<Box<Slot>>,
-    log: Rc<dyn Log>,
+    shared: Rc<Shared>,
     /// Loaded DLLs, kept for the session. There is no live unload in version 1, and freeing a
     /// module that faulted is not safe anyway.
     #[cfg(windows)]
@@ -40,13 +40,30 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// A registry with no game behind it (tests, tooling): `game.read` functions report
+    /// `W2R_E_STATE`.
     pub fn new(log: Rc<dyn Log>) -> Self {
+        Self::build(Shared { log, game: None })
+    }
+
+    pub fn with_game(log: Rc<dyn Log>, game: Game) -> Self {
+        Self::build(Shared {
+            log,
+            game: Some(game),
+        })
+    }
+
+    fn build(shared: Shared) -> Self {
         Registry {
             slots: Vec::new(),
-            log,
+            shared: Rc::new(shared),
             #[cfg(windows)]
             modules: Vec::new(),
         }
+    }
+
+    pub fn shared(&self) -> &Rc<Shared> {
+        &self.shared
     }
 
     pub fn len(&self) -> usize {
@@ -75,18 +92,30 @@ impl Registry {
         pin: &[u8; 32],
     ) -> Result<usize, LoadError> {
         let dll = crate::loader::load(path, pin).inspect_err(|e| {
-            self.log.line(W2R_LOG_ERROR, id, &e.to_string());
+            self.shared.log.line(W2R_LOG_ERROR, id, &e.to_string());
         })?;
         let entry = dll.entry;
         self.modules.push(dll);
         self.load_entry(id, entry)
     }
 
-    /// Checks 9 and 10 for a plugin whose entry point is already resolved. On failure the slot
-    /// stays in the registry as `Disabled`, and the plugin is never called again.
+    /// [`Registry::load_entry_with_caps`] with only the implicit capabilities.
     pub fn load_entry(&mut self, id: &str, entry: W2rPluginMain) -> Result<usize, LoadError> {
+        self.load_entry_with_caps(id, entry, &[])
+    }
+
+    /// Checks 9 and 10 for a plugin whose entry point is already resolved, with its approved
+    /// capabilities (check 6 happened before). On failure the slot stays in the registry as
+    /// `Disabled`, and the plugin is never called again.
+    pub fn load_entry_with_caps(
+        &mut self,
+        id: &str,
+        entry: W2rPluginMain,
+        caps: &[&str],
+    ) -> Result<usize, LoadError> {
         let index = self.slots.len();
-        self.slots.push(Slot::new(id, self.log.clone()));
+        self.slots
+            .push(Slot::new(index, id, caps, self.shared.clone()));
         let slot = &self.slots[index];
         let host = slot.host();
 
@@ -491,11 +520,11 @@ mod tests {
                 (h.subscribe)(h.token, W2R_EVT_SHUTDOWN + 1),
                 W2R_E_NOT_FOUND
             );
-            assert_eq!((h.subscribe)(h.token, W2R_EVT_CHAT_RECEIVED), W2R_OK);
+            assert_eq!((h.subscribe)(h.token, W2R_EVT_MATCH_START), W2R_OK);
             assert_eq!((h.unsubscribe)(h.token, 0), W2R_E_NOT_FOUND);
             assert_eq!((h.chat_send)(h.token, s("x")), W2R_E_UNSUPPORTED);
         }
-        assert!(reg.slot(i).subscribed(W2R_EVT_CHAT_RECEIVED));
+        assert!(reg.slot(i).subscribed(W2R_EVT_MATCH_START));
         let lines = log.0.borrow();
         assert_eq!(lines[0], "[1] p: hi");
         assert_eq!(lines[1], format!("[1] p: {max}"));

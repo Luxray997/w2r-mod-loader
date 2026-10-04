@@ -16,6 +16,8 @@ use crate::build_guard;
 use crate::host::Log;
 use crate::log::file::FileLog;
 use crate::paths;
+use crate::pe::Image;
+use crate::symbols::Symbols;
 
 const DLL_PROCESS_ATTACH: u32 = 1;
 
@@ -24,6 +26,8 @@ pub struct Startup {
     pub log: FileLog,
     pub game_base: usize,
     pub build_ok: bool,
+    /// The game module's headers, when the build guard passed.
+    pub image: Option<Image>,
 }
 
 static STARTUP: OnceLock<Startup> = OnceLock::new();
@@ -83,11 +87,33 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
             "host",
             "build guard failed; the host is inactive this session",
         );
+        let _ = STARTUP.set(Startup {
+            log,
+            game_base,
+            build_ok: false,
+            image: None,
+        });
+        return;
+    }
+    let image = Image::from_module(game_base);
+    if image.is_none() {
+        log.line(
+            W2R_LOG_ERROR,
+            "host",
+            "cannot read the game's PE headers; inactive",
+        );
     }
     let _ = STARTUP.set(Startup {
         log,
         game_base,
-        build_ok: report.passed(),
+        build_ok: true,
+        image,
     });
-    // TODO(phase 2, steps 2-4): install the main-thread hook; load plugins from its first call.
+
+    // The frame hook is the host's way onto the main thread; everything plugin-related follows
+    // from there (later steps).
+    let startup = STARTUP.get().expect("just set");
+    if let Some(image) = &startup.image {
+        crate::frame::install(image, &Symbols::new(game_base), &startup.log);
+    }
 }

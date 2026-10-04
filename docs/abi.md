@@ -61,7 +61,7 @@ Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
 | `symbol_lookup`, `symbol_read` | `game.read` | symbol name at most 64 bytes; the handle is valid for the session; at most 4,096 bytes per read; a read that faults returns `W2R_E_INVALID` and never crashes the game |
 | `chat_send` | `chat.write` | at most 200 bytes of printable ASCII; at most 4 per 5 s per plugin; only when the game's chat is available |
 | `peer_send` | `net.send` | payload at most 960 bytes; at most 32 messages/s per plugin and 128/s overall; lobby only; the target slot must have announced the handshake, or `W2R_SLOT_ALL` for every such peer |
-| `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | target inside the game module's code; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
+| `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | `target` is a `symbol_lookup` handle of a function symbol (`W2R_E_NOT_FOUND` for a bad handle, `W2R_E_INVALID` for a global), so a hook is always inside the game module's code; `original_out` receives the trampoline before the hook goes live; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
 
 The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,
 `button`, `checkbox` and `slider_int`; strings are at most 128 bytes. A plugin's section appears in

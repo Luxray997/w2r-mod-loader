@@ -216,6 +216,8 @@ fn hex_row(sig: &Signature, bytes: &[u8]) -> String {
         .collect()
 }
 
+pub use crate::pe::{pe_offset, size_of_image_in};
+
 /// `SizeOfImage` from the PE optional header at `base`, read under the crash guard.
 pub fn size_of_image(base: usize) -> Option<u32> {
     guarded(|| {
@@ -226,28 +228,6 @@ pub fn size_of_image(base: usize) -> Option<u32> {
     })
     .ok()
     .flatten()
-}
-
-/// `e_lfanew` from a DOS header, if the magic is right.
-pub fn pe_offset(dos: &[u8]) -> Option<u32> {
-    if dos.len() < 0x40 || dos[..2] != *b"MZ" {
-        return None;
-    }
-    Some(u32::from_le_bytes(dos[0x3C..0x40].try_into().unwrap()))
-}
-
-/// `SizeOfImage` from an NT headers block (`PE\0\0`, file header, optional header). The field
-/// sits at the same offset for PE32 and PE32+.
-pub fn size_of_image_in(nt: &[u8]) -> Option<u32> {
-    if nt.len() < 0x18 + 0x3C || nt[..4] != *b"PE\0\0" {
-        return None;
-    }
-    let optional = &nt[0x18..];
-    let magic = u16::from_le_bytes(optional[..2].try_into().unwrap());
-    if magic != 0x10B && magic != 0x20B {
-        return None;
-    }
-    Some(u32::from_le_bytes(optional[0x38..0x3C].try_into().unwrap()))
 }
 
 #[cfg(test)]

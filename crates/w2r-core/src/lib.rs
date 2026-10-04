@@ -6,12 +6,17 @@
 pub mod build_guard;
 pub mod dispatch;
 pub mod guard;
+pub mod hooks;
 pub mod host;
 pub mod log;
+pub mod pe;
+pub mod symbols;
 pub mod target;
 
 #[cfg(windows)]
 pub mod entry;
+#[cfg(windows)]
+pub mod frame;
 #[cfg(windows)]
 pub mod loader;
 #[cfg(windows)]

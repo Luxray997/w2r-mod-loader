@@ -158,7 +158,8 @@ typedef struct W2rHost {
     /* net.send */
     W2rStatus (W2R_CALL *peer_send)(void *token, uint32_t net_slot_or_all, W2rBuf payload);
 
-    /* hooks.raw (dangerous) */
+    /* hooks.raw (dangerous). target: a symbol_lookup handle of a function symbol;
+       original_out receives the trampoline before the hook goes live. */
     W2rStatus (W2R_CALL *hook_install)(void *token, uint32_t target, void *detour, void **original_out,
                                        W2rHandle *out);
     W2rStatus (W2R_CALL *hook_remove)(void *token, W2rHandle hook);

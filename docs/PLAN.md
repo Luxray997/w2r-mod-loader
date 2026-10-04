@@ -61,8 +61,12 @@ signatures generated from wc2r-plus by `tools/gen_signatures.py`), `log.rs`, `pa
 `entry.rs` (`DllMain` → startup thread → log + guard); `tests/proxy_dll.rs` loads the built
 DLL like the game does. Build and test the host with `--target i686-pc-windows-msvc`.
 1. `version.dll` proxy, build guard, logging (port from wc2r-plus). **Done.**
-2. Symbol table: named game functions/globals per detected build.
-3. Hook registry with patch-overlap detection.
+2. Symbol table: named game functions/globals per detected build. **Done:** `target/symbols.rs`
+   (320 entries generated from wc2r-plus `addresses.h`), `symbols.rs`, `symbol_lookup`/
+   `symbol_read` behind `game.read`.
+3. Hook registry with patch-overlap detection. **Done:** `hooks.rs` over MinHook; `hook_install`
+   takes a function-symbol handle (`abi.md`); a disabled plugin loses its hooks; `frame.rs`
+   hooks `BeginNamedWindow` as the host's main-thread entry.
 4. Event dispatch with crash isolation. Panics must not cross FFI. Access violations need SEH or a
    vectored exception handler (`microseh` or a tiny C shim). **Spiked: done, see status above.**
    Remaining: the dispatcher that disables a faulting plugin, and a test that loads a real

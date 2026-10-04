@@ -88,6 +88,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minhook-sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd5e3d769f50ac2ec0cbd86ec241d9aa219a080a74c0287ce781f46a8900fa18"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -125,6 +134,7 @@ name = "w2r-core"
 version = "0.1.0"
 dependencies = [
  "microseh",
+ "minhook-sys",
  "sha2",
  "w2r-abi",
  "windows-sys",
