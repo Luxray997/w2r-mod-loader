@@ -12,8 +12,9 @@ pub const HIGHLIGHT: u32 = rgba(255, 204, 0, 255);
 pub const TEXT_GREY: u32 = rgba(0x92, 0x92, 0x92, 255);
 pub const CURSOR_COLOUR: u32 = rgba(166, 141, 105, 235);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Channel {
+    #[default]
     System,
     All,
     Team,
@@ -23,6 +24,18 @@ pub enum Channel {
 }
 
 impl Channel {
+    /// The tag shown before a line of this channel (empty for system lines).
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::System => "",
+            Channel::All => "[All]",
+            Channel::Team => "[Team]",
+            Channel::Allies => "[Allies]",
+            Channel::Enemies => "[Enemies]",
+            Channel::Private => "[Private]",
+        }
+    }
+
     pub fn colour(self) -> u32 {
         match self {
             Channel::System => HIGHLIGHT,
@@ -31,6 +44,86 @@ impl Channel {
             Channel::All | Channel::Enemies | Channel::Private => TEXT_GREY,
         }
     }
+}
+
+/// The game's target mode for a team message to a custom recipient mask.
+pub const TEAM_TARGET_MODE: u8 = 8;
+
+/// The channel a received message belongs to, from the target mode it was sent with.
+pub fn channel_of(target_mode: u8) -> Channel {
+    match target_mode {
+        TEAM_TARGET_MODE => Channel::Team,
+        3 => Channel::Allies,
+        4 => Channel::Enemies,
+        5 => Channel::Private,
+        _ => Channel::All,
+    }
+}
+
+/// The target mode the game's compose box is put in for a channel (it only knows modes 2, 3, 6).
+pub fn compose_mode_of(channel: Channel) -> u8 {
+    match channel {
+        Channel::All => 2,
+        Channel::Allies => 3,
+        _ => 6,
+    }
+}
+
+/// Modifier bits of a key event (wc2r-plus `struct_offsets.h`).
+pub const MOD_SHIFT: u8 = 0x03;
+pub const MOD_CTRL: u8 = 0x04;
+
+/// The channel Enter opens: Shift is `[All]`, Ctrl is `[Allies]`, plain is `[Team]`; a channel
+/// with nobody in it falls back to `[All]`.
+pub fn open_channel(modifiers: u8, has_team: bool, has_allies: bool) -> Channel {
+    if modifiers & MOD_SHIFT != 0 {
+        Channel::All
+    } else if modifiers & MOD_CTRL != 0 {
+        if has_allies {
+            Channel::Allies
+        } else {
+            Channel::All
+        }
+    } else if has_team {
+        Channel::Team
+    } else {
+        Channel::All
+    }
+}
+
+/// Tab: the next of Team, All, Allies after `current`, skipping empty channels; `current` itself
+/// when nothing else is available.
+pub fn next_channel(current: Channel, has_team: bool, has_allies: bool) -> Channel {
+    const ORDER: [Channel; 3] = [Channel::Team, Channel::All, Channel::Allies];
+    let at = ORDER.iter().position(|&c| c == current).unwrap_or(0);
+    for step in 1..=3 {
+        let next = ORDER[(at + step) % 3];
+        if (next == Channel::Team && !has_team) || (next == Channel::Allies && !has_allies) {
+            continue;
+        }
+        return next;
+    }
+    current
+}
+
+/// The bit mask of other in-match players that are allied to `me` (`allied[i]`) and, for the team
+/// mask, on `me`'s lobby team too. `in_match[i]` is owner 0 or 1.
+pub fn recipient_mask(
+    me: usize,
+    in_match: &[bool; PLAYER_COUNT],
+    allied: &[bool; PLAYER_COUNT],
+    same_team: Option<&[bool; PLAYER_COUNT]>,
+) -> u8 {
+    if me >= PLAYER_COUNT {
+        return 0;
+    }
+    let mut mask = 0u8;
+    for i in 0..PLAYER_COUNT {
+        if i != me && in_match[i] && allied[i] && same_team.is_none_or(|t| t[i]) {
+            mask |= 1 << i;
+        }
+    }
+    mask
 }
 
 /// A numeric setting: key, default, inclusive range (wc2r-plus `RegisterChatSettings`).
@@ -83,6 +176,12 @@ pub const NAME_COLOURS: Spec = Spec {
     min: 0,
     max: 1,
 };
+pub const CHANNELS: Spec = Spec {
+    key: "channels",
+    default: 1,
+    min: 0,
+    max: 1,
+};
 pub const LOG: Spec = Spec {
     key: "log",
     default: 0,
@@ -106,6 +205,7 @@ pub struct Settings {
     pub timestamps: bool,
     pub log: bool,
     pub name_colours: bool,
+    pub channels: bool,
 }
 
 impl Default for Settings {
@@ -119,6 +219,7 @@ impl Default for Settings {
             timestamps: TIMESTAMPS.default != 0,
             log: LOG.default != 0,
             name_colours: NAME_COLOURS.default != 0,
+            channels: CHANNELS.default != 0,
         }
     }
 }
@@ -135,6 +236,7 @@ impl Settings {
             "timestamps" => self.timestamps = TIMESTAMPS.clamp(value) != 0,
             "log" => self.log = LOG.clamp(value) != 0,
             "name_colours" => self.name_colours = NAME_COLOURS.clamp(value) != 0,
+            "channels" => self.channels = CHANNELS.clamp(value) != 0,
             _ => {}
         }
     }
@@ -714,5 +816,60 @@ mod tests {
         assert!(s.name_colours);
         s.apply("name_colours", 0);
         assert!(!s.name_colours);
+    }
+
+    #[test]
+    fn channels_map_modes_and_labels() {
+        assert_eq!(channel_of(8), Channel::Team);
+        assert_eq!(channel_of(3), Channel::Allies);
+        assert_eq!(channel_of(4), Channel::Enemies);
+        assert_eq!(channel_of(5), Channel::Private);
+        assert_eq!(channel_of(2), Channel::All);
+        assert_eq!(compose_mode_of(Channel::All), 2);
+        assert_eq!(compose_mode_of(Channel::Allies), 3);
+        assert_eq!(compose_mode_of(Channel::Team), 6);
+        assert_eq!(Channel::Team.label(), "[Team]");
+        assert_eq!(Channel::System.label(), "");
+    }
+
+    #[test]
+    fn enter_opens_by_modifier_and_falls_back_to_all() {
+        assert_eq!(open_channel(0, true, true), Channel::Team);
+        assert_eq!(open_channel(0, false, true), Channel::All);
+        assert_eq!(open_channel(MOD_CTRL, true, true), Channel::Allies);
+        assert_eq!(open_channel(MOD_CTRL, true, false), Channel::All);
+        assert_eq!(open_channel(MOD_SHIFT, true, true), Channel::All);
+        assert_eq!(open_channel(MOD_SHIFT | MOD_CTRL, true, true), Channel::All);
+    }
+
+    #[test]
+    fn tab_cycles_team_all_allies_skipping_empty() {
+        assert_eq!(next_channel(Channel::Team, true, true), Channel::All);
+        assert_eq!(next_channel(Channel::All, true, true), Channel::Allies);
+        assert_eq!(next_channel(Channel::Allies, true, true), Channel::Team);
+        assert_eq!(next_channel(Channel::Team, true, false), Channel::All);
+        assert_eq!(next_channel(Channel::All, true, false), Channel::Team);
+        assert_eq!(next_channel(Channel::All, false, true), Channel::Allies);
+        assert_eq!(next_channel(Channel::Allies, false, true), Channel::All);
+        assert_eq!(next_channel(Channel::All, false, false), Channel::All);
+    }
+
+    #[test]
+    fn masks_need_an_ally_in_the_match_and_for_team_the_same_lobby_team() {
+        let mut in_match = [false; 8];
+        let mut allied = [false; 8];
+        let mut team = [false; 8];
+        in_match[0] = true;
+        in_match[1] = true;
+        in_match[2] = true;
+        in_match[3] = false; // empty slot
+        allied[0] = true; // self: never counted
+        allied[1] = true;
+        allied[2] = true;
+        allied[3] = true;
+        team[1] = true;
+        assert_eq!(recipient_mask(0, &in_match, &allied, None), 0b0110);
+        assert_eq!(recipient_mask(0, &in_match, &allied, Some(&team)), 0b0010);
+        assert_eq!(recipient_mask(8, &in_match, &allied, None), 0);
     }
 }

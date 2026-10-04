@@ -63,6 +63,12 @@ const SCROLL_TO_BOTTOM_Y: i32 = 1_000_000;
 const INDICATOR_WIDTH: f32 = 4.0;
 /// The game's player count: a sender index at or above this is not a player.
 const PLAYER_COUNT: u8 = 8;
+/// Key event layout and the two scan codes channels care about (wc2r-plus `struct_offsets.h`).
+const EVENT_NUMBER: usize = 0x00;
+const EVENT_SCAN: usize = 0x0c;
+const EVENT_MODIFIERS: usize = 0x0d;
+const SCAN_ENTER: u8 = 0x1c;
+const SCAN_TAB: u8 = 0x0f;
 /// Bytes per player in the game's name table.
 const NAME_STRIDE: usize = 0x38;
 /// Bytes per lobby slot, and the offset of its team byte (wc2r-plus `struct_offsets.h`).
@@ -157,6 +163,9 @@ type BuildMapMessagesPanelFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, 
 type DisplayChatOrGameMessageFn = unsafe extern "C" fn(*const c_char, u8, u32, c_char);
 type WriteStickyMessageFn = unsafe extern "C" fn(*const c_char, u32);
 type PauseCommandFn = unsafe extern "C" fn();
+type KeyProcFn = unsafe extern "C" fn(*mut c_void, *mut u8) -> u32;
+type SendComposedChatFn = unsafe extern "C" fn(*const c_char);
+type WriteChatPromptLineFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char);
 
 struct Game {
     draw_message_line: DrawMapMessageLineFn,
@@ -177,7 +186,8 @@ struct Game {
     text_clamp: TextClampFn,
     widget_text: WidgetTextFn,
     wrap_separators: *const u32,
-    chat_target_mode: *const u8,
+    chat_target_mode: *mut u8,
+    chat_recipient_mask: *mut u8,
     pause_flags: *const u8,
     slots: *mut u8,
     player_names: *const u8,
@@ -271,7 +281,8 @@ fn resolve() -> Result<Game, &'static str> {
         text_clamp: need!("NkTextClamp", TextClampFn),
         widget_text: need!("NkWidgetText", WidgetTextFn),
         wrap_separators: lookup("NkWrapSeparators").ok_or("NkWrapSeparators")? as *const u32,
-        chat_target_mode: lookup("ChatTargetMode").ok_or("ChatTargetMode")? as *const u8,
+        chat_target_mode: lookup("ChatTargetMode").ok_or("ChatTargetMode")? as *mut u8,
+        chat_recipient_mask: lookup("ChatRecipientMask").ok_or("ChatRecipientMask")? as *mut u8,
         pause_flags: lookup("MatchPauseFlags").ok_or("MatchPauseFlags")? as *const u8,
         slots: lookup("MapMessageSlots").ok_or("MapMessageSlots")? as *mut u8,
         player_names: lookup("PlayerNames").ok_or("PlayerNames")? as *const u8,
@@ -294,8 +305,22 @@ struct State {
     backlog: Backlog,
     /// The player whose chat line the game is displaying right now (set around
     /// `DisplayChatOrGameMessage`, read by the nested `PushMapMessage`).
-    sender: Option<u8>,
+    sender: Option<Sender>,
     log: LogFile,
+    /// The channel being composed in (`System` when not composing) and the channel the prompt
+    /// line was last written in.
+    compose: Channel,
+    prompt_channel: Channel,
+    /// The teammates (same lobby team and allied) taken at match start, as a recipient mask.
+    team_mask: u8,
+}
+
+/// The chat line the game is displaying: who sent it, the raw text and the target mode.
+#[derive(Clone, Default)]
+struct Sender {
+    who: u8,
+    raw: Option<Vec<u8>>,
+    target_mode: u8,
 }
 
 /// The per-launch disk log (`fs.data`). One file per launch, opened on the first line written
@@ -334,6 +359,40 @@ fn enabled() -> bool {
     with_state(|st| st.settings.enabled)
 }
 
+fn channels_on() -> bool {
+    with_state(|st| st.settings.enabled && st.settings.channels)
+}
+
+fn target_mode(g: &Game) -> u8 {
+    unsafe { *g.chat_target_mode }
+}
+
+/// Recipient mask of the other in-match players allied to the local player, optionally only those
+/// on the local player's lobby team too (wc2r-plus `AlliedMask`, `TeammatesAtMatchStart`).
+fn recipients(g: &Game, same_lobby_team: bool) -> u8 {
+    let me = unsafe { *g.local_player } as usize;
+    if me >= PLAYER_COUNT as usize {
+        return 0;
+    }
+    let mut in_match = [false; model::PLAYER_COUNT];
+    let mut allied = [false; model::PLAYER_COUNT];
+    let mut team = [false; model::PLAYER_COUNT];
+    let lobby_team =
+        |i: usize| unsafe { *g.lobby_slots.add(i * LOBBY_SLOT_STRIDE + LOBBY_SLOT_TEAM) };
+    for i in 0..model::PLAYER_COUNT {
+        unsafe {
+            in_match[i] = *g.player_owner.add(i) <= 1;
+            allied[i] = *g.diplomacy.add(me * DIPLOMACY_ROW_STRIDE + i) != 0;
+        }
+        team[i] = lobby_team(i) == lobby_team(me);
+    }
+    model::recipient_mask(me, &in_match, &allied, same_lobby_team.then_some(&team))
+}
+
+fn allied_mask(g: &Game) -> u8 {
+    recipients(g, false)
+}
+
 // ---- original functions (trampolines) ------------------------------------------------------
 
 static ORIG_PUSH: AtomicUsize = AtomicUsize::new(0);
@@ -343,6 +402,10 @@ static ORIG_DISPLAY: AtomicUsize = AtomicUsize::new(0);
 static ORIG_STICKY: AtomicUsize = AtomicUsize::new(0);
 static ORIG_PAUSE: AtomicUsize = AtomicUsize::new(0);
 static ORIG_RESUME: AtomicUsize = AtomicUsize::new(0);
+static ORIG_TEXTBOX_KEY: AtomicUsize = AtomicUsize::new(0);
+static ORIG_MINIMAP_KEY: AtomicUsize = AtomicUsize::new(0);
+static ORIG_SEND_CHAT: AtomicUsize = AtomicUsize::new(0);
+static ORIG_PROMPT: AtomicUsize = AtomicUsize::new(0);
 /// True while the game's own pause or resume handler runs: its sticky message is ours to
 /// replace with an announcement.
 static IN_PAUSE_HANDLER: AtomicBool = AtomicBool::new(false);
@@ -839,15 +902,44 @@ unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, durat
             }
             let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
             let Some(g) = game() else { return };
-            let sender = with_state(|st| st.sender);
-            // A line the game is displaying for a player is chat (grey, the sender's name in
-            // their colour); anything else is a system line (gold) with every player name it
-            // mentions coloured (wc2r-plus `HookedPushMapMessage`, without the channel labels).
-            let sender_name = sender.and_then(|who| player_name_bytes(g, who as usize));
-            if let (Some(who), Some(name)) = (sender, sender_name) {
-                let colour = colour_index(g, who as usize);
-                let names = find_sender_span(bytes, &name, colour);
+            let (sender, channels) = with_state(|st| {
+                (
+                    st.sender.clone(),
+                    st.settings.enabled && st.settings.channels,
+                )
+            });
+            // A line the game is displaying for a player is chat (the sender's name in their
+            // colour, labelled with its channel); anything else is a system line (gold) with
+            // every player name it mentions coloured (wc2r-plus `HookedPushMapMessage`).
+            let sender_name = sender
+                .as_ref()
+                .and_then(|s| player_name_bytes(g, s.who as usize));
+            if let (Some(sender), Some(name), false) = (&sender, &sender_name, channels) {
+                let colour = colour_index(g, sender.who as usize);
+                let names = find_sender_span(bytes, name, colour);
                 capture(bytes, highlight != 0, Channel::All, names);
+            } else if let (Some(sender), Some(name), Some(raw)) = (
+                &sender,
+                &sender_name,
+                sender.as_ref().and_then(|s| s.raw.as_ref()),
+            ) {
+                let channel = model::channel_of(sender.target_mode);
+                let mut line = channel.label().as_bytes().to_vec();
+                line.push(b' ');
+                let colour = colour_index(g, sender.who as usize);
+                let names = if (colour as usize) < model::PLAYER_COUNT {
+                    vec![NameSpan {
+                        start: line.len(),
+                        len: name.len(),
+                        colour,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                line.extend_from_slice(name);
+                line.extend_from_slice(b": ");
+                line.extend_from_slice(raw);
+                capture(&line, highlight != 0, channel, names);
             } else {
                 let mut line = bytes.to_vec();
                 let names = model::find_player_names(&line, &human_players(g));
@@ -865,9 +957,14 @@ unsafe extern "C" fn display_chat_or_game_message(
     duration_ms: u32,
     target_mode: c_char,
 ) {
+    let raw = (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) }.to_bytes().to_vec());
     let saved = with_state(|st| {
-        let saved = st.sender;
-        st.sender = (who < PLAYER_COUNT).then_some(who);
+        let saved = st.sender.take();
+        st.sender = (who < PLAYER_COUNT).then_some(Sender {
+            who,
+            raw,
+            target_mode: target_mode as u8,
+        });
         saved
     });
     unsafe {
@@ -945,6 +1042,188 @@ unsafe extern "C" fn handle_resume_command() {
     unsafe { pause_or_resume(&ORIG_RESUME, false) };
 }
 
+// ---- channels (slice 3) --------------------------------------------------------------------
+
+fn key_event(event: *mut u8) -> (u16, u8, u8) {
+    unsafe {
+        (
+            rd::<u16>(event, EVENT_NUMBER),
+            rd::<u8>(event, EVENT_SCAN),
+            rd::<u8>(event, EVENT_MODIFIERS),
+        )
+    }
+}
+
+/// Composing in an enhanced channel: the box is open and a channel was chosen for it.
+fn composing(g: &Game) -> bool {
+    let (on, compose) = with_state(|st| (st.settings.enabled && st.settings.channels, st.compose));
+    on && target_mode(g) != 0 && compose != Channel::System
+}
+
+fn compose_on(g: &Game, channel: Channel) {
+    with_state(|st| st.compose = channel);
+    unsafe { *g.chat_target_mode = model::compose_mode_of(channel) };
+}
+
+fn on_compose_opened(g: &Game, modifiers: u8) {
+    let mode = target_mode(g);
+    if mode == 0 || mode == 1 {
+        with_state(|st| st.compose = Channel::System);
+        return;
+    }
+    let has_team = with_state(|st| st.team_mask) != 0;
+    let channel = model::open_channel(modifiers, has_team, allied_mask(g) != 0);
+    compose_on(g, channel);
+}
+
+fn cycle_compose_channel(g: &Game) {
+    let (current, team_mask) = with_state(|st| (st.compose, st.team_mask));
+    let next = model::next_channel(current, team_mask != 0, allied_mask(g) != 0);
+    compose_on(g, next);
+    log(
+        W2R_LOG_INFO,
+        &format!("compose channel -> {}", next.label()),
+    );
+}
+
+unsafe extern "C" fn chat_textbox_event_proc(dlg: *mut c_void, event: *mut u8) -> u32 {
+    let original = original!(ORIG_TEXTBOX_KEY, KeyProcFn);
+    let Some(g) = game().filter(|_| !event.is_null() && enabled()) else {
+        return unsafe { original(dlg, event) };
+    };
+    let (number, scan, modifiers) = key_event(event);
+    if catch_unwind(AssertUnwindSafe(|| composing(g))).unwrap_or(false)
+        && scan == SCAN_TAB
+        && number == 1
+    {
+        return 1;
+    }
+    let opening = target_mode(g) == 0 && number == 0 && scan == SCAN_ENTER;
+    let handled = unsafe { original(dlg, event) };
+    if opening && channels_on() {
+        let _ = catch_unwind(AssertUnwindSafe(|| on_compose_opened(g, modifiers)));
+    }
+    handled
+}
+
+unsafe extern "C" fn minimap_terrain_key_proc(dlg: *mut c_void, event: *mut u8) -> u32 {
+    let original = original!(ORIG_MINIMAP_KEY, KeyProcFn);
+    if let Some(g) = game().filter(|_| !event.is_null() && enabled()) {
+        let (number, scan, _) = key_event(event);
+        let handled = catch_unwind(AssertUnwindSafe(|| {
+            if composing(g) && scan == SCAN_TAB && number == 0 {
+                cycle_compose_channel(g);
+                true
+            } else {
+                false
+            }
+        }))
+        .unwrap_or(false);
+        if handled {
+            return 1;
+        }
+    }
+    unsafe { original(dlg, event) }
+}
+
+unsafe extern "C" fn send_composed_chat(text: *const c_char) {
+    let original = original!(ORIG_SEND_CHAT, SendComposedChatFn);
+    let Some(g) = game().filter(|_| enabled()) else {
+        return unsafe { original(text) };
+    };
+    if !catch_unwind(AssertUnwindSafe(|| composing(g))).unwrap_or(false) {
+        return unsafe { original(text) };
+    }
+    let (compose, team_mask) = with_state(|st| (st.compose, st.team_mask));
+    unsafe {
+        if compose == Channel::Allies {
+            if allied_mask(g) == 0 {
+                capture(
+                    b"You have no allies and your message was not sent.",
+                    true,
+                    Channel::System,
+                    Vec::new(),
+                );
+                return;
+            }
+            *g.chat_target_mode = 3;
+            original(text);
+        } else if compose == Channel::Team && team_mask != 0 {
+            let saved = *g.chat_recipient_mask;
+            *g.chat_recipient_mask = team_mask;
+            *g.chat_target_mode = model::TEAM_TARGET_MODE;
+            original(text);
+            *g.chat_recipient_mask = saved;
+        } else {
+            *g.chat_target_mode = 2;
+            original(text);
+        }
+    }
+}
+
+unsafe extern "C" fn write_chat_prompt_line(
+    format: *const c_char,
+    arg1: *const c_char,
+    arg2: *const c_char,
+) {
+    let original = original!(ORIG_PROMPT, WriteChatPromptLineFn);
+    let Some(g) = game() else {
+        return unsafe { original(format, arg1, arg2) };
+    };
+    if target_mode(g) == 0 {
+        with_state(|st| st.compose = Channel::System);
+    }
+    let channel = if format.is_null() || !enabled() || target_mode(g) == 5 {
+        None
+    } else {
+        catch_unwind(AssertUnwindSafe(|| composing(g)))
+            .unwrap_or(false)
+            .then(|| with_state(|st| st.compose))
+    };
+    let Some(channel) = channel else {
+        with_state(|st| st.prompt_channel = Channel::System);
+        return unsafe { original(format, arg1, arg2) };
+    };
+    let mut line = channel.label().as_bytes().to_vec();
+    line.push(b' ');
+    if !arg1.is_null() {
+        line.extend_from_slice(unsafe { CStr::from_ptr(arg1) }.to_bytes());
+    }
+    line.push(0);
+    with_state(|st| st.prompt_channel = channel);
+    unsafe { original(c"%s".as_ptr(), line.as_ptr().cast(), core::ptr::null()) };
+}
+
+/// One prompt line in the channel's colour; returns the lines used so far (the game's
+/// `DrawMapMessageLine` contract), `0x11` when it does not fit (wc2r-plus `DrawLineInColour`).
+unsafe fn draw_line_in_colour(
+    g: &Game,
+    ctx: *mut c_void,
+    text: *const c_char,
+    (w, h): (f32, f32),
+    colour: u32,
+    used: i32,
+    line_height: i32,
+) -> i32 {
+    let len = unsafe { CStr::from_ptr(text) }.to_bytes().len() as i32;
+    let n = unsafe { (g.count_wrapped)(ctx, text, len, w) };
+    let total = used + n.max(1);
+    if total >= 0x12 {
+        return 0x11;
+    }
+    unsafe {
+        (g.override_rect)(
+            ctx,
+            0.0,
+            h - (total * line_height) as f32,
+            w,
+            (n * line_height) as f32,
+        );
+        (g.draw_wrapped_label)(ctx, text, colour);
+    }
+    total
+}
+
 unsafe extern "C" fn draw_map_message_list(ctx: *mut c_void, line_height: i32) {
     let original = original!(ORIG_DRAW_LIST, DrawMapMessageListFn);
     let drawn = catch_unwind(AssertUnwindSafe(|| {
@@ -969,17 +1248,30 @@ unsafe fn draw_message_strip(g: &Game, ctx: *mut c_void, line_height: i32) -> bo
     unsafe {
         let prompt = g.slots.add(SLOT_PROMPT * off::MESSAGE_SLOT_STRIDE);
         let sticky = g.slots.add(SLOT_STICKY * off::MESSAGE_SLOT_STRIDE);
-        let used = (g.draw_message_line)(
-            ctx,
-            prompt.cast(),
-            0.0,
-            0.0,
-            w,
-            h,
-            rd::<u8>(prompt, off::MESSAGE_SLOT_HIGHLIGHT) as i32,
-            0,
-            line_height,
-        );
+        let prompt_channel = with_state(|st| st.prompt_channel);
+        let used = if prompt_channel != Channel::System {
+            draw_line_in_colour(
+                g,
+                ctx,
+                prompt.cast(),
+                (w, h),
+                prompt_channel.colour(),
+                0,
+                line_height,
+            )
+        } else {
+            (g.draw_message_line)(
+                ctx,
+                prompt.cast(),
+                0.0,
+                0.0,
+                w,
+                h,
+                rd::<u8>(prompt, off::MESSAGE_SLOT_HIGHLIGHT) as i32,
+                0,
+                line_height,
+            )
+        };
         (g.draw_message_line)(
             ctx,
             sticky.cast(),
@@ -1186,6 +1478,7 @@ fn load_settings() -> Settings {
             model::TIMESTAMPS.key,
             model::LOG.key,
             model::NAME_COLOURS.key,
+            model::CHANNELS.key,
         ] {
             let mut v = 0i64;
             if unsafe { (h.settings_get_i64)(h.token, s(key), &mut v) } == W2R_OK {
@@ -1217,7 +1510,7 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     let _ = GAME.set(g);
     with_state(|st| st.settings = load_settings());
 
-    let hooks: [(&str, *mut c_void, &AtomicUsize); 7] = [
+    let hooks: [(&str, *mut c_void, &AtomicUsize); 11] = [
         (
             "PushMapMessage",
             push_map_message as *mut c_void,
@@ -1252,6 +1545,26 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
             "HandleResumeCommand",
             handle_resume_command as *mut c_void,
             &ORIG_RESUME,
+        ),
+        (
+            "ChatTextboxEventProc",
+            chat_textbox_event_proc as *mut c_void,
+            &ORIG_TEXTBOX_KEY,
+        ),
+        (
+            "MinimapTerrainKeyProc",
+            minimap_terrain_key_proc as *mut c_void,
+            &ORIG_MINIMAP_KEY,
+        ),
+        (
+            "SendComposedChat",
+            send_composed_chat as *mut c_void,
+            &ORIG_SEND_CHAT,
+        ),
+        (
+            "WriteChatPromptLine",
+            write_chat_prompt_line as *mut c_void,
+            &ORIG_PROMPT,
         ),
     ];
     let mut hooks = hooks.to_vec();
@@ -1326,12 +1639,21 @@ fn log_players(g: &Game) {
 unsafe extern "C" fn on_event(event: *const W2rEvent) {
     let id = unsafe { (*event).id };
     if id == W2R_EVT_MATCH_START {
-        with_state(|st| st.backlog.clear());
+        let mask = game().map_or(0, |g| recipients(g, true));
+        with_state(|st| {
+            st.backlog.clear();
+            st.team_mask = mask;
+            st.compose = Channel::System;
+            st.prompt_channel = Channel::System;
+        });
         let time = local_time();
         if let Some(handle) = log_handle(&time) {
             log_write(handle, model::LOG_MATCH_MARKER);
         }
-        log(W2R_LOG_INFO, "match start: backlog cleared");
+        log(
+            W2R_LOG_INFO,
+            &format!("match start: backlog cleared, teammates mask 0x{mask:02x}"),
+        );
         if let Some(g) = game() {
             let _ = catch_unwind(AssertUnwindSafe(|| log_players(g)));
         }
@@ -1342,18 +1664,27 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
 unsafe extern "C" fn on_ui(ui: *const W2rUi) {
     let ui = unsafe { &*ui };
     let mut changed: Vec<(&'static str, i64)> = Vec::new();
-    let (mut lines, mut fade, mut backlog, mut bg, mut stamps, mut log_on, mut names_on) =
-        with_state(|st| {
-            (
-                st.settings.lines,
-                st.settings.fade_seconds,
-                st.settings.backlog as i32,
-                st.settings.bg_alpha,
-                st.settings.timestamps as i32,
-                st.settings.log as i32,
-                st.settings.name_colours as i32,
-            )
-        });
+    let (
+        mut lines,
+        mut fade,
+        mut backlog,
+        mut bg,
+        mut stamps,
+        mut log_on,
+        mut names_on,
+        mut channels,
+    ) = with_state(|st| {
+        (
+            st.settings.lines,
+            st.settings.fade_seconds,
+            st.settings.backlog as i32,
+            st.settings.bg_alpha,
+            st.settings.timestamps as i32,
+            st.settings.log as i32,
+            st.settings.name_colours as i32,
+            st.settings.channels as i32,
+        )
+    });
     unsafe {
         (ui.label)(ui.ctx, s("Chat history (port of wc2r-plus)"));
         if (ui.slider_int)(
@@ -1401,6 +1732,9 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         }
         if (ui.checkbox)(ui.ctx, s("Color player names"), &mut names_on) != 0 {
             changed.push((model::NAME_COLOURS.key, names_on as i64));
+        }
+        if (ui.checkbox)(ui.ctx, s("Enhanced chat channels"), &mut channels) != 0 {
+            changed.push((model::CHANNELS.key, channels as i64));
         }
         if (ui.checkbox)(ui.ctx, s("Log chat to disk"), &mut log_on) != 0 {
             changed.push((model::LOG.key, log_on as i64));

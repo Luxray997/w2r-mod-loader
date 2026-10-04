@@ -144,10 +144,10 @@ plugins over the public ABI (chat may well be the latter).
    (`hooks.raw`), `settings_*` and `data_*` (`store.rs`), `W2R_EVT_MATCH_START` (`matchstart.rs`);
    `MATCH_END` stays reserved. Plugin slices done and verified in the game: 1 scrollable history
    plus the paused-game HUD (`BuildInMatchHud` replaced, from wc2r-plus `in_match_hud.cpp`), 2 pause
-   announcements, timestamps and the per-launch disk log, 4 player-name colours. **Left: slice 3,
-   channels** (`ChatTextboxEventProc`, `MinimapTerrainKeyProc`, `SendComposedChat`,
-   `WriteChatPromptLine`; the data it needs is verified, see the spec), and slice 5 (click closes
-   chat, polish). Then remove the `players:` diagnostic in `log_players`. Known limit: the host's data
+   announcements, timestamps and the per-launch disk log, 4 player-name colours. Slice 3
+   (channels: `ChatTextboxEventProc`, `MinimapTerrainKeyProc`, `SendComposedChat`,
+   `WriteChatPromptLine`, the `channels` setting) is written and installed, **awaiting the in-game
+   check**. Left: slice 5 (click closes chat, polish). Then remove the `players:` diagnostic in `log_players`. Known limit: the host's data
    folder cap (64 files, 16 MiB) stops the disk log after about 64 launches with logging on.
 3. Lobby policy.
 4. Map download.
