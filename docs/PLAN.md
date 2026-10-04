@@ -139,7 +139,16 @@ plugins over the public ABI (chat may well be the latter).
    with a second player (wc2r-plus or another w2rpm) the log shows `net slot N … runs …` and
    `replied`; `tools\install_dev.ps1 -Simulation` gives a non-zero fingerprint so a mismatch
    warning can be seen.
-2. Chat. Spec: [chat-plugin.md](chat-plugin.md) (plugin, raw hooks; needs `symbol_address`, settings, data and the match events first).
+2. Chat, a first-party plugin (`crates/chat-plugin`, id `w2r-chat`, spec [chat-plugin.md](chat-plugin.md)).
+   **In progress (2026-10-04).** Host prerequisites done and verified in the game: `symbol_address`
+   (`hooks.raw`), `settings_*` and `data_*` (`store.rs`), `W2R_EVT_MATCH_START` (`matchstart.rs`);
+   `MATCH_END` stays reserved. Plugin slices done and verified in the game: 1 scrollable history
+   plus the paused-game HUD (`BuildInMatchHud` replaced, from wc2r-plus `in_match_hud.cpp`), 2 pause
+   announcements, timestamps and the per-launch disk log, 4 player-name colours. **Left: slice 3,
+   channels** (`ChatTextboxEventProc`, `MinimapTerrainKeyProc`, `SendComposedChat`,
+   `WriteChatPromptLine`; the data it needs is verified, see the spec), and slice 5 (click closes
+   chat, polish). Then remove the `players:` diagnostic in `log_players`. Known limit: the host's data
+   folder cap (64 files, 16 MiB) stops the disk log after about 64 launches with logging on.
 3. Lobby policy.
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
