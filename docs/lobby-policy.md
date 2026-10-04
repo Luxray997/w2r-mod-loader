@@ -85,15 +85,44 @@ host side is checkable alone.
    events in the log.
 3. **Host menus.** "Move to Slot N" and the Closed rendering through the `LobbySlotDropdown` hook.
    The in-lobby banner stays parked (reason in PLAN.md).
-4. **Create Multiplayer Game screen.** Port of `lobby_creation_screen.cpp` with the lock choices.
-   Its own spec first: it is a screen replacement and the lobby-frame lesson (never begin a Nuklear
-   window from the wrong hook) applies.
+4. **Lock choice on the Create Multiplayer Game screen.** See "Slice 4" below.
+
+## Slice 4: the Create Multiplayer Game screen
+
+What wc2r-plus does (`features/ui/lobby_creation_screen.cpp`, 376 lines): it hooks the game's
+`LobbyCreationContent` (`char(__cdecl*)()`, drawn every frame of that screen) and, when its setting
+is on, draws a whole replacement screen instead of calling the original. The lock choice (two
+"Locked/Unlocked" buttons under Teams and Slots, stored as the `lock_teams`/`lock_slots` settings
+and applied once when the player becomes host through `ApplyCreateChoiceOnce`) is a small part of
+it. The rest is a map browser and preview: `map_browser.cpp` (510), `map_search_cache.cpp` (276),
+`map_panel.cpp` (62), `map_preview.cpp` (722), `map_preview_pud.cpp` (76), and the drawing helpers
+in `screen_kit.cpp` (497), about 2,500 lines, none of which is lobby policy (the PUD validator
+and the folder browsing belong with map download, step 4).
+
+Two ways to do it here:
+
+- **4a, add the two lock buttons to the stock screen (recommended).** Hook `LobbyCreationContent`,
+  call the original, then draw a small "Teams / Slots" pair of buttons in a fixed corner of the
+  same window, using the same primitives wc2r-plus's screen kit uses (`OverrideNextRect`, the
+  game's label and button functions, `PushSkin`). The choice is `lock_team_changes` and
+  `lock_slot_swaps` in `host.json`, already read when hosting, so nothing else changes. About
+  150 lines plus the screen-kit subset it needs (rectangle placement, a button, a label), which
+  later work (map download UI) reuses. Risk: this is a Nuklear draw from a hook, the thing that
+  froze the lobby once; the difference is that this hook is the game's own screen content
+  function (the same place wc2r-plus draws), and the draw is guarded and falls back to the stock
+  screen if any precondition fails, like the chat panel.
+- **4b, the full replacement screen.** Port everything above. It is really the map-browser
+  feature, not lobby policy, and belongs after (or inside) map download. Until then the
+  plugin-screen checkboxes remain the way to set the locks.
+
+Exit for 4a: in the game, the stock Create Multiplayer Game screen shows the two buttons, they
+flip and persist across launches in `host.json`, the stock screen is otherwise unchanged, and the
+frame hook logs once if it falls back.
 
 ## Decisions (2026-10-04)
 
-1. **The Create Multiplayer Game screen is ported too** (slice 4), as wc2r-plus has it
-   (`lobby_creation_screen.cpp`, a custom Nuklear screen with the two lock choices). Until it
-   lands, the two plugin-screen checkboxes are the way to set the choice; afterwards they stay as a
+1. **The lock choice belongs on the Create Multiplayer Game screen** (slice 4; the full screen
+   replacement is a separate, larger feature, see "Slice 4"). Until it lands, the two plugin-screen checkboxes are the way to set the choice; afterwards they stay as a
    second place to change it, and `host.json` stays the single stored value (wc2r-plus's "last
    choice").
 2. **Password sharing keeps parity**: sent to announced peers in clear, as wc2r-plus does.
