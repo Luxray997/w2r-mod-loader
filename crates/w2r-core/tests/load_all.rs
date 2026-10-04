@@ -175,10 +175,12 @@ fn running() -> Build {
 }
 
 #[test]
-fn an_enabled_valid_plugin_loads_with_its_approved_capabilities() {
+fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
     let mut m = manifest("hello-plugin", "hello_plugin.dll");
     set(&mut m, "capabilities", arr(vec![s("chat.write")]));
     let mut hello = Plugin::new("hello-plugin", "hello_plugin", m);
+    // A stale approval from an older version must not widen the plugin: it gets what its
+    // manifest declares, which check 6 proved is within the approvals.
     hello.approved = vec!["chat.write", "game.read"];
     let off = Plugin {
         enabled: false,
@@ -196,7 +198,7 @@ fn an_enabled_valid_plugin_loads_with_its_approved_capabilities() {
     let slot = reg.find("hello-plugin").unwrap();
     assert!(slot.is_active());
     assert!(slot.has_cap("chat.write"));
-    assert!(slot.has_cap("game.read"));
+    assert!(!slot.has_cap("game.read"), "approved but not declared");
     assert!(!slot.has_cap("hooks.raw"));
     assert!(
         log.has("[1] hello-plugin: hello from hello_plugin"),

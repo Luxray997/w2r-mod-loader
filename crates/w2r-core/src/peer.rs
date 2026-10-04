@@ -27,6 +27,10 @@ pub const MAX_MESSAGE: usize = HEADER_LEN + MAX_PAYLOAD;
 pub const GAME_LIMIT: usize = 989;
 pub const PER_PLUGIN_PER_SECOND: usize = 32;
 pub const OVERALL_PER_SECOND: usize = 128;
+/// W2R messages accepted from one net slot per second; the rest are dropped on receipt, so a
+/// hostile peer cannot drive plugin callbacks at wire rate. Matches what a well-behaved host
+/// may send in total.
+pub const INBOUND_PER_SENDER_PER_SECOND: usize = OVERALL_PER_SECOND;
 /// Our messages consumed in one `GetNextPeerPacket` call before giving the game a turn.
 pub const MAX_CONSUMED_PER_CALL: usize = 64;
 /// The game's legacy file-transfer message, dropped on receipt.
@@ -101,7 +105,7 @@ pub struct SlidingWindow {
 }
 
 impl SlidingWindow {
-    pub fn new(max: usize, window_ms: u64) -> Self {
+    pub const fn new(max: usize, window_ms: u64) -> Self {
         SlidingWindow {
             max,
             window_ms,
@@ -109,7 +113,24 @@ impl SlidingWindow {
         }
     }
 
+    /// Whether one more event fits now, without recording it. Callers that can still fail
+    /// after the check (a send) use this first and [`SlidingWindow::allow`] once it succeeded,
+    /// so a refused call costs no budget (docs/abi.md: "the call had no effect").
+    pub fn would_allow(&mut self, now: u64) -> bool {
+        self.prune(now);
+        self.sent.len() < self.max
+    }
+
+    /// Records one event if it fits now.
     pub fn allow(&mut self, now: u64) -> bool {
+        if !self.would_allow(now) {
+            return false;
+        }
+        self.sent.push_back(now);
+        true
+    }
+
+    fn prune(&mut self, now: u64) {
         while self
             .sent
             .front()
@@ -117,11 +138,6 @@ impl SlidingWindow {
         {
             self.sent.pop_front();
         }
-        if self.sent.len() >= self.max {
-            return false;
-        }
-        self.sent.push_back(now);
-        true
     }
 }
 
@@ -311,6 +327,13 @@ pub mod hook {
 
     static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static DROPPED: [AtomicU32; 9] = [const { AtomicU32::new(0) }; 9];
+    static FLOODED: [AtomicU32; 9] = [const { AtomicU32::new(0) }; 9];
+    /// Per net slot (0-7, 8 for anything else). Locked only around `allow`, never across
+    /// anything that can fault.
+    static INBOUND: std::sync::Mutex<[SlidingWindow; 9]> = std::sync::Mutex::new(
+        [const { SlidingWindow::new(INBOUND_PER_SENDER_PER_SECOND, 1000) }; 9],
+    );
+    const FLOOD_LOG_EVERY: u32 = 1000;
 
     pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         let Some(target) = symbols.address(SYMBOL) else {
@@ -384,6 +407,10 @@ pub mod hook {
                 }
                 false
             }
+            Packet::Ours { .. } if !inbound_allowed(sender) => {
+                note_flood(sender);
+                true
+            }
             Packet::Ours {
                 subsystem: SUBSYSTEM_PLUGIN,
                 body,
@@ -395,6 +422,28 @@ pub mod hook {
             }
             // Reserved subsystems have no handler until Phase 3; still ours, still consumed.
             Packet::Ours { .. } => true,
+        }
+    }
+
+    fn inbound_allowed(sender: u32) -> bool {
+        let slot = (sender as usize).min(8);
+        let mut windows = INBOUND.lock().unwrap_or_else(|e| e.into_inner());
+        windows[slot].allow(crate::chat::now_ms())
+    }
+
+    fn note_flood(sender: u32) {
+        let slot = (sender as usize).min(8);
+        let count = FLOODED[slot].fetch_add(1, Ordering::Relaxed) + 1;
+        if count == 1 || count % FLOOD_LOG_EVERY == 0 {
+            if let Some(s) = crate::entry::startup() {
+                s.log.line(
+                    W2R_LOG_INFO,
+                    "host",
+                    &format!(
+                        "net slot {sender} sends W2R messages over {INBOUND_PER_SENDER_PER_SECOND}/s; dropping ({count} so far)"
+                    ),
+                );
+            }
         }
     }
 
@@ -680,5 +729,20 @@ mod tests {
             }
         ));
         assert_eq!(RECEIVED.load(Ordering::Relaxed), 1);
+        here.0.set(false);
+        assert!(!reg.dispatch_peer(2, msg), "lobby only, inbound too");
+        assert_eq!(RECEIVED.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_refused_send_costs_no_budget() {
+        let mut w = SlidingWindow::new(2, 1000);
+        assert!(w.would_allow(0));
+        assert!(w.would_allow(0), "a check records nothing");
+        assert!(w.allow(0));
+        assert!(w.allow(1));
+        assert!(!w.would_allow(2));
+        assert!(!w.allow(2));
+        assert!(w.allow(1000), "the window moved on");
     }
 }

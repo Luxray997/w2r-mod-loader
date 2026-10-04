@@ -84,10 +84,30 @@ impl<W: Write> Log for Writer<W> {
     }
 }
 
+/// Control characters, line/paragraph separators and invisible format characters (bidi
+/// overrides, zero-width joiners, BOM) become `?`: none of them belongs in a log line, and the
+/// bidi ones can make a viewer display a plugin's text as part of a host line.
 fn sanitise(msg: &str) -> String {
     msg.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if is_invisible(c) { '?' } else { c })
         .collect()
+}
+
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 #[cfg(windows)]
@@ -117,7 +137,9 @@ fn clock() -> String {
     )
 }
 
-/// The real log file, with rotation and write-sharing denied to other processes.
+/// The real log file, with rotation. Fully shared: a viewer can tail it, a second game instance
+/// (the usual way to test a lobby on one machine) appends to the same file, and neither blocks
+/// the other's rotation. Appends are atomic per line, so interleaved sessions stay readable.
 #[cfg(windows)]
 pub mod file {
     use super::*;
@@ -125,24 +147,41 @@ pub mod file {
     use std::io;
     use std::os::windows::fs::OpenOptionsExt;
     use std::path::Path;
-    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
 
     pub type FileLog = Writer<File>;
+
+    const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
     /// Opens `<logs_dir>\w2r.log` for appending, rotating it first if it is over the size cap.
     pub fn open(logs_dir: &Path) -> io::Result<FileLog> {
         let path = logs_dir.join(FILE_NAME);
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > MAX_FILE_BYTES {
-                // Best effort: if the rename fails we keep appending to the big file.
-                let _ = std::fs::rename(&path, logs_dir.join(ROTATED_NAME));
+                // A viewer that holds the file without delete sharing makes the rename fail;
+                // then truncate in place so the file still cannot grow without bound. If that
+                // fails too (no write sharing either), appending is all that is left.
+                if std::fs::rename(&path, logs_dir.join(ROTATED_NAME)).is_err() {
+                    let _ = File::options()
+                        .write(true)
+                        .truncate(true)
+                        .share_mode(SHARE_ALL)
+                        .open(&path);
+                }
             }
         }
+        open_named(logs_dir, FILE_NAME)
+    }
+
+    /// Opens `<logs_dir>\<name>` for appending, without rotation.
+    pub fn open_named(logs_dir: &Path, name: &str) -> io::Result<FileLog> {
         let file = File::options()
             .append(true)
             .create(true)
-            .share_mode(FILE_SHARE_READ)
-            .open(&path)?;
+            .share_mode(SHARE_ALL)
+            .open(logs_dir.join(name))?;
         Ok(Writer::new(file))
     }
 }
@@ -177,6 +216,18 @@ mod tests {
         let w = Writer::new(Vec::new());
         w.write_line("t", W2R_LOG_INFO, "p", "a\nb\r\x1b[31mc\x7f");
         assert_eq!(text(w), "[t] INFO  p: a?b??[31mc?\n");
+    }
+
+    #[test]
+    fn separators_and_bidi_controls_cannot_reorder_lines() {
+        let w = Writer::new(Vec::new());
+        w.write_line(
+            "t",
+            W2R_LOG_INFO,
+            "p",
+            "a\u{2028}b\u{202e}c\u{200b}d\u{feff}e\u{2066}f é",
+        );
+        assert_eq!(text(w), "[t] INFO  p: a?b?c?d?e?f é\n");
     }
 
     #[test]

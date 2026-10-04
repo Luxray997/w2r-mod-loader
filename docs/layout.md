@@ -19,7 +19,8 @@ All paths are per-user; nothing needs administrator rights.
 ```
 
 The game folder only holds the `version.dll` proxy. Setting the environment variable `W2R_ROOT`
-moves the root elsewhere (development and tests).
+to an absolute path moves the root elsewhere (development and tests); a relative value is
+ignored with a warning. The second line of every log says which root is in use and why.
 
 ## Decisions
 
@@ -105,6 +106,7 @@ of `approved_capabilities` -> load. Any failure: skip the plugin, log the reason
 
 ## What the pin does and does not protect
 
-It catches corrupted, half-written, or out-of-band-modified files and an index/package mismatch.
-It does **not** stop malware running as the same user, which can edit `state.json` too. The
-threat model states this.
+It catches corrupted, half-written, or out-of-band-modified files and an index/package mismatch,
+for the `entry` DLL; helper DLLs the plugin imports are not hashed in-game (see
+[load-policy.md](load-policy.md)). It does **not** stop malware running as the same user, which
+can edit `state.json` too. The threat model states this.

@@ -2,8 +2,9 @@
 //! documents: no BOM, no duplicate keys, no `NaN`/`Infinity`, no lone surrogates, at most 32
 //! nested containers (the root is depth 1), valid UTF-8. The reference is
 //! `tools/w2r_spec/jsonutil.py`; the order of refusals matches it: the first syntax problem in
-//! document order wins (`duplicate_key` counts as one), and the surrogate and depth checks run
-//! only after a successful parse.
+//! document order wins (`duplicate_key` counts as one), and the surrogate check runs only after
+//! a successful parse. The depth check is applied as containers open: the outcome is the same
+//! `not_json` for every document, and it keeps a deeply nested file from recursing without bound.
 //!
 //! Objects keep their key order. Numbers keep their text, so `1`, `1.0` and `1e0` stay apart.
 
@@ -160,10 +161,11 @@ fn write_string(out: &mut String, s: &str) {
 }
 
 struct Parser<'a> {
+    /// The validated UTF-8 text; `pos` always sits on a char boundary.
+    text: &'a str,
     s: &'a [u8],
     pos: usize,
     depth: usize,
-    max_depth: usize,
     lone_surrogate: bool,
 }
 
@@ -174,10 +176,10 @@ pub fn parse(raw: &[u8]) -> Result<Value, Reject> {
         return Err(Reject::NotJson);
     }
     let mut p = Parser {
+        text,
         s: text.as_bytes(),
         pos: 0,
         depth: 0,
-        max_depth: 0,
         lone_surrogate: false,
     };
     p.skip_ws();
@@ -186,7 +188,7 @@ pub fn parse(raw: &[u8]) -> Result<Value, Reject> {
     if p.pos != p.s.len() {
         return Err(Reject::NotJson);
     }
-    if p.lone_surrogate || p.max_depth > MAX_DEPTH {
+    if p.lone_surrogate {
         return Err(Reject::NotJson);
     }
     Ok(value)
@@ -225,15 +227,22 @@ impl Parser<'_> {
         }
     }
 
-    fn enter(&mut self) {
+    /// Refuses nesting past `MAX_DEPTH` before recursing, so the depth of the input bounds the
+    /// stack. The result is the same `NotJson` a later syntax error would give, so refusing early
+    /// matches the reference's "check after parse" for every document.
+    fn enter(&mut self) -> Result<(), Reject> {
         self.depth += 1;
-        self.max_depth = self.max_depth.max(self.depth);
+        if self.depth > MAX_DEPTH {
+            return Err(Reject::NotJson);
+        }
+        Ok(())
     }
 
     fn object(&mut self) -> Result<Value, Reject> {
         self.pos += 1; // {
-        self.enter();
+        self.enter()?;
         let mut pairs: Vec<(String, Value)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -250,7 +259,7 @@ impl Parser<'_> {
             self.expect(b":")?;
             self.skip_ws();
             let value = self.value()?;
-            if pairs.iter().any(|(k, _)| *k == key) {
+            if !seen.insert(key.clone()) {
                 return Err(Reject::DuplicateKey);
             }
             pairs.push((key, value));
@@ -269,7 +278,7 @@ impl Parser<'_> {
 
     fn array(&mut self) -> Result<Value, Reject> {
         self.pos += 1; // [
-        self.enter();
+        self.enter()?;
         let mut items = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b']') {
@@ -334,6 +343,10 @@ impl Parser<'_> {
 
     fn hex4(&mut self) -> Result<u32, Reject> {
         let chunk = self.s.get(self.pos..self.pos + 4).ok_or(Reject::NotJson)?;
+        // `from_str_radix` would also take a leading `+`; the reference does not.
+        if !chunk.iter().all(u8::is_ascii_hexdigit) {
+            return Err(Reject::NotJson);
+        }
         let text = core::str::from_utf8(chunk).map_err(|_| Reject::NotJson)?;
         let v = u32::from_str_radix(text, 16).map_err(|_| Reject::NotJson)?;
         self.pos += 4;
@@ -400,10 +413,12 @@ impl Parser<'_> {
                 }
                 0x00..=0x1F => return Err(Reject::NotJson),
                 _ => {
-                    // Copy one whole UTF-8 scalar (input is valid UTF-8).
-                    let rest =
-                        core::str::from_utf8(&self.s[self.pos..]).map_err(|_| Reject::NotJson)?;
-                    let c = rest.chars().next().ok_or(Reject::NotJson)?;
+                    // Copy one whole UTF-8 scalar; `pos` is on a boundary, so this slice is O(1)
+                    // rather than re-validating the rest of the input per character.
+                    let c = self.text[self.pos..]
+                        .chars()
+                        .next()
+                        .ok_or(Reject::NotJson)?;
                     out.push(c);
                     self.pos += c.len_utf8();
                 }
@@ -490,6 +505,31 @@ mod tests {
             Err(Reject::NotJson),
             "runaway nesting"
         );
+        // Deep enough to overflow any thread's stack if the depth were only checked after the
+        // parse; must be refused without recursing.
+        let deep = "[".repeat(500_000);
+        assert_eq!(parse(deep.as_bytes()), Err(Reject::NotJson));
+        assert_eq!(
+            parse(format!("{deep}{}", "]".repeat(500_000)).as_bytes()),
+            Err(Reject::NotJson)
+        );
+    }
+
+    #[test]
+    fn unicode_escapes_take_hex_digits_only() {
+        assert_eq!(ok(r#""A""#).as_str(), Some("A"));
+        // `u32::from_str_radix` would accept the sign; the reference does not.
+        assert_eq!(parse(br#""\u+041""#), Err(Reject::NotJson));
+        assert_eq!(parse(br#""\u-041""#), Err(Reject::NotJson));
+    }
+
+    #[test]
+    fn long_strings_and_wide_objects_parse_in_linear_time() {
+        let s = format!("\"{}\"", "x".repeat(2_000_000));
+        assert!(parse(s.as_bytes()).is_ok());
+        let keys: Vec<String> = (0..50_000).map(|i| format!("\"k{i}\": 1")).collect();
+        let o = format!("{{{}}}", keys.join(", "));
+        assert!(parse(o.as_bytes()).is_ok());
         assert_eq!(
             parse("{\"a\": \"\\udc00\", \"b\": [1,]}".as_bytes()),
             Err(Reject::NotJson)

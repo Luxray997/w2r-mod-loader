@@ -57,6 +57,17 @@ running as the same user, which can edit `state.json` as well, or act before the
 load. The pin catches corrupted, half-written and out-of-band-modified files and an
 index/package mismatch; the [threat model](threat-model.md) says what it does not cover.
 
+Two limits of the pin, stated so nobody relies on more:
+
+- It covers the `entry` DLL only. A DLL the plugin imports is loaded from the plugin folder
+  unhashed, so a half-written helper DLL is not caught, and two players with the same
+  fingerprint may run different helper code. The manager (Phase 4) verifies every file of a
+  package at install time; a plugin that wants the in-game check for a helper can link it
+  statically.
+- The open handle pins the file and its parent directory against rename, not a junction or
+  symbolic link in the path. Someone who can replace `plugins\<id>` with a link between the
+  hash and the load has write access to the host root, which is inside the same-user exclusion.
+
 ## Simulation fingerprint
 
 Plugins with `affects_simulation: true` change what the game simulates, so players must agree on

@@ -41,6 +41,9 @@ impl Fault {
     pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
     pub const BREAKPOINT: u32 = 0x8000_0003;
     pub const ILLEGAL_INSTRUCTION: u32 = 0xC000_001D;
+    /// MSVC C++ `throw` (also what Rust panics use on MSVC). Game code called from a guarded
+    /// region can raise it; it is reported by name so the log does not blame a fault.
+    pub const CPP_EXCEPTION: u32 = 0xE06D_7363;
 }
 
 impl fmt::Display for Fault {
@@ -52,6 +55,7 @@ impl fmt::Display for Fault {
                     Self::ACCESS_VIOLATION => "access violation",
                     Self::BREAKPOINT => "breakpoint",
                     Self::ILLEGAL_INSTRUCTION => "illegal instruction",
+                    Self::CPP_EXCEPTION => "C++ exception",
                     _ => "exception",
                 };
                 write!(f, "{name} 0x{code:08X} at 0x{address:X}")
@@ -77,10 +81,12 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 pub fn guarded<R>(f: impl FnOnce() -> R) -> Result<R, Fault> {
     // FnOnce -> FnMut adapter; microseh wants FnMut and calls it at most once.
     let mut f = Some(f);
+    // The `take` sits inside `catch_unwind`: `run` executes in microseh's `extern "system"`
+    // trampoline, where a panic would abort instead of being caught.
     let run = move || {
-        catch_unwind(AssertUnwindSafe(
-            f.take().expect("guarded closure runs once"),
-        ))
+        catch_unwind(AssertUnwindSafe(|| {
+            f.take().expect("guarded closure runs once")()
+        }))
     };
     match seh(run) {
         Ok(Ok(v)) => Ok(v),

@@ -49,18 +49,52 @@ pub extern "system" fn DllMain(instance: HMODULE, reason: u32, _reserved: *mut c
         let proxy = crate::proxy::init();
         #[cfg(not(all(target_arch = "x86", target_env = "msvc")))]
         let proxy: Result<(), Vec<&'static str>> = Ok(());
-        // Everything else runs outside the loader lock. A panic here must not reach the game.
-        std::thread::spawn(move || {
-            let _ = std::panic::catch_unwind(move || run_startup(proxy));
-        });
+        // Everything else runs outside the loader lock. A panic here must not reach the game,
+        // and neither must a failure to create the thread (`thread::spawn` would panic).
+        let _ = std::thread::Builder::new()
+            .name("w2r-startup".into())
+            .spawn(move || {
+                let _ = std::panic::catch_unwind(move || run_startup(proxy));
+            });
     }
     1
 }
 
+/// The only channel left when the log cannot be opened: a debugger or DebugView sees it.
+fn debug_print(msg: &str) {
+    use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+    let wide: Vec<u16> = format!("w2rpm host: {msg}\n")
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    unsafe { OutputDebugStringW(wide.as_ptr()) };
+}
+
 fn run_startup(proxy: Result<(), Vec<&'static str>>) {
-    let Some(root) = paths::root() else { return };
-    let Ok(log) = crate::log::file::open(&root.join("logs")) else {
+    let Some(paths::Root { path: root, origin }) = paths::root() else {
+        debug_print("no usable root folder (Saved Games unavailable?); inactive");
         return;
+    };
+    let logs = root.join("logs");
+    // Another process may hold `w2r.log` exclusively; a per-process file beats silence.
+    let (log, log_note) = match crate::log::file::open(&logs) {
+        Ok(log) => (log, None),
+        Err(e) => {
+            let name = format!("w2r.{}.log", std::process::id());
+            match crate::log::file::open_named(&logs, &name) {
+                Ok(log) => (
+                    log,
+                    Some(format!("w2r.log is not writable ({e}); using {name}")),
+                ),
+                Err(e2) => {
+                    debug_print(&format!(
+                        "cannot open a log under {}: {e2}; inactive",
+                        logs.display()
+                    ));
+                    return;
+                }
+            }
+        }
     };
     let game_base = unsafe { GetModuleHandleW(core::ptr::null()) } as usize;
 
@@ -68,9 +102,27 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
         W2R_LOG_INFO,
         "host",
         &format!(
-            "=== w2rpm host {} attached, game base {game_base:#010x} ===",
-            env!("CARGO_PKG_VERSION")
+            "=== w2rpm host {} attached, game base {game_base:#010x}, pid {} ===",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
         ),
+    );
+    if let Some(note) = log_note {
+        log.line(W2R_LOG_WARN, "host", &note);
+    }
+    let origin_text = match origin {
+        paths::Origin::SavedGames => "Saved Games",
+        paths::Origin::Override => "W2R_ROOT",
+        paths::Origin::RelativeOverrideIgnored => "Saved Games; W2R_ROOT ignored, not absolute",
+    };
+    log.line(
+        if origin == paths::Origin::RelativeOverrideIgnored {
+            W2R_LOG_WARN
+        } else {
+            W2R_LOG_INFO
+        },
+        "host",
+        &format!("root {} ({origin_text})", root.display()),
     );
     if let Err(missing) = proxy {
         log.line(

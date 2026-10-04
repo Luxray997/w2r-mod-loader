@@ -49,15 +49,37 @@ pub fn prepare(root: &Path) -> io::Result<()> {
 /// Environment variable that replaces the Saved Games location (development and tests).
 pub const ROOT_OVERRIDE: &str = "W2R_ROOT";
 
+/// Where the root came from, for the log: a user looking in Saved Games should learn that an
+/// override sent the files elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    SavedGames,
+    /// `W2R_ROOT` was set to an absolute path.
+    Override,
+    /// `W2R_ROOT` was set but not absolute, so it was ignored.
+    RelativeOverrideIgnored,
+}
+
+pub struct Root {
+    pub path: PathBuf,
+    pub origin: Origin,
+}
+
 /// The host root with its subfolders in place, or `None` when the user profile is unusable (the
-/// host then does nothing: no log, no plugins).
-pub fn root() -> Option<PathBuf> {
-    let root = match std::env::var_os(ROOT_OVERRIDE) {
-        Some(dir) => PathBuf::from(dir),
-        None => saved_games()?.join(GAME_FOLDER).join(HOST_FOLDER),
+/// host then does nothing: no log, no plugins). An override must be absolute: a relative one
+/// would resolve against the game's working directory, which is not the user's choice.
+pub fn root() -> Option<Root> {
+    let (path, origin) = match std::env::var_os(ROOT_OVERRIDE).map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => (dir, Origin::Override),
+        Some(_) => (default_root()?, Origin::RelativeOverrideIgnored),
+        None => (default_root()?, Origin::SavedGames),
     };
-    prepare(&root).ok()?;
-    Some(root)
+    prepare(&path).ok()?;
+    Some(Root { path, origin })
+}
+
+fn default_root() -> Option<PathBuf> {
+    Some(saved_games()?.join(GAME_FOLDER).join(HOST_FOLDER))
 }
 
 #[cfg(test)]

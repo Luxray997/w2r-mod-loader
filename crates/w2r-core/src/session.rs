@@ -3,9 +3,10 @@
 //! `BeginNamedWindow` call from then on. Only the game's main thread touches it, which is why a
 //! `thread_local` holds it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use w2r_abi::{
     W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN,
@@ -16,6 +17,7 @@ use crate::chat::{self, Chat, NoChat};
 use crate::dispatch::Registry;
 use crate::entry;
 use crate::frame;
+use crate::guard::Fault;
 use crate::host::{Game, Log, Services, State as SlotState};
 use crate::lobby::{Event, Lobby};
 use crate::manifest::Build;
@@ -26,7 +28,7 @@ use crate::plugins;
 use crate::state::{self, State};
 use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
-use crate::ui::{self, Action, Frame, PluginRow, Status, Widgets};
+use crate::ui::{self, Action, PluginRow, Status, Widgets};
 
 struct Session {
     registry: Registry,
@@ -40,6 +42,22 @@ struct Session {
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// Set while `start` runs, so a nested frame does not start a second session.
+    static STARTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A fault in host code under one of the host's own hooks (not a plugin's). Logged for the
+/// first few and then sparsely: a hook runs every frame, and the same bug would repeat.
+pub fn host_fault(site: &str, fault: &Fault) {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let n = COUNT.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    if n <= 5 || n % 1000 == 0 {
+        StartupLog.line(
+            W2R_LOG_ERROR,
+            "host",
+            &format!("host fault in {site}: {fault} ({n} so far)"),
+        );
+    }
 }
 
 /// Routes to the startup log; the registry needs an `Rc<dyn Log>`.
@@ -66,13 +84,16 @@ impl Presence for LobbyPresence {
 /// if it gave one.
 pub fn on_window(name: Option<&str>) {
     let now = chat::now_ms();
+    ensure_started();
     SESSION.with(|cell| {
         // A plugin callback below may make the game draw a window, which lands back here;
         // that nested call must not touch the session.
         let Ok(mut slot) = cell.try_borrow_mut() else {
             return;
         };
-        let session = slot.get_or_insert_with(start);
+        let Some(session) = slot.as_mut() else {
+            return;
+        };
         let event = {
             let mut lobby = session.lobby.borrow_mut();
             match name {
@@ -92,10 +113,29 @@ pub fn on_window(name: Option<&str>) {
     });
 }
 
+/// Builds the session on the first frame. It is built *outside* the cell's borrow: loading a
+/// plugin runs its `DllMain` and `on_load`, either of which may draw a window and land back in
+/// `on_window`, and a fault in there is caught by the frame hook's guard, which abandons this
+/// frame; a live `RefMut` would then leave the cell borrowed for the rest of the session.
+fn ensure_started() {
+    let needed = SESSION.with(|c| c.try_borrow().map(|s| s.is_none()).unwrap_or(false));
+    if !needed || STARTING.replace(true) {
+        return;
+    }
+    let session = start();
+    SESSION.with(|c| {
+        if let Ok(mut slot) = c.try_borrow_mut() {
+            *slot = Some(session);
+        }
+    });
+    STARTING.set(false);
+}
+
 /// A plugin peer message taken off the wire. Delivered only on the main thread, after the
 /// session exists (a message before the first frame has nobody to receive it anyway).
 pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
     static OFF_THREAD_LOGGED: std::sync::Once = std::sync::Once::new();
+    static BUSY_LOGGED: std::sync::Once = std::sync::Once::new();
     if unsafe { GetCurrentThreadId() } != frame::main_thread_id() {
         OFF_THREAD_LOGGED.call_once(|| {
             StartupLog.line(
@@ -108,6 +148,14 @@ pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
     }
     SESSION.with(|cell| {
         let Ok(slot) = cell.try_borrow() else {
+            // The game polled packets from inside a plugin callback; the message is gone.
+            BUSY_LOGGED.call_once(|| {
+                StartupLog.line(
+                    W2R_LOG_WARN,
+                    "host",
+                    "a peer message arrived while the session was busy; dropped (logged once)",
+                );
+            });
             return;
         };
         if let Some(session) = slot.as_ref() {
@@ -164,9 +212,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
         let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
         let action = ui::draw_plugin_screen(w, &mut rows, |w, i| {
             if let Some(s) = registry.find(&ids[i]) {
-                let mut frame = Frame::new(w);
-                let table = frame.table();
-                registry.call_on_ui(s, &table);
+                ui::with_frame(w, |table| registry.call_on_ui(s, table));
             }
         });
         if let Action::Toggle(i) = action {

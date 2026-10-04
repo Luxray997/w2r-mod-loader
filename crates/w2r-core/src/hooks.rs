@@ -11,6 +11,11 @@ use w2r_abi::W2rHandle;
 
 /// Bytes an inline hook overwrites at the target (a `jmp rel32`).
 pub const PATCH_LEN: usize = 5;
+/// Bytes an inline hook *owns* in the registry. MinHook copies whole instructions into the
+/// trampoline until it has covered the patch, so up to one maximal x86 instruction (14 more
+/// bytes) past the patch is executed from the trampoline; a hook placed inside those bytes
+/// would corrupt it. Overlap checks therefore reserve this span, not just the patch.
+pub const HOOK_SPAN: usize = PATCH_LEN + 14;
 /// docs/abi.md: at most 64 hooks per plugin.
 pub const MAX_PER_PLUGIN: usize = 64;
 
@@ -33,6 +38,8 @@ pub enum HookError {
     NotFound,
     /// MinHook refused; carries its `MH_STATUS`.
     Engine(i32),
+    /// The caller's `publish` faulted (a plugin's bad `original_out`); nothing was installed.
+    Publish,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,14 +179,20 @@ impl Hooks {
         if !image.is_code(target, PATCH_LEN) {
             return Err(HookError::NotCode);
         }
-        self.registry.check(owner, target, PATCH_LEN)?;
+        self.registry.check(owner, target, HOOK_SPAN)?;
         let original = unsafe { engine::create(target, detour)? };
-        publish(original);
+        // `publish` may write to the caller's memory (a plugin's `original_out`). The caller
+        // holds the registry lock while in here, and a fault would abandon this frame with the
+        // lock held forever, so the write gets its own guard.
+        if crate::guard::guarded(|| publish(original)).is_err() {
+            let _ = engine::remove(target);
+            return Err(HookError::Publish);
+        }
         if let Err(e) = engine::enable(target) {
             let _ = engine::remove(target);
             return Err(e);
         }
-        self.registry.record(owner, target, PATCH_LEN, label, true)
+        self.registry.record(owner, target, HOOK_SPAN, label, true)
     }
 
     /// Removes one hook or reservation. Only its owner may.
@@ -349,6 +362,10 @@ mod tests {
         extern "C" fn add_one(x: i32) -> i32 {
             std::hint::black_box(x) + 1
         }
+        #[inline(never)]
+        extern "C" fn add_two(x: i32) -> i32 {
+            std::hint::black_box(x) + 2
+        }
         static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
         extern "C" fn detour(x: i32) -> i32 {
             let original: extern "C" fn(i32) -> i32 =
@@ -411,6 +428,43 @@ mod tests {
             },
             Err(HookError::NotCode)
         );
+
+        // A publish that faults leaves nothing behind: no hook, no entry, and the lock-holding
+        // caller gets a clean error instead of an abandoned frame. The target is hookable
+        // again afterwards, which proves the engine hook was removed.
+        let target2 = add_two as extern "C" fn(i32) -> i32 as usize;
+        assert_eq!(
+            unsafe {
+                hooks.install(
+                    Owner::Plugin(5),
+                    &image,
+                    target2,
+                    detour as *mut c_void,
+                    "faulting publish",
+                    |o| {
+                        // Unmapped and non-null: the debug build's null check would be a
+                        // non-unwinding panic (abort), not the hardware fault we test.
+                        let p: *mut *mut c_void =
+                            std::hint::black_box(core::ptr::without_provenance_mut(8));
+                        p.write_volatile(o);
+                    },
+                )
+            },
+            Err(HookError::Publish)
+        );
+        assert_eq!(hooks.registry.count(Owner::Plugin(5)), 0);
+        let h2 = unsafe {
+            hooks.install(
+                Owner::Plugin(5),
+                &image,
+                target2,
+                detour as *mut c_void,
+                "add_two",
+                publish,
+            )
+        }
+        .expect("target free again");
+        hooks.remove(Owner::Plugin(5), h2).unwrap();
 
         assert_eq!(
             hooks.remove(Owner::Plugin(4), handle),

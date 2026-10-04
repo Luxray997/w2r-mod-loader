@@ -10,7 +10,9 @@ lobby, and read logs\w2r.log: the build guard should report PASSED (197/197) and
 should show "hello from w2rpm".
 
 .PARAMETER Uninstall
-Removes version.dll from the game folder (the Saved Games root is left alone).
+Removes our version.dll from the game folder and restores version.dll.pre-w2rpm if an earlier
+install had backed one up (the Saved Games root is left alone). A version.dll that is not ours
+is left in place.
 
 .PARAMETER WithCrasher
 Also installs the crash_plugin fixture, which faults on lobby entry; the log should show it
@@ -28,9 +30,27 @@ $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $target = Join-Path $GameDir "version.dll"
+$backup = Join-Path $GameDir "version.dll.pre-w2rpm"
+
+# Our DLL carries this literal (the first log line); other proxies (wc2r-plus uses the same
+# file name) do not, so the script never deletes someone else's mod.
+function Test-OurDll([string]$Path) {
+    if (-not (Test-Path $Path)) { return $false }
+    # ISO-8859-1 maps every byte to one char; Windows PowerShell 5.1 has no Latin1 property.
+    $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($Path))
+    return $text.Contains("=== w2rpm host ")
+}
 
 if ($Uninstall) {
-    if (Test-Path $target) { Remove-Item $target; Write-Host "removed $target" } else { Write-Host "nothing installed at $target" }
+    if (-not (Test-Path $target)) {
+        Write-Host "nothing installed at $target"
+    } elseif (-not (Test-OurDll $target)) {
+        Write-Host "$target is not the w2rpm host; left in place"
+    } else {
+        Remove-Item $target
+        Write-Host "removed $target"
+        if (Test-Path $backup) { Move-Item $backup $target; Write-Host "restored the previous version.dll from $backup" }
+    }
     exit 0
 }
 
@@ -50,6 +70,11 @@ try {
 
 $dll = Join-Path $repo "target\i686-pc-windows-msvc\release\w2r_core.dll"
 $examples = Join-Path $repo "target\i686-pc-windows-msvc\release\examples"
+if ((Test-Path $target) -and -not (Test-OurDll $target)) {
+    if (Test-Path $backup) { throw "$target is not ours and $backup already exists; sort that out by hand" }
+    Move-Item $target $backup
+    Write-Host "kept the existing version.dll (another mod?) as $backup"
+}
 Copy-Item $dll $target -Force
 Write-Host "installed $target"
 
@@ -102,7 +127,14 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities)
 $entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write"))
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
-[IO.File]::WriteAllText((Join-Path $root "config\state.json"), $state, [Text.UTF8Encoding]::new($false))
+$statePath = Join-Path $root "config\state.json"
+if (Test-Path $statePath) {
+    # The fixture record replaces whatever was there: keep the user's pins and approvals.
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    Copy-Item $statePath "$statePath.$stamp.bak"
+    Write-Host "backed up the existing state.json to state.json.$stamp.bak"
+}
+[IO.File]::WriteAllText($statePath, $state, [Text.UTF8Encoding]::new($false))
 
 Write-Host "host root: $root"
 Write-Host "now launch the game, enter a multiplayer lobby, then read $root\logs\w2r.log"

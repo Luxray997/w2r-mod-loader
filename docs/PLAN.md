@@ -89,6 +89,23 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    opens our screen, drawn with the game's menu widgets and skins), toggles rewrite
    `state.json` atomically for the next launch, slow callbacks (>50 ms, 10 in a row) are
    logged and shown.
+7. End-of-phase security review. **Done (2026-10-03),** three passes (FFI boundary, untrusted
+   parsers, filesystem/startup). Fixed: JSON nesting refused before recursing (a deep
+   `plugin.json` could overflow the main thread's stack); manifests and `state.json` read
+   through a size-bounded reader (a sparse multi-GB file aborted on allocation); string and
+   duplicate-key parsing made linear; `\u+041` refused like the reference; a plugin now gets the
+   capabilities its manifest declares, not the whole approval list; every host function checks
+   the token (magic), the main thread and that the plugin is still active; the hook registry
+   lock is no longer held across a write to plugin memory, and inline hooks reserve the bytes
+   MinHook relocates; `log` is throttled as `abi.md` promised; refused `chat_send`/`peer_send`
+   cost no rate budget; inbound peer messages are lobby-only and rate-limited per sender; the
+   session is built outside its `RefCell` borrow and game widget calls run under their own
+   guard, so a fault under a host hook is logged instead of silently disabling the host; a
+   `W2rUi` kept past `on_ui` is inert; the log is fully shared (second instance, tail viewers)
+   with a per-process fallback, filters bidi/separator characters, and names the root in use;
+   `W2R_ROOT` must be absolute; `install_dev.ps1` backs up `state.json` and only removes a
+   `version.dll` that is ours. Documented, not fixed: the pin covers the entry DLL only, and a
+   junction in the plugin path is inside the same-user exclusion (`load-policy.md`).
 Exit: a hello-world plugin prints a chat line on lobby entry and survives a deliberate crash.
 
 ### 3. Port wc2r-plus features as first-party plugins

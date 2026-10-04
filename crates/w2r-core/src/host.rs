@@ -104,9 +104,21 @@ const EMPTY_TABLE: W2rPlugin = W2rPlugin {
     on_unload: None,
 };
 
+/// First field of every [`Slot`]: a `token` that does not point at one (the classic mistake
+/// is passing `host` instead of `host->token`, whose first field is `struct_size`) is refused
+/// instead of being read as a slot.
+const SLOT_MAGIC: u32 = 0x5732_5250; // "W2RP"
+
+/// docs/abi.md: `log` is throttled to 20 lines/s per plugin with a burst of 40, which is 40 in
+/// any 2 s window; excess lines are dropped and one summary line per second says how many.
+const LOG_BURST: usize = 40;
+const LOG_WINDOW_MS: u64 = 2000;
+const LOG_NOTICE_EVERY_MS: u64 = 1000;
+
 /// One loaded (or refused) plugin. Boxed so its address, which is the plugin's `token`, never
 /// moves.
 pub struct Slot {
+    magic: u32,
     /// Position in the registry; also the hook owner id.
     pub index: usize,
     pub id: String,
@@ -119,6 +131,10 @@ pub struct Slot {
     denied: RefCell<BTreeSet<&'static str>>,
     chat_rate: RefCell<SlidingWindow>,
     peer_rate: RefCell<SlidingWindow>,
+    log_rate: RefCell<SlidingWindow>,
+    /// Plugin log lines dropped since the last summary line.
+    log_dropped: Cell<u32>,
+    log_notice_ms: Cell<u64>,
     /// The plugin's peer-message tag (docs/abi.md).
     pub tag: [u8; 4],
     /// Consecutive callbacks over [`Slot::SLOW_MS`].
@@ -130,6 +146,7 @@ pub struct Slot {
 impl Slot {
     pub fn new(index: usize, id: &str, caps: &[&str], shared: Rc<Shared>) -> Box<Slot> {
         let mut slot = Box::new(Slot {
+            magic: SLOT_MAGIC,
             index,
             id: id.to_owned(),
             table: Cell::new(EMPTY_TABLE),
@@ -139,6 +156,9 @@ impl Slot {
             denied: RefCell::new(BTreeSet::new()),
             chat_rate: RefCell::new(SlidingWindow::new(chat::MAX_PER_WINDOW, chat::WINDOW_MS)),
             peer_rate: RefCell::new(SlidingWindow::new(peer::PER_PLUGIN_PER_SECOND, 1000)),
+            log_rate: RefCell::new(SlidingWindow::new(LOG_BURST, LOG_WINDOW_MS)),
+            log_dropped: Cell::new(0),
+            log_notice_ms: Cell::new(0),
             tag: peer::peer_tag(id),
             slow: Cell::new(0),
             shared,
@@ -193,8 +213,28 @@ impl Slot {
         Owner::Plugin(self.index)
     }
 
+    /// The host's own lines about this plugin; never throttled.
     pub fn log(&self, level: u32, msg: &str) {
         self.shared.log.line(level, &self.id, msg);
+    }
+
+    /// A line the plugin asked for, under the throttle.
+    fn plugin_log(&self, level: u32, msg: &str) {
+        let now = chat::now_ms();
+        if self.log_rate.borrow_mut().allow(now) {
+            self.log(level, msg);
+            return;
+        }
+        self.log_dropped
+            .set(self.log_dropped.get().saturating_add(1));
+        if now.saturating_sub(self.log_notice_ms.get()) >= LOG_NOTICE_EVERY_MS {
+            self.log_notice_ms.set(now);
+            let dropped = self.log_dropped.replace(0);
+            self.log(
+                W2R_LOG_WARN,
+                &format!("{dropped} log lines dropped (over 20 lines/s)"),
+            );
+        }
     }
 
     /// Logs the refusal once per function and returns `W2R_E_DENIED`.
@@ -251,8 +291,36 @@ fn host_table(token: *mut c_void) -> W2rHost {
 mod cb {
     use super::*;
 
-    unsafe fn slot<'a>(token: *mut c_void) -> Option<&'a Slot> {
-        unsafe { token.cast::<Slot>().as_ref() }
+    /// The checks every host function starts with (docs/abi.md): a token that is a slot, the
+    /// game's main thread, and a plugin that is still active. The thread check comes before
+    /// any `RefCell` is touched, since those are not thread-safe.
+    fn enter<'a>(token: *mut c_void) -> Result<&'a Slot, W2rStatus> {
+        let slot = unsafe { token.cast::<Slot>().as_ref() }.ok_or(W2R_E_INVALID)?;
+        if slot.magic != SLOT_MAGIC {
+            return Err(W2R_E_INVALID);
+        }
+        if !on_main_thread() {
+            return Err(W2R_E_STATE);
+        }
+        if !slot.is_active() {
+            return Err(W2R_E_STATE);
+        }
+        Ok(slot)
+    }
+
+    /// True until the game's main thread is known (tests, and nothing is loaded before then
+    /// in the game), then only on it.
+    fn on_main_thread() -> bool {
+        #[cfg(windows)]
+        {
+            let main = crate::frame::main_thread_id();
+            main == 0
+                || main == unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
     }
 
     /// A panic in host code must not unwind into the plugin (that would abort the game).
@@ -300,8 +368,9 @@ mod cb {
 
     pub unsafe extern "C" fn log(token: *mut c_void, level: u32, msg: W2rStr) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if level > W2R_LOG_ERROR {
                 return W2R_E_INVALID;
@@ -313,15 +382,16 @@ mod cb {
                 Ok(t) => t,
                 Err(e) => return e,
             };
-            slot.log(level, text);
+            slot.plugin_log(level, text);
             W2R_OK
         })
     }
 
     pub unsafe extern "C" fn subscribe(token: *mut c_void, id: W2rEventId) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if !known_event(id) {
                 return W2R_E_NOT_FOUND;
@@ -338,8 +408,9 @@ mod cb {
 
     pub unsafe extern "C" fn unsubscribe(token: *mut c_void, id: W2rEventId) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if !known_event(id) {
                 return W2R_E_NOT_FOUND;
@@ -355,8 +426,9 @@ mod cb {
         out: *mut W2rHandle,
     ) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "symbol_lookup", caps::GAME_READ) {
                 return e;
@@ -392,8 +464,9 @@ mod cb {
         len: u32,
     ) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "symbol_read", caps::GAME_READ) {
                 return e;
@@ -441,8 +514,9 @@ mod cb {
         out: *mut W2rHandle,
     ) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "hook_install", caps::HOOKS_RAW) {
                 return e;
@@ -484,6 +558,13 @@ mod cb {
                 }
                 Err(HookError::Limit) => W2R_E_LIMIT,
                 Err(HookError::NotFound) => W2R_E_NOT_FOUND,
+                Err(HookError::Publish) => {
+                    slot.log(
+                        W2R_LOG_WARN,
+                        &format!("hook_install {}: original_out is not writable", sym.name),
+                    );
+                    W2R_E_INVALID
+                }
                 Err(HookError::Engine(status)) => {
                     slot.log(
                         W2R_LOG_ERROR,
@@ -523,8 +604,9 @@ mod cb {
 
     pub unsafe extern "C" fn hook_remove(token: *mut c_void, hook: W2rHandle) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "hook_remove", caps::HOOKS_RAW) {
                 return e;
@@ -543,8 +625,9 @@ mod cb {
     /// docs/abi.md: printable ASCII, at most 200 bytes, 4 per 5 s, only while chat is available.
     pub unsafe extern "C" fn chat_send(token: *mut c_void, text: W2rStr) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "chat_send", caps::CHAT_WRITE) {
                 return e;
@@ -562,10 +645,16 @@ mod cb {
             if !chat.available() {
                 return W2R_E_STATE;
             }
-            if !slot.chat_rate.borrow_mut().allow(chat::now_ms()) {
+            // Charged only once the line went out: a refused call has no effect (abi.md).
+            let now = chat::now_ms();
+            if !slot.chat_rate.borrow_mut().would_allow(now) {
                 return W2R_E_RATE;
             }
-            if chat.send(line) { W2R_OK } else { W2R_E_STATE }
+            if !chat.send(line) {
+                return W2R_E_STATE;
+            }
+            slot.chat_rate.borrow_mut().allow(now);
+            W2R_OK
         })
     }
 
@@ -577,8 +666,9 @@ mod cb {
         payload: W2rBuf,
     ) -> W2rStatus {
         run(|| {
-            let Some(slot) = (unsafe { slot(token) }) else {
-                return W2R_E_INVALID;
+            let slot = match enter(token) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             if let Err(e) = require(slot, "peer_send", caps::NET_SEND) {
                 return e;
@@ -601,9 +691,12 @@ mod cb {
                 Err(TargetError::Invalid) => return W2R_E_INVALID,
                 Err(TargetError::NotAnnounced) => return W2R_E_STATE,
             };
+            // Both windows are checked first and charged only after the send, so a refusal
+            // by either (or a failed send) costs no budget. No borrow is live across the
+            // transport call.
             let now = chat::now_ms();
-            if !slot.peer_rate.borrow_mut().allow(now)
-                || !slot.shared.peer_rate.borrow_mut().allow(now)
+            if !slot.peer_rate.borrow_mut().would_allow(now)
+                || !slot.shared.peer_rate.borrow_mut().would_allow(now)
             {
                 return W2R_E_RATE;
             }
@@ -613,7 +706,12 @@ mod cb {
                 Target::All => services.transport.broadcast(&msg),
                 Target::Slot(n) => services.transport.send_to(n, &msg),
             };
-            if sent { W2R_OK } else { W2R_E_STATE }
+            if !sent {
+                return W2R_E_STATE;
+            }
+            slot.peer_rate.borrow_mut().allow(now);
+            slot.shared.peer_rate.borrow_mut().allow(now);
+            W2R_OK
         })
     }
 
@@ -752,6 +850,52 @@ mod tests {
             "[2] p: symbol_lookup: capability game.read not approved"
         );
         assert!(denials[4].contains("subscribe: capability chat.read"));
+    }
+
+    #[test]
+    fn a_token_that_is_not_a_slot_or_a_disabled_plugin_is_refused() {
+        let log = Rc::new(Lines::default());
+        let mut reg = Registry::new(log.clone());
+        let i = reg.load_entry("p", entry).unwrap();
+        let h = unsafe { &*reg.slot(i).host() };
+        unsafe {
+            // The classic mistake: `host` instead of `host->token`.
+            let wrong = (h as *const W2rHost).cast_mut().cast::<c_void>();
+            assert_eq!((h.log)(wrong, W2R_LOG_INFO, s("x")), W2R_E_INVALID);
+            assert_eq!((h.subscribe)(wrong, W2R_EVT_LOBBY_ENTER), W2R_E_INVALID);
+            assert_eq!(
+                (h.log)(core::ptr::null_mut(), W2R_LOG_INFO, s("x")),
+                W2R_E_INVALID
+            );
+            assert_eq!((h.log)(h.token, W2R_LOG_INFO, s("fine")), W2R_OK);
+        }
+        reg.slot(i).disable("test".into());
+        unsafe {
+            assert_eq!((h.log)(h.token, W2R_LOG_INFO, s("x")), W2R_E_STATE);
+            assert_eq!((h.subscribe)(h.token, W2R_EVT_LOBBY_ENTER), W2R_E_STATE);
+            assert_eq!((h.chat_send)(h.token, s("hi")), W2R_E_STATE);
+        }
+        let lines = log.0.borrow();
+        assert!(lines.iter().any(|l| l == "[1] p: fine"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.ends_with(": x")), "{lines:?}");
+    }
+
+    #[test]
+    fn plugin_log_lines_are_throttled_with_a_summary() {
+        let log = Rc::new(Lines::default());
+        let mut reg = Registry::new(log.clone());
+        let i = reg.load_entry("p", entry).unwrap();
+        let h = unsafe { &*reg.slot(i).host() };
+        for _ in 0..(LOG_BURST + 10) {
+            assert_eq!(unsafe { (h.log)(h.token, W2R_LOG_INFO, s("spam")) }, W2R_OK);
+        }
+        let lines = log.0.borrow();
+        let spam = lines.iter().filter(|l| l.ends_with(": spam")).count();
+        assert_eq!(spam, LOG_BURST);
+        assert!(
+            lines.iter().any(|l| l.contains("log lines dropped")),
+            "{lines:?}"
+        );
     }
 
     #[test]

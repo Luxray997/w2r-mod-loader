@@ -85,7 +85,9 @@ unsafe extern "C" fn detour(
     let opened = unsafe { original(ctx, name, x, y, w, h, flags) };
     // Host work runs after the game's own and under the crash guard: a host bug must not take
     // the game down, and the game must never see a different return value because of it.
-    let _ = guarded(|| on_window(name, opened));
+    if let Err(fault) = guarded(|| on_window(name, opened)) {
+        crate::session::host_fault(SYMBOL, &fault);
+    }
     opened
 }
 

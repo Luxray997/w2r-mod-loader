@@ -28,11 +28,22 @@ struct Candidate {
 
 type Refusal = (&'static str, String);
 
+/// Reads at most `max + 1` bytes of `path`, so an oversized (or sparse multi-gigabyte) file is
+/// refused by the parser's size rule instead of exhausting memory first. The parsers' limits are
+/// on the byte count, so one extra byte is enough to trip them.
+fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut raw = Vec::new();
+    file.take(max as u64 + 1).read_to_end(&mut raw)?;
+    Ok(raw)
+}
+
 /// Checks 1 to 6 for one enabled plugin.
 fn candidate(root: &Path, st: &PluginState, running: Build) -> Result<Candidate, Refusal> {
     // `id` passed the manifest id rule in state.rs, so it is a plain folder name.
     let folder = root.join("plugins").join(&st.id);
-    let raw = match std::fs::read(folder.join("plugin.json")) {
+    let raw = match read_bounded(&folder.join("plugin.json"), manifest::MAX_BYTES) {
         Ok(raw) => raw,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             return Err(("E_STATE", "plugin.json is missing".into()));
@@ -132,7 +143,7 @@ pub fn load_all(
 ) -> (Registry, State) {
     let mut registry = Registry::with(log.clone(), game, services);
     let state_path = root.join("config").join("state.json");
-    let state = match std::fs::read(&state_path) {
+    let state = match read_bounded(&state_path, state::MAX_BYTES) {
         Ok(raw) => match state::parse(&raw) {
             Ok(s) => s,
             Err(code) => {
@@ -207,11 +218,9 @@ pub fn load_all(
             log.line(W2R_LOG_WARN, &c.st.id, &format!("E_DEP: {detail}"));
             continue;
         }
-        let caps: Vec<&str> =
-            c.st.approved_capabilities
-                .iter()
-                .map(String::as_str)
-                .collect();
+        // Grant what the manifest declares (a subset of the approvals after check 6), not the
+        // approval list: a stale approval from an older version must not widen the plugin.
+        let caps: Vec<&str> = c.manifest.capabilities.iter().map(String::as_str).collect();
         if registry
             .load_dll(&c.st.id, &c.dll, &c.st.sha256, &caps)
             .is_ok()
@@ -220,7 +229,11 @@ pub fn load_all(
         }
     }
     for c in cycle {
-        log.line(W2R_LOG_WARN, &c.st.id, "E_DEP: part of a dependency cycle");
+        log.line(
+            W2R_LOG_WARN,
+            &c.st.id,
+            "E_DEP: part of a dependency cycle, or depends on one",
+        );
     }
     log.line(
         W2R_LOG_INFO,

@@ -136,28 +136,51 @@ fn cstr(text: &str) -> Vec<u8> {
     v
 }
 
-/// The game's menu widgets on the current context.
+/// The game's menu widgets on the current context. Every call into the game runs under its
+/// own guard: the plugin screen draws while the session is borrowed, and a fault caught only
+/// by the hook's outer guard would abandon that borrow for good. A faulting widget reports
+/// "nothing happened" and is logged by [`crate::session::host_fault`].
 pub struct GameWidgets<'a> {
     nk: &'a Nk,
     ctx: *mut c_void,
 }
 
+impl GameWidgets<'_> {
+    fn call<R: Default>(what: &str, f: impl FnOnce() -> R) -> R {
+        match guarded(f) {
+            Ok(r) => r,
+            Err(fault) => {
+                crate::session::host_fault(what, &fault);
+                R::default()
+            }
+        }
+    }
+}
+
 impl Widgets for GameWidgets<'_> {
     fn row(&self, height: f32, cols: i32) {
-        unsafe { (self.nk.row)(self.ctx, height, cols) }
+        Self::call("LayoutRowDynamic", || unsafe {
+            (self.nk.row)(self.ctx, height, cols)
+        })
     }
     fn label(&self, text: &str) {
         let t = cstr(text);
-        unsafe { (self.nk.label)(self.ctx, t.as_ptr().cast(), ALIGN_ROW) }
+        Self::call("DrawLabel", || unsafe {
+            (self.nk.label)(self.ctx, t.as_ptr().cast(), ALIGN_ROW)
+        })
     }
     fn button(&self, text: &str) -> bool {
         let t = cstr(text);
-        unsafe { (self.nk.button)(self.ctx, t.as_ptr().cast()) != 0 }
+        Self::call("DrawMenuButton", || unsafe {
+            (self.nk.button)(self.ctx, t.as_ptr().cast()) != 0
+        })
     }
     fn checkbox(&self, text: &str, value: &mut bool) -> bool {
         let t = cstr(text);
         let mut flags: u32 = *value as u32;
-        let changed = unsafe { (self.nk.checkbox)(t.as_ptr().cast(), &mut flags, 1) != 0 };
+        let changed = Self::call("FlagCheckbox", || unsafe {
+            (self.nk.checkbox)(t.as_ptr().cast(), &mut flags, 1) != 0
+        });
         if changed {
             *value = flags & 1 != 0;
         }
@@ -165,23 +188,26 @@ impl Widgets for GameWidgets<'_> {
     }
     fn slider(&self, text: &str, value: &mut i32, min: i32, max: i32) -> bool {
         // The game slider is unsigned; shift the range so min maps to 0.
-        let t = cstr(text);
-        unsafe { (self.nk.label)(self.ctx, t.as_ptr().cast(), ALIGN_ROW) };
+        self.label(text);
         let mut v = (*value as i64 - min as i64) as u32;
         let mut lo = 0u32;
         let mut hi = (max as i64 - min as i64) as u32;
         let mut step = 1u32;
-        let changed = unsafe { (self.nk.slider)(&mut v, &mut lo, &mut hi, &mut step) != 0 };
+        let changed = Self::call("SliderU32", || unsafe {
+            (self.nk.slider)(&mut v, &mut lo, &mut hi, &mut step) != 0
+        });
         if changed {
             *value = (v as i64 + min as i64) as i32;
         }
         changed
     }
     fn disable_begin(&self) {
-        unsafe { (self.nk.disable_begin)(self.ctx) }
+        Self::call("DisableBegin", || unsafe {
+            (self.nk.disable_begin)(self.ctx)
+        })
     }
     fn disable_end(&self) {
-        unsafe { (self.nk.disable_end)(self.ctx) }
+        Self::call("DisableEnd", || unsafe { (self.nk.disable_end)(self.ctx) })
     }
 }
 
@@ -251,11 +277,17 @@ unsafe extern "C" fn detour(variant: i32) {
     if !ours {
         unsafe { original(variant) };
         if variant == 0 || variant == 1 {
-            let _ = guarded(|| crate::session::with_nk(draw_button));
+            if let Err(fault) = guarded(|| crate::session::with_nk(draw_button)) {
+                crate::session::host_fault("options button", &fault);
+            }
         }
         return;
     }
-    let _ = guarded(|| crate::session::with_nk(draw_screen));
+    if let Err(fault) = guarded(|| crate::session::with_nk(draw_screen)) {
+        crate::session::host_fault("plugin screen", &fault);
+        // Do not leave the user on a screen that cannot draw.
+        MODE.with(|m| m.set(Mode::Game));
+    }
 }
 
 /// The "Plugins" button in the top-right corner, over the game's own options screen.

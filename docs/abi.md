@@ -82,7 +82,9 @@ they changed the value this frame (the slider clamps it to the range first). `ct
 
 ## Events
 
-Delivered to `on_event` on the main thread, only to plugins that subscribed.
+Delivered to `on_event` on the main thread, only to plugins that subscribed. Peer messages are
+delivered only while the local player is in a lobby, and a net slot that sends more than 128 W2R
+messages per second has the excess dropped before any plugin sees them.
 
 | Event | Payload | Capability | Fires |
 |---|---|---|---|

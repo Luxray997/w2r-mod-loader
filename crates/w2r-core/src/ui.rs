@@ -6,6 +6,7 @@
 //! null value pointer makes the call a no-op that reports "not pressed / not changed".
 
 use core::ffi::c_void;
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use w2r_abi::{W2rStr, W2rUi};
@@ -31,32 +32,48 @@ pub trait Widgets {
 }
 
 /// What a plugin's `on_ui` call sees behind `W2rUi.ctx`.
-pub struct Frame<'a> {
+struct Frame<'a> {
     widgets: &'a dyn Widgets,
 }
 
-impl<'a> Frame<'a> {
-    pub fn new(widgets: &'a dyn Widgets) -> Self {
-        Frame { widgets }
-    }
+thread_local! {
+    /// The one frame whose table may be used right now (its address), or 0. A `W2rUi` kept
+    /// past `on_ui`, or used from another thread, no longer matches and every call is a no-op
+    /// instead of a read through a dead pointer.
+    static ACTIVE: Cell<usize> = const { Cell::new(0) };
+}
 
-    /// The table to hand to the plugin; valid only while `self` lives.
-    pub fn table(&mut self) -> W2rUi {
-        W2rUi {
-            struct_size: size_of::<W2rUi>() as u32,
-            ctx: (self as *mut Frame<'a>).cast(),
-            label: cb::label,
-            button: cb::button,
-            checkbox: cb::checkbox,
-            slider_int: cb::slider_int,
+/// Runs `f` with a table over `widgets`. The table is live only inside `f`; the frame behind
+/// it never moves, and the previous active frame (if `f` nests) is restored on the way out.
+pub fn with_frame<R>(widgets: &dyn Widgets, f: impl FnOnce(&W2rUi) -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.with(|a| a.set(self.0));
         }
     }
+    let mut frame = Frame { widgets };
+    let ctx: *mut Frame<'_> = &mut frame;
+    let _restore = Restore(ACTIVE.with(|a| a.replace(ctx as usize)));
+    let table = W2rUi {
+        struct_size: size_of::<W2rUi>() as u32,
+        ctx: ctx.cast(),
+        label: cb::label,
+        button: cb::button,
+        checkbox: cb::checkbox,
+        slider_int: cb::slider_int,
+    };
+    f(&table)
 }
 
 mod cb {
     use super::*;
 
+    /// Only the frame that is live on this thread; anything else is refused.
     unsafe fn frame<'a>(ctx: *mut c_void) -> Option<&'a Frame<'a>> {
+        if ctx.is_null() || ACTIVE.with(|a| a.get()) != ctx as usize {
+            return None;
+        }
         unsafe { ctx.cast::<Frame<'a>>().as_ref() }
     }
 
@@ -280,12 +297,10 @@ mod tests {
         fake.press.borrow_mut().push("Go".into());
         fake.flip.borrow_mut().push("Flag".into());
         fake.set.borrow_mut().insert("Vol".into(), 7);
-        let mut frame = Frame::new(&fake);
-        let ui = frame.table();
         let mut flag = 0i32;
         let mut vol = 3i32;
         let mut untouched = 1i32;
-        unsafe {
+        with_frame(&fake, |ui| unsafe {
             (ui.label)(ui.ctx, s("Hello"));
             assert_eq!((ui.button)(ui.ctx, s("Go")), 1);
             assert_eq!((ui.button)(ui.ctx, s("Stop")), 0);
@@ -300,7 +315,7 @@ mod tests {
                 0,
                 "already 7"
             );
-        }
+        });
         let calls = fake.calls.borrow();
         assert_eq!(calls[0], "row 90 1");
         assert_eq!(calls[1], "label \"Hello\"");
@@ -313,11 +328,9 @@ mod tests {
     fn bad_arguments_are_no_ops() {
         let fake = FakeWidgets::default();
         fake.press.borrow_mut().push("Go".into());
-        let mut frame = Frame::new(&fake);
-        let ui = frame.table();
         let long = "x".repeat(MAX_TEXT + 1);
         let mut v = 5i32;
-        unsafe {
+        with_frame(&fake, |ui| unsafe {
             (ui.label)(ui.ctx, s(&long));
             (ui.label)(
                 ui.ctx,
@@ -342,8 +355,25 @@ mod tests {
             );
             assert_eq!((ui.button)(core::ptr::null_mut(), s("Go")), 0);
             (ui.label)(ui.ctx, s(""));
-        }
+        });
         assert_eq!(fake.calls.borrow().len(), 2, "{:?}", fake.calls.borrow());
+    }
+
+    #[test]
+    fn a_table_kept_past_its_frame_is_inert() {
+        let fake = FakeWidgets::default();
+        fake.press.borrow_mut().push("Go".into());
+        let kept = with_frame(&fake, |ui| {
+            unsafe { assert_eq!((ui.button)(ui.ctx, s("Go")), 1) };
+            *ui
+        });
+        unsafe { assert_eq!((kept.button)(kept.ctx, s("Go")), 0) };
+        // A later frame does not revive the old table, and the old one cannot reach the new.
+        with_frame(&fake, |ui| unsafe {
+            assert_eq!((kept.button)(kept.ctx, s("Go")), 0);
+            assert_eq!((ui.button)(ui.ctx, s("Go")), 1);
+        });
+        assert_eq!(fake.calls.borrow().len(), 4, "{:?}", fake.calls.borrow());
     }
 
     #[test]

@@ -187,7 +187,11 @@ impl Registry {
     /// active, subscribed and allowed to receive (`net.send`), and the sender announced the
     /// handshake. Anything else is dropped (docs/abi.md). Returns whether it was delivered.
     pub fn dispatch_peer(&self, sender: u32, msg: PluginMessage<'_>) -> bool {
-        if !self.shared.services.roster.announced(sender) {
+        // Lobby only, in both directions (docs/abi.md): a message that arrives in a match is
+        // dropped even from an announced peer.
+        if !self.shared.services.presence.in_lobby()
+            || !self.shared.services.roster.announced(sender)
+        {
             return false;
         }
         let Some(slot) = self.slots.iter().find(|s| s.tag == msg.tag) else {
