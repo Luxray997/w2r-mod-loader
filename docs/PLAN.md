@@ -139,7 +139,7 @@ plugins over the public ABI (chat may well be the latter).
    with a second player (wc2r-plus or another w2rpm) the log shows `net slot N … runs …` and
    `replied`; `tools\install_dev.ps1 -Simulation` gives a non-zero fingerprint so a mismatch
    warning can be seen.
-2. Chat.
+2. Chat. Spec: [chat-plugin.md](chat-plugin.md) (plugin, raw hooks; needs `symbol_address`, settings, data and the match events first).
 3. Lobby policy.
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
