@@ -71,6 +71,18 @@ pub const BG: Spec = Spec {
     min: 0,
     max: 255,
 };
+pub const TIMESTAMPS: Spec = Spec {
+    key: "timestamps",
+    default: 0,
+    min: 0,
+    max: 1,
+};
+pub const LOG: Spec = Spec {
+    key: "log",
+    default: 0,
+    min: 0,
+    max: 1,
+};
 
 impl Spec {
     pub fn clamp(&self, v: i64) -> i64 {
@@ -85,6 +97,8 @@ pub struct Settings {
     pub fade_seconds: i32,
     pub backlog: usize,
     pub bg_alpha: i32,
+    pub timestamps: bool,
+    pub log: bool,
 }
 
 impl Default for Settings {
@@ -95,6 +109,8 @@ impl Default for Settings {
             fade_seconds: FADE.default as i32,
             backlog: BACKLOG.default as usize,
             bg_alpha: BG.default as i32,
+            timestamps: TIMESTAMPS.default != 0,
+            log: LOG.default != 0,
         }
     }
 }
@@ -108,6 +124,8 @@ impl Settings {
             "fade" => self.fade_seconds = FADE.clamp(value) as i32,
             "backlog" => self.backlog = BACKLOG.clamp(value) as usize,
             "bg" => self.bg_alpha = BG.clamp(value) as i32,
+            "timestamps" => self.timestamps = TIMESTAMPS.clamp(value) != 0,
+            "log" => self.log = LOG.clamp(value) != 0,
             _ => {}
         }
     }
@@ -233,6 +251,61 @@ pub fn revealed(fade_seconds: i32, chat_target_mode: u8, pause_flags: u8) -> boo
     fade_seconds <= 0 || chat_target_mode != 0 || pause_flags & 1 != 0
 }
 
+/// Local wall-clock time, as the game machine shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+/// `[HH:MM] `, the prefix "Show Timestamps" puts on a message.
+pub fn timestamp_prefix(t: &LocalTime) -> String {
+    format!("[{:02}:{:02}] ", t.hour, t.minute)
+}
+
+/// One line of the disk log: `[YYYY-MM-DD HH:MM:SS] text`.
+pub fn log_line(t: &LocalTime, text: &str) -> String {
+    format!(
+        "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}] {text}\n",
+        t.year, t.month, t.day, t.hour, t.minute, t.second
+    )
+}
+
+/// The per-launch log file name; fits the host's data-file rule.
+pub fn log_file_name(t: &LocalTime) -> String {
+    format!(
+        "chat-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.log",
+        t.year, t.month, t.day, t.hour, t.minute, t.second
+    )
+}
+
+pub const LOG_MATCH_MARKER: &str = "\n=== new match ===\n";
+
+/// The game's player name slot: NUL-terminated within the slot. A name that fills the slot (no
+/// terminator) or is empty is not trusted.
+pub fn player_name(slot: &[u8]) -> Option<String> {
+    let n = slot.iter().position(|&b| b == 0)?;
+    (n > 0).then(|| String::from_utf8_lossy(&slot[..n]).into_owned())
+}
+
+/// "X paused the game." (with the remaining pauses in a networked match) or "X resumed the game."
+pub fn pause_line(name: &str, paused: bool, remaining: Option<u8>) -> String {
+    if !paused {
+        return format!("{name} resumed the game.");
+    }
+    match remaining {
+        Some(n) => format!(
+            "{name} paused the game. ({n} pause{} remaining)",
+            if n == 1 { "" } else { "s" }
+        ),
+        None => format!("{name} paused the game."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +412,64 @@ mod tests {
         assert!(revealed(7, 2, 0));
         assert!(revealed(7, 0, 1));
         assert!(!revealed(7, 0, 0b10), "only bit 0 is the pause flag");
+    }
+
+    fn t() -> LocalTime {
+        LocalTime {
+            year: 2026,
+            month: 10,
+            day: 4,
+            hour: 9,
+            minute: 5,
+            second: 7,
+        }
+    }
+
+    #[test]
+    fn timestamps_log_lines_and_file_names_follow_wc2r_plus() {
+        assert_eq!(timestamp_prefix(&t()), "[09:05] ");
+        assert_eq!(log_line(&t(), "hi"), "[2026-10-04 09:05:07] hi\n");
+        assert_eq!(log_file_name(&t()), "chat-2026-10-04_09-05-07.log");
+        assert_eq!(LOG_MATCH_MARKER, "\n=== new match ===\n");
+    }
+
+    #[test]
+    fn pause_lines_pluralise_and_skip_the_count_offline() {
+        assert_eq!(
+            pause_line("Ann", true, Some(2)),
+            "Ann paused the game. (2 pauses remaining)"
+        );
+        assert_eq!(
+            pause_line("Ann", true, Some(1)),
+            "Ann paused the game. (1 pause remaining)"
+        );
+        assert_eq!(
+            pause_line("Ann", true, Some(0)),
+            "Ann paused the game. (0 pauses remaining)"
+        );
+        assert_eq!(pause_line("Ann", true, None), "Ann paused the game.");
+        assert_eq!(pause_line("Ann", false, Some(2)), "Ann resumed the game.");
+    }
+
+    #[test]
+    fn player_names_need_a_terminator_and_text() {
+        assert_eq!(player_name(b"Ann\0junk"), Some("Ann".into()));
+        assert_eq!(player_name(b"\0abc"), None);
+        assert_eq!(
+            player_name(b"nonul"),
+            None,
+            "fills the slot with no terminator"
+        );
+    }
+
+    #[test]
+    fn the_new_settings_default_off_and_clamp() {
+        let mut s = Settings::default();
+        assert!(!s.timestamps && !s.log);
+        s.apply("timestamps", 1);
+        s.apply("log", 7);
+        assert!(s.timestamps && s.log);
+        s.apply("log", -3);
+        assert!(!s.log);
     }
 }

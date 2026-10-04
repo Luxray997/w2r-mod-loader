@@ -134,6 +134,7 @@ name = "w2r-chat"
 version = "0.1.0"
 dependencies = [
  "w2r-abi",
+ "windows-sys",
 ]
 
 [[package]]

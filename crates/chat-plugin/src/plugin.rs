@@ -8,7 +8,7 @@
 
 use core::ffi::{CStr, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
@@ -63,6 +63,8 @@ const SCROLL_TO_BOTTOM_Y: i32 = 1_000_000;
 const INDICATOR_WIDTH: f32 = 4.0;
 /// The game's player count: a sender index at or above this is not a player.
 const PLAYER_COUNT: u8 = 8;
+/// Bytes per player in the game's name table.
+const NAME_STRIDE: usize = 0x38;
 
 unsafe fn rd<T: Copy>(base: *const u8, offset: usize) -> T {
     unsafe { base.add(offset).cast::<T>().read_unaligned() }
@@ -148,6 +150,8 @@ type PushMapMessageFn = unsafe extern "C" fn(*const c_char, i32, u32);
 type DrawMapMessageListFn = unsafe extern "C" fn(*mut c_void, i32);
 type BuildMapMessagesPanelFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32, i32);
 type DisplayChatOrGameMessageFn = unsafe extern "C" fn(*const c_char, u8, u32, c_char);
+type WriteStickyMessageFn = unsafe extern "C" fn(*const c_char, u32);
+type PauseCommandFn = unsafe extern "C" fn();
 
 struct Game {
     draw_message_line: DrawMapMessageLineFn,
@@ -171,6 +175,10 @@ struct Game {
     chat_target_mode: *const u8,
     pause_flags: *const u8,
     slots: *mut u8,
+    player_names: *const u8,
+    command_issuer: *const u8,
+    pauses_remaining: *const u8,
+    networked_match: *const u8,
 }
 
 // SAFETY: plain function and data addresses of the game, fixed for the session.
@@ -255,6 +263,10 @@ fn resolve() -> Result<Game, &'static str> {
         chat_target_mode: lookup("ChatTargetMode").ok_or("ChatTargetMode")? as *const u8,
         pause_flags: lookup("MatchPauseFlags").ok_or("MatchPauseFlags")? as *const u8,
         slots: lookup("MapMessageSlots").ok_or("MapMessageSlots")? as *mut u8,
+        player_names: lookup("PlayerNames").ok_or("PlayerNames")? as *const u8,
+        command_issuer: lookup("CommandIssuer").ok_or("CommandIssuer")? as *const u8,
+        pauses_remaining: lookup("PausesRemaining").ok_or("PausesRemaining")? as *const u8,
+        networked_match: lookup("NetworkedMatch").ok_or("NetworkedMatch")? as *const u8,
     })
 }
 
@@ -267,6 +279,18 @@ struct State {
     /// The player whose chat line the game is displaying right now (set around
     /// `DisplayChatOrGameMessage`, read by the nested `PushMapMessage`).
     sender: Option<u8>,
+    log: LogFile,
+}
+
+/// The per-launch disk log (`fs.data`). One file per launch, opened on the first line written
+/// while the setting is on.
+#[derive(Default)]
+struct LogFile {
+    handle: Option<W2rHandle>,
+    name: Option<String>,
+    /// Opening or writing failed; one warning was logged and the log stays off until the
+    /// setting is toggled again.
+    dead: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -300,6 +324,12 @@ static ORIG_PUSH: AtomicUsize = AtomicUsize::new(0);
 static ORIG_DRAW_LIST: AtomicUsize = AtomicUsize::new(0);
 static ORIG_BUILD_PANEL: AtomicUsize = AtomicUsize::new(0);
 static ORIG_DISPLAY: AtomicUsize = AtomicUsize::new(0);
+static ORIG_STICKY: AtomicUsize = AtomicUsize::new(0);
+static ORIG_PAUSE: AtomicUsize = AtomicUsize::new(0);
+static ORIG_RESUME: AtomicUsize = AtomicUsize::new(0);
+/// True while the game's own pause or resume handler runs: its sticky message is ours to
+/// replace with an announcement.
+static IN_PAUSE_HANDLER: AtomicBool = AtomicBool::new(false);
 
 macro_rules! original {
     ($slot:expr, $t:ty) => {{
@@ -567,6 +597,115 @@ unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
     }
 }
 
+// ---- capture and the disk log --------------------------------------------------------------
+
+fn local_time() -> model::LocalTime {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut t = SYSTEMTIME {
+        wYear: 0,
+        wMonth: 0,
+        wDayOfWeek: 0,
+        wDay: 0,
+        wHour: 0,
+        wMinute: 0,
+        wSecond: 0,
+        wMilliseconds: 0,
+    };
+    unsafe { GetLocalTime(&mut t) };
+    model::LocalTime {
+        year: t.wYear,
+        month: t.wMonth as u8,
+        day: t.wDay as u8,
+        hour: t.wHour as u8,
+        minute: t.wMinute as u8,
+        second: t.wSecond as u8,
+    }
+}
+
+/// Opens the log on first use. `None` when logging is off or has failed.
+fn log_handle(time: &model::LocalTime) -> Option<W2rHandle> {
+    let (wanted, existing, dead) = with_state(|st| {
+        (
+            st.settings.enabled && st.settings.log,
+            st.log.handle,
+            st.log.dead,
+        )
+    });
+    if !wanted || dead {
+        return None;
+    }
+    if existing.is_some() {
+        return existing;
+    }
+    // Named from the moment logging first turns on (wc2r-plus `SyncChatLog`), not from the first
+    // message of the session.
+    let name = with_state(|st| {
+        st.log
+            .name
+            .get_or_insert_with(|| model::log_file_name(time))
+            .clone()
+    });
+    let h = host()?;
+    let mut handle = 0;
+    let status = unsafe { (h.data_open)(h.token, s(&name), W2R_FILE_WRITE, &mut handle) };
+    if status != W2R_OK {
+        log(
+            W2R_LOG_WARN,
+            &format!("could not open the chat log {name} (status {status}); logging is off"),
+        );
+        with_state(|st| st.log.dead = true);
+        return None;
+    }
+    with_state(|st| st.log.handle = Some(handle));
+    Some(handle)
+}
+
+fn log_write(handle: W2rHandle, text: &str) {
+    let Some(h) = host() else { return };
+    let status =
+        unsafe { (h.data_write)(h.token, handle, text.as_ptr().cast(), text.len() as u32) };
+    if status != W2R_OK {
+        log(
+            W2R_LOG_WARN,
+            &format!("chat log write failed (status {status}); logging is off"),
+        );
+        with_state(|st| st.log.dead = true);
+    }
+}
+
+/// Closes the log; the next line (if the setting is on) opens a new file name only on a new
+/// launch, so re-enabling appends nothing to a closed file but starts it afresh.
+fn close_log() {
+    let handle = with_state(|st| {
+        st.log.dead = false;
+        st.log.name = None;
+        st.log.handle.take()
+    });
+    if let (Some(handle), Some(h)) = (handle, host()) {
+        unsafe { (h.data_close)(h.token, handle) };
+    }
+}
+
+/// One message into the backlog and the disk log, with the optional `[HH:MM] ` prefix
+/// (wc2r-plus `CaptureMessage`).
+fn capture(text: &[u8], highlight: bool, channel: Channel) {
+    let (stamps, cap) = with_state(|st| (st.settings.timestamps, st.settings.backlog));
+    let time = local_time();
+    let mut bytes = Vec::with_capacity(text.len() + 8);
+    if stamps {
+        bytes.extend_from_slice(model::timestamp_prefix(&time).as_bytes());
+    }
+    bytes.extend_from_slice(text);
+    let Some(m) = Message::new(&bytes, highlight, channel, now_ms()) else {
+        return;
+    };
+    if let Some(handle) = log_handle(&time) {
+        log_write(handle, &model::log_line(&time, &m.text.to_string_lossy()));
+    }
+    with_state(|st| st.backlog.push(m, cap));
+}
+
 // ---- detours -------------------------------------------------------------------------------
 
 unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, duration_ms: u32) {
@@ -576,20 +715,14 @@ unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, durat
                 return;
             }
             let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
-            let now = now_ms();
-            with_state(|st| {
-                // Slice 1: a line the game is displaying for a player is chat (grey), anything
-                // else a system line (gold). wc2r-plus also looks the sender's name up; slice 4.
-                let channel = if st.sender.is_some() {
-                    Channel::All
-                } else {
-                    Channel::System
-                };
-                if let Some(m) = Message::new(bytes, highlight != 0, channel, now) {
-                    let cap = st.settings.backlog;
-                    st.backlog.push(m, cap);
-                }
-            });
+            // A line the game is displaying for a player is chat (grey), anything else a system
+            // line (gold). wc2r-plus also looks the sender's name up; slice 4.
+            let channel = if with_state(|st| st.sender.is_some()) {
+                Channel::All
+            } else {
+                Channel::System
+            };
+            capture(bytes, highlight != 0, channel);
         }));
     }
     unsafe { original!(ORIG_PUSH, PushMapMessageFn)(text, highlight, duration_ms) };
@@ -610,6 +743,64 @@ unsafe extern "C" fn display_chat_or_game_message(
         original!(ORIG_DISPLAY, DisplayChatOrGameMessageFn)(text, who, duration_ms, target_mode)
     };
     with_state(|st| st.sender = saved);
+}
+
+/// While the game's own pause or resume handler runs, its sticky "paused" message is dropped:
+/// the plugin announces the pause as a chat line instead.
+unsafe extern "C" fn write_sticky_message(text: *const c_char, duration_ms: u32) {
+    if IN_PAUSE_HANDLER.load(Ordering::Relaxed) && enabled() {
+        return;
+    }
+    unsafe { original!(ORIG_STICKY, WriteStickyMessageFn)(text, duration_ms) };
+}
+
+fn announce_pause(g: &Game, paused: bool) {
+    let who = unsafe { *g.command_issuer };
+    if who >= PLAYER_COUNT {
+        return;
+    }
+    let slot = unsafe {
+        core::slice::from_raw_parts(g.player_names.add(who as usize * NAME_STRIDE), NAME_STRIDE)
+    };
+    let Some(name) = model::player_name(slot) else {
+        return;
+    };
+    let remaining = (unsafe { *g.networked_match } != 0)
+        .then(|| unsafe { *g.pauses_remaining.add(who as usize) });
+    capture(
+        model::pause_line(&name, paused, remaining).as_bytes(),
+        true,
+        Channel::System,
+    );
+}
+
+/// Runs the game's pause (or resume) handler with the sticky message muted, then announces the
+/// change if the pause flag actually flipped.
+unsafe fn pause_or_resume(original: &AtomicUsize, pausing: bool) {
+    let handler = original!(original, PauseCommandFn);
+    let flag = |g: &Game| unsafe { *g.pause_flags } & 1 != 0;
+    let before = game().map(flag).unwrap_or(false);
+    IN_PAUSE_HANDLER.store(true, Ordering::Relaxed);
+    unsafe { handler() };
+    IN_PAUSE_HANDLER.store(false, Ordering::Relaxed);
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let Some(g) = game() else { return };
+        if !enabled() {
+            return;
+        }
+        let after = flag(g);
+        if (pausing && !before && after) || (!pausing && before && !after) {
+            announce_pause(g, pausing);
+        }
+    }));
+}
+
+unsafe extern "C" fn handle_pause_command() {
+    unsafe { pause_or_resume(&ORIG_PAUSE, true) };
+}
+
+unsafe extern "C" fn handle_resume_command() {
+    unsafe { pause_or_resume(&ORIG_RESUME, false) };
 }
 
 unsafe extern "C" fn draw_map_message_list(ctx: *mut c_void, line_height: i32) {
@@ -846,6 +1037,8 @@ fn load_settings() -> Settings {
             model::FADE.key,
             model::BACKLOG.key,
             model::BG.key,
+            model::TIMESTAMPS.key,
+            model::LOG.key,
         ] {
             let mut v = 0i64;
             if unsafe { (h.settings_get_i64)(h.token, s(key), &mut v) } == W2R_OK {
@@ -877,7 +1070,7 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     let _ = GAME.set(g);
     with_state(|st| st.settings = load_settings());
 
-    let hooks: [(&str, *mut c_void, &AtomicUsize); 4] = [
+    let hooks: [(&str, *mut c_void, &AtomicUsize); 7] = [
         (
             "PushMapMessage",
             push_map_message as *mut c_void,
@@ -897,6 +1090,21 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
             "BuildMapMessagesPanel",
             build_map_messages_panel as *mut c_void,
             &ORIG_BUILD_PANEL,
+        ),
+        (
+            "WriteStickyMessage",
+            write_sticky_message as *mut c_void,
+            &ORIG_STICKY,
+        ),
+        (
+            "HandlePauseCommand",
+            handle_pause_command as *mut c_void,
+            &ORIG_PAUSE,
+        ),
+        (
+            "HandleResumeCommand",
+            handle_resume_command as *mut c_void,
+            &ORIG_RESUME,
         ),
     ];
     let mut hooks = hooks.to_vec();
@@ -942,6 +1150,10 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
     let id = unsafe { (*event).id };
     if id == W2R_EVT_MATCH_START {
         with_state(|st| st.backlog.clear());
+        let time = local_time();
+        if let Some(handle) = log_handle(&time) {
+            log_write(handle, model::LOG_MATCH_MARKER);
+        }
         log(W2R_LOG_INFO, "match start: backlog cleared");
     }
 }
@@ -949,12 +1161,14 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
 unsafe extern "C" fn on_ui(ui: *const W2rUi) {
     let ui = unsafe { &*ui };
     let mut changed: Vec<(&'static str, i64)> = Vec::new();
-    let (mut lines, mut fade, mut backlog, mut bg) = with_state(|st| {
+    let (mut lines, mut fade, mut backlog, mut bg, mut stamps, mut log_on) = with_state(|st| {
         (
             st.settings.lines,
             st.settings.fade_seconds,
             st.settings.backlog as i32,
             st.settings.bg_alpha,
+            st.settings.timestamps as i32,
+            st.settings.log as i32,
         )
     });
     unsafe {
@@ -999,14 +1213,24 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         {
             changed.push((model::BG.key, bg as i64));
         }
+        if (ui.checkbox)(ui.ctx, s("Show timestamps"), &mut stamps) != 0 {
+            changed.push((model::TIMESTAMPS.key, stamps as i64));
+        }
+        if (ui.checkbox)(ui.ctx, s("Log chat to disk"), &mut log_on) != 0 {
+            changed.push((model::LOG.key, log_on as i64));
+        }
     }
     for (key, value) in changed {
         with_state(|st| st.settings.apply(key, value));
         save_setting(key, value);
+        if key == model::LOG.key && value == 0 {
+            close_log();
+        }
     }
 }
 
 unsafe extern "C" fn on_unload() {
+    close_log();
     remove_hooks();
 }
 
