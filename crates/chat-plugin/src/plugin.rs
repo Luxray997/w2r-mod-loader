@@ -17,8 +17,8 @@ use w2r_abi::*;
 mod hud;
 
 use crate::model::{
-    self, Backlog, CURSOR_COLOUR, Channel, Message, Settings, apply_colour_factor, faded, revealed,
-    rgba, visibility,
+    self, Backlog, CURSOR_COLOUR, Channel, Message, NameSpan, Settings, apply_colour_factor, faded,
+    revealed, rgba, visibility,
 };
 
 // ---- Nuklear and game layout (wc2r-plus target/struct_offsets.h) ---------------------------
@@ -451,6 +451,8 @@ unsafe fn draw_scroll_indicator(g: &Game, ctx: *mut c_void, strip_w: f32) {
 }
 
 struct LineLook {
+    /// Draw the colour spans of `Message::names`.
+    names: bool,
     alpha: f32,
     band: u32,
 }
@@ -521,23 +523,50 @@ unsafe fn draw_line(g: &Game, ctx: *mut c_void, m: &Message, colour: u32, look: 
     let mut fitting = clamp(done, &mut glyphs, &mut fit_w);
     while done < len && fitting != 0 && line_y + line_h <= bottom {
         let line_end = done + fitting;
-        style[3] = text_fg;
-        unsafe {
-            (g.widget_text)(
-                canvas,
-                line_x,
-                line_y,
-                line_w,
-                line_h,
-                text.add(done as usize),
-                line_end - done,
-                style.as_ptr().cast(),
-                0x11,
-                font.cast(),
-            );
+        // A piece of this wrapped line, drawn after the width of what precedes it.
+        let piece = |from: i32, to: i32, fg: u32, style: &mut [u32; 7]| {
+            if to <= from {
+                return;
+            }
+            let dx = if from > done {
+                unsafe { width(font_userdata, font_h, text.add(done as usize), from - done) }
+            } else {
+                0.0
+            };
+            style[3] = fg;
+            unsafe {
+                (g.widget_text)(
+                    canvas,
+                    line_x + dx,
+                    line_y,
+                    line_w - dx,
+                    line_h,
+                    text.add(from as usize),
+                    to - from,
+                    style.as_ptr().cast(),
+                    0x11,
+                    font.cast(),
+                );
+            }
+        };
+        let mut at = done;
+        if look.names {
+            for n in &m.names {
+                let from = (n.start as i32).clamp(done, line_end);
+                let to = ((n.start + n.len) as i32).clamp(done, line_end);
+                if to <= from {
+                    continue;
+                }
+                piece(at, from, text_fg, &mut style);
+                let name_fg = faded(
+                    apply_colour_factor(model::name_colour(n.colour, colour), factor),
+                    look.alpha,
+                );
+                piece(from, to, name_fg, &mut style);
+                at = to;
+            }
         }
-        let _ = width; // used by the name-span pieces in slice 4
-        let _ = font_userdata;
+        piece(at, line_end, text_fg, &mut style);
         done = line_end;
         line_y += pad_y * 2.0 + font_h;
         fitting = clamp(done, &mut glyphs, &mut fit_w);
@@ -550,12 +579,27 @@ unsafe fn wrapped_lines(g: &Game, ctx: *mut c_void, m: &Message, w: f32) -> i32 
 }
 
 unsafe fn draw_backlog_rows(g: &Game, ctx: *mut c_void, w: f32, line_height: f32) {
-    let messages = with_state(|st| st.backlog.snapshot());
+    let (messages, name_colours) =
+        with_state(|st| (st.backlog.snapshot(), st.settings.name_colours));
     for m in &messages {
         let n = unsafe { wrapped_lines(g, ctx, m, w) };
         unsafe {
             (g.row_dynamic)(ctx, n as f32 * line_height, 1);
-            (g.draw_wrapped_label)(ctx, m.text.as_ptr(), m.colour());
+            if name_colours && !m.names.is_empty() {
+                draw_line(
+                    g,
+                    ctx,
+                    m,
+                    m.colour(),
+                    &LineLook {
+                        names: true,
+                        alpha: 1.0,
+                        band: 0,
+                    },
+                );
+            } else {
+                (g.draw_wrapped_label)(ctx, m.text.as_ptr(), m.colour());
+            }
         }
     }
     unsafe { (g.row_dynamic)(ctx, 0.01, 1) };
@@ -568,10 +612,11 @@ unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
     let Some((w, h)) = (unsafe { group_region(g, ctx) }) else {
         return;
     };
-    let (hold_ms, bg, recent) = with_state(|st| {
+    let (hold_ms, bg, name_colours, recent) = with_state(|st| {
         (
             st.settings.fade_seconds.max(0) as u64 * 1000,
             st.settings.bg_alpha,
+            st.settings.name_colours,
             // Enough to fill the biggest panel; the loop stops at the first one that does not fit.
             st.backlog
                 .recent_first()
@@ -607,6 +652,7 @@ unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
                 m,
                 m.colour(),
                 &LineLook {
+                    names: name_colours,
                     alpha,
                     band: rgba(0, 0, 0, (bg as f32 * alpha) as u8),
                 },
@@ -705,17 +751,63 @@ fn close_log() {
     }
 }
 
+/// A player's name bytes from the game's table, `None` for an empty or unterminated slot.
+fn player_name_bytes(g: &Game, who: usize) -> Option<Vec<u8>> {
+    if who >= PLAYER_COUNT as usize {
+        return None;
+    }
+    let slot =
+        unsafe { core::slice::from_raw_parts(g.player_names.add(who * NAME_STRIDE), NAME_STRIDE) };
+    model::name_bytes(slot)
+}
+
+/// The player's colour index, 8 (none) when the game has not assigned one.
+fn colour_index(g: &Game, who: usize) -> u8 {
+    if who >= PLAYER_COUNT as usize {
+        return model::PLAYER_COUNT as u8;
+    }
+    let index = unsafe { *g.colour_reorder.add(who) };
+    if (index as usize) < model::PLAYER_COUNT {
+        index
+    } else {
+        model::PLAYER_COUNT as u8
+    }
+}
+
+/// Human players with a real name and colour, for spotting names inside system lines.
+fn human_players(g: &Game) -> Vec<(Vec<u8>, u8)> {
+    (0..PLAYER_COUNT as usize)
+        .filter_map(|i| {
+            let name = player_name_bytes(g, i)?;
+            let colour = colour_index(g, i);
+            (unsafe { *g.player_owner.add(i) } == 0
+                && name.len() >= 2
+                && (colour as usize) < model::PLAYER_COUNT)
+                .then_some((name, colour))
+        })
+        .collect()
+}
+
 /// One message into the backlog and the disk log, with the optional `[HH:MM] ` prefix
 /// (wc2r-plus `CaptureMessage`).
-fn capture(text: &[u8], highlight: bool, channel: Channel) {
+fn capture(text: &[u8], highlight: bool, channel: Channel, names: Vec<NameSpan>) {
     let (stamps, cap) = with_state(|st| (st.settings.timestamps, st.settings.backlog));
     let time = local_time();
     let mut bytes = Vec::with_capacity(text.len() + 8);
     if stamps {
         bytes.extend_from_slice(model::timestamp_prefix(&time).as_bytes());
     }
+    let shift = bytes.len();
     bytes.extend_from_slice(text);
-    let Some(m) = Message::new(&bytes, highlight, channel, now_ms()) else {
+    let names = names
+        .into_iter()
+        .map(|n| NameSpan {
+            start: n.start + shift,
+            ..n
+        })
+        .collect();
+    let Some(m) = Message::new(&bytes, highlight, channel, now_ms()).map(|m| m.with_names(names))
+    else {
         return;
     };
     if let Some(handle) = log_handle(&time) {
@@ -726,6 +818,19 @@ fn capture(text: &[u8], highlight: bool, channel: Channel) {
 
 // ---- detours -------------------------------------------------------------------------------
 
+/// The colour span of the sender's name in a chat line, if the line has one and the game gave
+/// the player a colour.
+fn find_sender_span(line: &[u8], name: &[u8], colour: u8) -> Vec<NameSpan> {
+    match model::find_sender_name(line, name) {
+        Some(start) if (colour as usize) < model::PLAYER_COUNT => vec![NameSpan {
+            start,
+            len: name.len(),
+            colour,
+        }],
+        _ => Vec::new(),
+    }
+}
+
 unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, duration_ms: u32) {
     if !text.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -733,14 +838,22 @@ unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, durat
                 return;
             }
             let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
-            // A line the game is displaying for a player is chat (grey), anything else a system
-            // line (gold). wc2r-plus also looks the sender's name up; slice 4.
-            let channel = if with_state(|st| st.sender.is_some()) {
-                Channel::All
+            let Some(g) = game() else { return };
+            let sender = with_state(|st| st.sender);
+            // A line the game is displaying for a player is chat (grey, the sender's name in
+            // their colour); anything else is a system line (gold) with every player name it
+            // mentions coloured (wc2r-plus `HookedPushMapMessage`, without the channel labels).
+            let sender_name = sender.and_then(|who| player_name_bytes(g, who as usize));
+            if let (Some(who), Some(name)) = (sender, sender_name) {
+                let colour = colour_index(g, who as usize);
+                let names = find_sender_span(bytes, &name, colour);
+                capture(bytes, highlight != 0, Channel::All, names);
             } else {
-                Channel::System
-            };
-            capture(bytes, highlight != 0, channel);
+                let mut line = bytes.to_vec();
+                let names = model::find_player_names(&line, &human_players(g));
+                model::square_whisper_brackets(&mut line, &names);
+                capture(&line, highlight != 0, Channel::System, names);
+            }
         }));
     }
     unsafe { original!(ORIG_PUSH, PushMapMessageFn)(text, highlight, duration_ms) };
@@ -785,10 +898,21 @@ fn announce_pause(g: &Game, paused: bool) {
     };
     let remaining = (unsafe { *g.networked_match } != 0)
         .then(|| unsafe { *g.pauses_remaining.add(who as usize) });
+    let colour = colour_index(g, who as usize);
+    let names = if (colour as usize) < model::PLAYER_COUNT {
+        vec![NameSpan {
+            start: 0,
+            len: name.len(),
+            colour,
+        }]
+    } else {
+        Vec::new()
+    };
     capture(
         model::pause_line(&name, paused, remaining).as_bytes(),
         true,
         Channel::System,
+        names,
     );
 }
 
@@ -1061,6 +1185,7 @@ fn load_settings() -> Settings {
             model::BG.key,
             model::TIMESTAMPS.key,
             model::LOG.key,
+            model::NAME_COLOURS.key,
         ] {
             let mut v = 0i64;
             if unsafe { (h.settings_get_i64)(h.token, s(key), &mut v) } == W2R_OK {
@@ -1217,16 +1342,18 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
 unsafe extern "C" fn on_ui(ui: *const W2rUi) {
     let ui = unsafe { &*ui };
     let mut changed: Vec<(&'static str, i64)> = Vec::new();
-    let (mut lines, mut fade, mut backlog, mut bg, mut stamps, mut log_on) = with_state(|st| {
-        (
-            st.settings.lines,
-            st.settings.fade_seconds,
-            st.settings.backlog as i32,
-            st.settings.bg_alpha,
-            st.settings.timestamps as i32,
-            st.settings.log as i32,
-        )
-    });
+    let (mut lines, mut fade, mut backlog, mut bg, mut stamps, mut log_on, mut names_on) =
+        with_state(|st| {
+            (
+                st.settings.lines,
+                st.settings.fade_seconds,
+                st.settings.backlog as i32,
+                st.settings.bg_alpha,
+                st.settings.timestamps as i32,
+                st.settings.log as i32,
+                st.settings.name_colours as i32,
+            )
+        });
     unsafe {
         (ui.label)(ui.ctx, s("Chat history (port of wc2r-plus)"));
         if (ui.slider_int)(
@@ -1271,6 +1398,9 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         }
         if (ui.checkbox)(ui.ctx, s("Show timestamps"), &mut stamps) != 0 {
             changed.push((model::TIMESTAMPS.key, stamps as i64));
+        }
+        if (ui.checkbox)(ui.ctx, s("Color player names"), &mut names_on) != 0 {
+            changed.push((model::NAME_COLOURS.key, names_on as i64));
         }
         if (ui.checkbox)(ui.ctx, s("Log chat to disk"), &mut log_on) != 0 {
             changed.push((model::LOG.key, log_on as i64));

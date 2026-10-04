@@ -77,6 +77,12 @@ pub const TIMESTAMPS: Spec = Spec {
     min: 0,
     max: 1,
 };
+pub const NAME_COLOURS: Spec = Spec {
+    key: "name_colours",
+    default: 1,
+    min: 0,
+    max: 1,
+};
 pub const LOG: Spec = Spec {
     key: "log",
     default: 0,
@@ -99,6 +105,7 @@ pub struct Settings {
     pub bg_alpha: i32,
     pub timestamps: bool,
     pub log: bool,
+    pub name_colours: bool,
 }
 
 impl Default for Settings {
@@ -111,6 +118,7 @@ impl Default for Settings {
             bg_alpha: BG.default as i32,
             timestamps: TIMESTAMPS.default != 0,
             log: LOG.default != 0,
+            name_colours: NAME_COLOURS.default != 0,
         }
     }
 }
@@ -126,6 +134,7 @@ impl Settings {
             "bg" => self.bg_alpha = BG.clamp(value) as i32,
             "timestamps" => self.timestamps = TIMESTAMPS.clamp(value) != 0,
             "log" => self.log = LOG.clamp(value) != 0,
+            "name_colours" => self.name_colours = NAME_COLOURS.clamp(value) != 0,
             _ => {}
         }
     }
@@ -138,6 +147,8 @@ pub struct Message {
     pub highlight: bool,
     pub arrived_ms: u64,
     pub channel: Channel,
+    /// Parts of the text drawn in a player's colour, in order, not overlapping.
+    pub names: Vec<NameSpan>,
 }
 
 impl Message {
@@ -153,7 +164,18 @@ impl Message {
             highlight,
             arrived_ms: now_ms,
             channel,
+            names: Vec::new(),
         })
+    }
+
+    /// The same message with colour spans (byte offsets into the text as stored).
+    pub fn with_names(mut self, names: Vec<NameSpan>) -> Message {
+        let len = self.text.as_bytes().len();
+        self.names = names
+            .into_iter()
+            .filter(|n| n.len > 0 && n.start + n.len <= len)
+            .collect();
+        self
     }
 
     pub fn colour(&self) -> u32 {
@@ -304,6 +326,128 @@ pub fn pause_line(name: &str, paused: bool, remaining: Option<u8>) -> String {
         ),
         None => format!("{name} paused the game."),
     }
+}
+
+// ---- player names and colours --------------------------------------------------------------
+
+/// The game has eight players and eight colours.
+pub const PLAYER_COUNT: usize = 8;
+pub const BLACK: u8 = 5;
+/// The black player's name is drawn grey so it stays readable on the dark panel.
+pub const BLACK_NAME: u32 = rgba(0x20, 0x20, 0x20, 255);
+
+/// Stock player colours (wc2r-plus `team_colours::kColours`), index = the game's colour index.
+pub const PLAYER_COLOURS: [u32; PLAYER_COUNT] = [
+    rgba(196, 40, 40, 255),
+    rgba(48, 72, 200, 255),
+    rgba(0, 152, 152, 255),
+    rgba(128, 48, 168, 255),
+    rgba(232, 132, 24, 255),
+    rgba(32, 32, 32, 255),
+    rgba(236, 236, 236, 255),
+    rgba(232, 212, 48, 255),
+];
+
+/// The colour a name is drawn in; an out-of-range index falls back to `fallback`.
+pub fn name_colour(index: u8, fallback: u32) -> u32 {
+    match index {
+        BLACK => BLACK_NAME,
+        i if (i as usize) < PLAYER_COUNT => PLAYER_COLOURS[i as usize],
+        _ => fallback,
+    }
+}
+
+/// `len` bytes at `start` of a message's text are a player's name in colour `colour`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NameSpan {
+    pub start: usize,
+    pub len: usize,
+    pub colour: u8,
+}
+
+fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
+}
+
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from > hay.len() {
+        return None;
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
+}
+
+/// Where the sender's name sits in a chat line: a whole name followed by `": "`.
+pub fn find_sender_name(line: &[u8], name: &[u8]) -> Option<usize> {
+    let mut from = 0;
+    while let Some(at) = find_from(line, name, from) {
+        let end = at + name.len();
+        let preceded = at > 0 && is_name_byte(line[at - 1]);
+        if !preceded && line[end..].starts_with(b": ") {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// Every unique human player name in `line`, longest first, whole words only, no overlaps
+/// (`FindPlayerNames`). `humans` is (name, colour index) for each human of two or more characters
+/// with a real colour.
+pub fn find_player_names(line: &[u8], humans: &[(Vec<u8>, u8)]) -> Vec<NameSpan> {
+    let mut candidates: Vec<&(Vec<u8>, u8)> = humans
+        .iter()
+        .filter(|c| humans.iter().filter(|o| o.0 == c.0).count() == 1)
+        .collect();
+    candidates.sort_by_key(|c| core::cmp::Reverse(c.0.len()));
+    let mut spans: Vec<NameSpan> = Vec::new();
+    for (name, colour) in candidates {
+        let mut from = 0;
+        while let Some(at) = find_from(line, name, from) {
+            let end = at + name.len();
+            from = at + 1;
+            if at > 0 && is_name_byte(line[at - 1]) {
+                continue;
+            }
+            if end < line.len() && is_name_byte(line[end]) {
+                continue;
+            }
+            if spans.iter().any(|o| at < o.start + o.len && o.start < end) {
+                continue;
+            }
+            spans.push(NameSpan {
+                start: at,
+                len: name.len(),
+                colour: *colour,
+            });
+        }
+    }
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
+/// A whisper arrives as `<name> text`; it is shown as `[name] text`.
+pub fn square_whisper_brackets(line: &mut [u8], names: &[NameSpan]) {
+    if line.first() != Some(&b'<') {
+        return;
+    }
+    let first_close = line.iter().position(|&b| b == b'>');
+    for n in names {
+        let close = n.start + n.len;
+        if close < line.len() && line[close] == b'>' && first_close == Some(close) {
+            line[0] = b'[';
+            line[close] = b']';
+            return;
+        }
+    }
+}
+
+/// The game's name slot as bytes: up to the NUL, not empty, and it must have a terminator.
+pub fn name_bytes(slot: &[u8]) -> Option<Vec<u8>> {
+    let n = slot.iter().position(|&b| b == 0)?;
+    (n > 0).then(|| slot[..n].to_vec())
 }
 
 #[cfg(test)]
@@ -471,5 +615,104 @@ mod tests {
         assert!(s.timestamps && s.log);
         s.apply("log", -3);
         assert!(!s.log);
+    }
+
+    fn span(start: usize, len: usize, colour: u8) -> NameSpan {
+        NameSpan { start, len, colour }
+    }
+
+    #[test]
+    fn the_sender_is_found_as_a_whole_name_before_a_colon() {
+        assert_eq!(find_sender_name(b"Ann: hello", b"Ann"), Some(0));
+        assert_eq!(find_sender_name(b"[All] Ann: hi", b"Ann"), Some(6));
+        assert_eq!(
+            find_sender_name(b"Joann: hi", b"Ann"),
+            None,
+            "inside another name"
+        );
+        assert_eq!(find_sender_name(b"Ann says hi", b"Ann"), None, "no colon");
+        // The first hit is a quote of the name, the second is the sender.
+        assert_eq!(find_sender_name(b"hi Ann, Ann: yes", b"Ann"), Some(8));
+        assert_eq!(find_sender_name(b"x", b"Ann"), None);
+        assert_eq!(
+            find_sender_name(b"Ann:", b"Ann"),
+            None,
+            "needs the space too"
+        );
+    }
+
+    #[test]
+    fn player_names_in_a_system_line_are_found_longest_first_without_overlaps() {
+        let humans = vec![
+            (b"Ann".to_vec(), 0),
+            (b"Annabel".to_vec(), 1),
+            (b"Bob".to_vec(), 2),
+        ];
+        let line = b"Annabel and Ann killed Bob. Bobby ran.";
+        assert_eq!(
+            find_player_names(line, &humans),
+            vec![span(0, 7, 1), span(12, 3, 0), span(23, 3, 2)]
+        );
+    }
+
+    #[test]
+    fn names_two_players_share_are_not_coloured() {
+        let humans = vec![
+            (b"Sam".to_vec(), 0),
+            (b"Sam".to_vec(), 1),
+            (b"Zed".to_vec(), 2),
+        ];
+        assert_eq!(
+            find_player_names(b"Sam met Zed", &humans),
+            vec![span(8, 3, 2)]
+        );
+    }
+
+    #[test]
+    fn whispers_get_square_brackets_only_around_a_known_name() {
+        let mut line = b"<Ann> psst".to_vec();
+        square_whisper_brackets(&mut line, &[span(1, 3, 0)]);
+        assert_eq!(line, b"[Ann] psst");
+        let mut other = b"<Ann> psst".to_vec();
+        square_whisper_brackets(&mut other, &[]);
+        assert_eq!(other, b"<Ann> psst");
+        let mut later = b"<x> a <Ann> b".to_vec();
+        square_whisper_brackets(&mut later, &[span(7, 3, 0)]);
+        assert_eq!(later, b"<x> a <Ann> b", "the first > is not the name's");
+        let mut plain = b"hello".to_vec();
+        square_whisper_brackets(&mut plain, &[span(0, 5, 0)]);
+        assert_eq!(plain, b"hello");
+    }
+
+    #[test]
+    fn name_colours_use_the_stock_table_and_grey_for_black() {
+        assert_eq!(name_colour(0, 7), rgba(196, 40, 40, 255));
+        assert_eq!(name_colour(7, 7), rgba(232, 212, 48, 255));
+        assert_eq!(name_colour(BLACK, 7), BLACK_NAME);
+        assert_eq!(name_colour(8, 7), 7, "no colour: the fallback");
+        assert_eq!(PLAYER_COLOURS.len(), PLAYER_COUNT);
+    }
+
+    #[test]
+    fn name_slots_need_text_and_a_terminator() {
+        assert_eq!(name_bytes(b"Ann\0xyz"), Some(b"Ann".to_vec()));
+        assert_eq!(name_bytes(b"\0abc"), None);
+        assert_eq!(name_bytes(b"full"), None);
+    }
+
+    #[test]
+    fn spans_outside_the_text_are_dropped() {
+        let m = Message::new(b"Ann: hi", false, Channel::All, 0)
+            .unwrap()
+            .with_names(vec![span(0, 3, 0), span(5, 9, 1), span(2, 0, 2)]);
+        assert_eq!(m.names, vec![span(0, 3, 0)]);
+    }
+
+    #[test]
+    fn name_colouring_defaults_on() {
+        let mut s = Settings::default();
+        assert!(s.name_colours);
+        s.apply("name_colours", 0);
+        assert!(!s.name_colours);
     }
 }
