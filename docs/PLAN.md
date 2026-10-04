@@ -157,7 +157,9 @@ plugins over the public ABI (chat may well be the latter).
    `LobbySlotDropdown` hook), awaiting the check; slice 4a written (`lobbycreate.rs`: Teams/Slots lock buttons over the stock Create
    Multiplayer Game screen), awaiting the check; 4a verified. 4b (full replacement screen with the map browser and preview) is specified
    in [create-screen.md](create-screen.md), four slices; slice 1 (`screenkit.rs`, `createscreen.rs`,
-   the `enhanced_create_screen` setting, off by default) written, awaiting the in-game check.**
+   the `enhanced_create_screen` setting, off by default) verified; slice 2 (`mapbrowser.rs`,
+   `browserview.rs`: folders, up, reload, size filter, search, publish; no disk index cache yet)
+   written, awaiting the in-game check.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 

@@ -17,6 +17,7 @@ pub mod lobby;
 pub mod lobbypolicy;
 pub mod log;
 pub mod manifest;
+pub mod mapbrowser;
 pub mod pe;
 pub mod peer;
 pub mod screenkit;
@@ -29,6 +30,8 @@ pub mod ui;
 #[cfg(windows)]
 pub mod watchdog;
 
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod browserview;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod createscreen;
 #[cfg(windows)]

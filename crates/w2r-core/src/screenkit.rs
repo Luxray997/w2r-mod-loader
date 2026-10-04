@@ -74,11 +74,28 @@ pub mod game {
     use super::*;
     use crate::symbols::Symbols;
 
+    /// Packs a colour the way the game does: `0xAABBGGRR`.
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
+        (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | ((a as u32) << 24)
+    }
+
     // Offsets in the game's Nuklear context (wc2r-plus `struct_offsets.h`).
     const CTX_CURRENT_WINDOW: usize = 0x3d28;
     const CTX_TEXT_COLOUR: usize = 0x20c;
     const CTX_SPACING_Y: usize = 0x2004;
     const WINDOW_PANEL: usize = 0x8c;
+    const WINDOW_BUFFER: usize = 0x64;
+    const PANEL_BOUNDS_X: usize = 0x08;
+    const PANEL_OFFSET_Y: usize = 0x1c;
+    const PANEL_AT_Y: usize = 0x24;
+    const PANEL_ROW_HEIGHT: usize = 0x6c;
+    /// Row icons in the map list (wc2r-plus `map_browser.cpp`).
+    const ICON_SIZE: f32 = 46.0;
+    const ICON_INSET: f32 = 26.0 + ICON_SIZE * 0.2;
+    const FOLDER_COLOUR: u32 = rgba(226, 184, 68, 255);
+    const MAP_COLOUR: u32 = rgba(96, 186, 108, 255);
+    const ICON_HOLE: u32 = rgba(18, 14, 10, 220);
+    const PLACEHOLDER_COLOUR: u32 = rgba(150, 142, 128, 200);
     const PANEL_CLIP: usize = 0x3c;
     const GROUP_FLAGS: u32 = 0x20;
     const TEXT_EDIT_FLAGS: u32 = 0x260;
@@ -100,6 +117,19 @@ pub mod game {
     type BannerFn = unsafe extern "C" fn();
     type LocalizedFn = unsafe extern "C" fn(*const c_char) -> *const c_char;
     type FormatFn = unsafe extern "C" fn(*const c_char, ...) -> *const c_char;
+    type ButtonLabelFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i32;
+    type RowFn = unsafe extern "C" fn(*mut c_void, f32, i32);
+    type FillRectFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32, f32, u32);
+    type SlotDropdownFn = unsafe extern "C" fn(
+        i8,
+        i8,
+        *const c_char,
+        *mut c_void,
+        *mut c_void,
+        *mut i8,
+        f32,
+        i8,
+    ) -> i8;
     type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
 
     /// NUL-terminated copy for the game's C-string widgets.
@@ -155,6 +185,10 @@ pub mod game {
         set_skin: SetSkinFn,
         set_font: SetSkinFn,
         style_manager: *mut c_void,
+        button_label: ButtonLabelFn,
+        row: RowFn,
+        fill_rect: FillRectFn,
+        slot_dropdown: SlotDropdownFn,
     }
 
     // SAFETY: plain game function and data addresses, fixed for the session.
@@ -191,6 +225,10 @@ pub mod game {
                 set_skin: sym!(symbols, "SetSkin", SetSkinFn),
                 set_font: sym!(symbols, "SetFont", SetSkinFn),
                 style_manager: symbols.address("SkinManager")? as *mut c_void,
+                button_label: sym!(symbols, "ButtonLabel", ButtonLabelFn),
+                row: sym!(symbols, "LayoutRowDynamic", RowFn),
+                fill_rect: sym!(symbols, "NkFillRect", FillRectFn),
+                slot_dropdown: sym!(symbols, "LobbySlotDropdown", SlotDropdownFn),
             })
         }
 
@@ -218,6 +256,283 @@ pub mod game {
                 }
                 let c = panel.add(PANEL_CLIP).cast::<[f32; 4]>().read_unaligned();
                 (c[2] > 100.0 && c[3] > 100.0).then_some(Rect::new(c[0], c[1], c[2], c[3]))
+            }
+        }
+
+        fn panel(&self) -> *const u8 {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return core::ptr::null();
+            }
+            unsafe {
+                let win = ctx
+                    .add(CTX_CURRENT_WINDOW)
+                    .cast::<*const u8>()
+                    .read_unaligned();
+                if win.is_null() {
+                    core::ptr::null()
+                } else {
+                    win.add(WINDOW_PANEL).cast::<*const u8>().read_unaligned()
+                }
+            }
+        }
+
+        fn canvas(&self) -> *mut c_void {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return core::ptr::null_mut();
+            }
+            unsafe {
+                let win = ctx
+                    .add(CTX_CURRENT_WINDOW)
+                    .cast::<*const u8>()
+                    .read_unaligned();
+                if win.is_null() {
+                    core::ptr::null_mut()
+                } else {
+                    win.add(WINDOW_BUFFER) as *mut c_void
+                }
+            }
+        }
+
+        fn text_colour(&self) -> u32 {
+            unsafe {
+                (self.ctx() as *const u8)
+                    .add(CTX_TEXT_COLOUR)
+                    .cast::<u32>()
+                    .read_unaligned()
+            }
+        }
+
+        fn set_text_colour(&self, v: u32) {
+            unsafe {
+                (self.ctx() as *mut u8)
+                    .add(CTX_TEXT_COLOUR)
+                    .cast::<u32>()
+                    .write_unaligned(v)
+            };
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn fill(&self, canvas: *mut c_void, x: f32, y: f32, w: f32, h: f32, round: f32, col: u32) {
+            if !canvas.is_null() {
+                unsafe { (self.fill_rect)(canvas, x, y, w, h, round, col) };
+            }
+        }
+
+        /// A scrolling group at `r`; true when it opened (then draw rows and call `end_list`).
+        pub fn begin_list(&self, r: Rect, name: &CStr) -> bool {
+            self.set_rect(r);
+            unsafe { (self.begin_group)(self.ctx(), name.as_ptr(), 0) != 0 }
+        }
+
+        pub fn end_list(&self) {
+            unsafe { (self.end_group)(self.ctx()) };
+        }
+
+        /// The top of the next row in the current group's layout (wc2r-plus `NextRowTop`).
+        pub fn next_row_top(&self) -> f32 {
+            let p = self.panel();
+            if p.is_null() {
+                return 0.0;
+            }
+            unsafe {
+                p.add(PANEL_AT_Y).cast::<f32>().read_unaligned()
+                    + p.add(PANEL_ROW_HEIGHT).cast::<f32>().read_unaligned()
+            }
+        }
+
+        /// One full-width list row with a button; true when clicked.
+        pub fn list_row_button(&self, label: &str) -> bool {
+            let ctx = self.ctx();
+            unsafe { (self.row)(ctx, ROW_H, 1) };
+            let t = cstr(label);
+            unsafe { (self.button_label)(ctx, t.as_ptr().cast()) != 0 }
+        }
+
+        /// The folder or map icon at the left of the row that began at `row_top`.
+        pub fn draw_row_icon(&self, row_top: f32, folder: bool) {
+            let p = self.panel();
+            let canvas = self.canvas();
+            if p.is_null() || canvas.is_null() {
+                return;
+            }
+            let (bounds_x, scroll) = unsafe {
+                let sp = p.add(PANEL_OFFSET_Y).cast::<*const u32>().read_unaligned();
+                (
+                    p.add(PANEL_BOUNDS_X).cast::<f32>().read_unaligned(),
+                    if sp.is_null() { 0.0 } else { *sp as f32 },
+                )
+            };
+            let x = bounds_x + ICON_INSET;
+            let y = row_top - scroll + (ROW_H - ICON_SIZE) * 0.5;
+            if folder {
+                self.fill(
+                    canvas,
+                    x,
+                    y,
+                    ICON_SIZE * 0.55,
+                    ICON_SIZE * 0.24,
+                    2.0,
+                    FOLDER_COLOUR,
+                );
+                self.fill(
+                    canvas,
+                    x,
+                    y + ICON_SIZE * 0.24,
+                    ICON_SIZE,
+                    ICON_SIZE * 0.76,
+                    2.0,
+                    FOLDER_COLOUR,
+                );
+            } else {
+                self.fill(canvas, x, y, ICON_SIZE, ICON_SIZE, 2.0, MAP_COLOUR);
+                self.fill(
+                    canvas,
+                    x + ICON_SIZE * 0.28,
+                    y + ICON_SIZE * 0.28,
+                    ICON_SIZE * 0.44,
+                    ICON_SIZE * 0.44,
+                    1.0,
+                    ICON_HOLE,
+                );
+            }
+        }
+
+        /// A text field with a dim placeholder while it is empty and unfocused.
+        ///
+        /// # Safety
+        /// `buf` must be a writable buffer of at least `max_len` bytes holding a C string.
+        pub unsafe fn filter_field_at(
+            &self,
+            r: Rect,
+            buf: *mut u8,
+            max_len: i32,
+            placeholder: &str,
+            skin: Option<u32>,
+        ) -> bool {
+            let focused = unsafe { self.text_edit_at(r, buf, max_len, skin) };
+            if !focused && unsafe { *buf } == 0 {
+                let previous = self.text_colour();
+                self.set_text_colour(PLACEHOLDER_COLOUR);
+                self.label_at(
+                    Rect::new(r.x + GAP, r.y, r.w - GAP, r.h),
+                    placeholder,
+                    ALIGN_LEFT,
+                );
+                self.set_text_colour(previous);
+            }
+            focused
+        }
+
+        /// A read-only box showing `text`: the game's slot dropdown, disabled, over a fake
+        /// `std::string` (wc2r-plus `LockedBoxAt`). `id` must not be a `slotTypeN` cell.
+        pub fn locked_box_at(&self, r: Rect, text: &str, id: &CStr) {
+            let bytes: Vec<u8> = text.bytes().filter(|&b| b != 0).collect();
+            let mut heap = bytes.clone();
+            heap.push(0);
+            let mut view = [0u8; 0x18];
+            let len = bytes.len();
+            if len <= STR_SSO_MAX as usize {
+                view[..len].copy_from_slice(&bytes);
+                view[STR_CAPACITY..STR_CAPACITY + 4].copy_from_slice(&STR_SSO_MAX.to_le_bytes());
+            } else {
+                view[..4].copy_from_slice(&(heap.as_ptr() as usize as u32).to_le_bytes());
+                view[STR_CAPACITY..STR_CAPACITY + 4].copy_from_slice(&(len as u32).to_le_bytes());
+            }
+            view[0x10..0x14].copy_from_slice(&(len as u32).to_le_bytes());
+            self.set_rect(r);
+            let mut unused: i8 = 0;
+            unsafe {
+                (self.slot_dropdown)(
+                    1,
+                    0,
+                    id.as_ptr(),
+                    view.as_mut_ptr().cast(),
+                    core::ptr::null_mut(),
+                    &mut unused,
+                    r.h,
+                    0,
+                );
+            }
+        }
+
+        /// The "up" arrow, in rectangles, over a button.
+        pub fn draw_up_arrow(&self, button: Rect, greyed: bool) {
+            let canvas = self.canvas();
+            let mut colour = self.text_colour();
+            if greyed {
+                colour = (colour & 0x00ff_ffff) | (0x60 << 24);
+            }
+            let steps = 9usize;
+            let side = button.w.min(button.h) * 0.46;
+            let cx = button.x + button.w * 0.5;
+            let top = button.y + (button.h - side) * 0.5;
+            let step_h = side / steps as f32;
+            for i in 0..steps {
+                let t = i as f32 / (steps - 1) as f32;
+                let head_w = side * t;
+                let shaft_w = side * 0.34;
+                let w = if i < steps * 2 / 3 { head_w } else { shaft_w };
+                if w <= 0.0 {
+                    continue;
+                }
+                self.fill(
+                    canvas,
+                    cx - w * 0.5,
+                    top + step_h * i as f32,
+                    w,
+                    step_h + 1.0,
+                    0.0,
+                    colour,
+                );
+            }
+        }
+
+        /// The reload icon in rectangles (the texture version comes with the preview work).
+        pub fn draw_reload_icon(&self, button: Rect, greyed: bool) {
+            let canvas = self.canvas();
+            let side = button.w.min(button.h) * 0.58;
+            let bx = fl(button.x + (button.w - side) * 0.5);
+            let by = fl(button.y + (button.h - side) * 0.5 - 2.5);
+            let mut colour = self.text_colour();
+            if greyed {
+                colour = (colour & 0x00ff_ffff) | (0x60 << 24);
+            }
+            let cx = bx + side * 0.5;
+            let cy = by + side * 0.5;
+            let radius = side * 0.5;
+            let thick = (side * 0.17).max(2.0);
+            const TAU: f32 = 6.283_185_5;
+            const GAP_TURNS: f32 = 0.13;
+            const SEGMENTS: usize = 30;
+            for i in 0..=SEGMENTS {
+                let turn = GAP_TURNS + (1.0 - GAP_TURNS) * i as f32 / SEGMENTS as f32;
+                self.fill(
+                    canvas,
+                    cx + radius * (turn * TAU).sin() - thick * 0.5,
+                    cy - radius * (turn * TAU).cos() - thick * 0.5,
+                    thick,
+                    thick,
+                    0.0,
+                    colour,
+                );
+            }
+            let head_len = thick * 2.4;
+            let head_half = thick * 1.5;
+            const HEAD_STEPS: usize = 7;
+            for i in 0..HEAD_STEPS {
+                let half = head_half * (1.0 - i as f32 / HEAD_STEPS as f32);
+                let col_w = head_len / HEAD_STEPS as f32;
+                self.fill(
+                    canvas,
+                    cx - head_len * 0.45 + col_w * i as f32,
+                    cy - radius - half,
+                    col_w + 1.0,
+                    half * 2.0,
+                    0.0,
+                    colour,
+                );
             }
         }
 

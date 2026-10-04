@@ -4,17 +4,18 @@
 //! content (inside the same window); otherwise the stock screen is drawn. Any fault under it
 //! hands the screen back to the game for the rest of the session. x86 only.
 //!
-//! This slice has no map browser: the map column shows the map the game selected, and "Change
-//! map" is greyed out until the browser lands.
+//! "Change map" opens the map browser (`browserview`) in place of the screen's content.
 
 use core::ffi::{CStr, c_void};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_INFO, W2R_LOG_WARN};
 
+use crate::browserview::{Theme, View};
 use crate::guard::guarded;
 use crate::host::Log;
+use crate::mapbrowser::Browser;
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
 use crate::symbols::Symbols;
@@ -48,6 +49,7 @@ struct Screen {
     transition: TransitionFn,
     skin_screen: *const u32,
     skin_left: *const u32,
+    skin_right: *const u32,
     skin_text_edit: *const u32,
     font_heading: *const u32,
     selected: *const u8,
@@ -57,6 +59,8 @@ struct Screen {
     name_capacity: *const u32,
     password: *mut u8,
     options: [Option4; 4],
+    view: View,
+    browser: Mutex<Browser>,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -68,6 +72,10 @@ static SCREEN: OnceLock<Option<Screen>> = OnceLock::new();
 /// A fault under the replacement draw: stock screen from here on.
 static FAILED: AtomicBool = AtomicBool::new(false);
 static ANNOUNCED: AtomicBool = AtomicBool::new(false);
+/// When the replacement screen last drew; a longer gap means a fresh visit, and the browser from
+/// the last one is closed (wc2r-plus `kReentryGapMs`).
+static LAST_FRAME_MS: AtomicU64 = AtomicU64::new(0);
+const REENTRY_GAP_MS: u64 = 250;
 
 /// Resolves everything the screen needs. False (logged by name) when anything is missing; the
 /// stock screen is then all that is ever drawn.
@@ -121,6 +129,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
         },
         skin_screen: at("SkinLobbyCreation")? as *const u32,
         skin_left: at("SkinLobbyCreationLeft")? as *const u32,
+        skin_right: at("SkinLobbyCreationRight")? as *const u32,
         skin_text_edit: at("SkinTextEdit")? as *const u32,
         font_heading: at("FontLobbyCreationHeading")? as *const u32,
         selected: at("LobbyCreationSelected")? as *const u8,
@@ -159,6 +168,8 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
                 "LobbyComboOpenStartLoc",
             )?,
         ],
+        view: View::new(symbols)?,
+        browser: Mutex::new(Browser::default()),
     })
 }
 
@@ -174,6 +185,11 @@ pub fn try_draw() -> bool {
     let Some(window) = screen.kit.window_rect() else {
         return false;
     };
+    let now = crate::chat::now_ms();
+    let last = LAST_FRAME_MS.swap(now, Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) > REENTRY_GAP_MS {
+        screen.browser().close();
+    }
     match guarded(|| unsafe { screen.draw(window) }) {
         Ok(()) => {
             if !ANNOUNCED.swap(true, Ordering::Relaxed) {
@@ -199,10 +215,29 @@ pub fn try_draw() -> bool {
 }
 
 impl Screen {
+    fn browser(&self) -> std::sync::MutexGuard<'_, Browser> {
+        self.browser.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     unsafe fn draw(&self, window: Rect) {
         let k = &self.kit;
         let previous = k.push_skin(unsafe { *self.skin_screen });
         k.space_begin();
+        {
+            let mut browser = self.browser();
+            if browser.is_open() {
+                let theme = Theme {
+                    right_frame: unsafe { *self.skin_right },
+                    left_frame: unsafe { *self.skin_left },
+                    text_edit: unsafe { *self.skin_text_edit },
+                    heading_font: unsafe { *self.font_heading },
+                };
+                unsafe { self.view.draw(k, &mut browser, window, theme) };
+                k.space_end();
+                k.pop_skin(previous);
+                return;
+            }
+        }
 
         k.banner();
         k.label(&k.localized(c"mp_create_game"), ALIGN_CENTRE);
@@ -258,12 +293,14 @@ impl Screen {
             Some(unsafe { *self.font_heading }),
         );
         let b = preview_box(column);
-        // The map browser is slice 2; until then the map the game selected is the map.
-        k.button_at(
+        if k.button_at(
             Rect::new(b.x, b.y + b.h + GAP, b.w, ROW_H),
             "Change map",
-            true,
-        );
+            false,
+        ) {
+            let selected = self.view.selected_choice();
+            self.browser().open(Some(selected));
+        }
     }
 
     unsafe fn draw_options(&self, column: Rect) {
