@@ -97,6 +97,8 @@ pub struct Policy {
     events: VecDeque<LockEvent>,
     last_seen: Option<u64>,
     is_host: bool,
+    last_send: Option<u64>,
+    send_now: bool,
 }
 
 impl Policy {
@@ -140,6 +142,28 @@ impl Policy {
         while self.events.len() > MAX_EVENTS {
             self.events.pop_front();
         }
+        if before != locks {
+            self.send_now = true;
+        }
+    }
+
+    /// The host asks once per frame whether to send the locks now: at once after a change, and
+    /// otherwise every [`RESEND_MS`]. Always false for a guest.
+    pub fn take_send(&mut self, now: u64) -> bool {
+        let due = self.is_host
+            && (self.send_now
+                || self
+                    .last_send
+                    .is_none_or(|t| now.saturating_sub(t) >= RESEND_MS));
+        if due {
+            self.send_now = false;
+            self.last_send = Some(now.max(1));
+        }
+        due
+    }
+
+    pub fn is_host(&self) -> bool {
+        self.is_host
     }
 
     /// A guest takes a lock message from the host, if it is in the lobby, is not the host and the
@@ -204,12 +228,30 @@ pub fn deliver(sender: u32, body: &[u8]) {
     with(|p| p.receive(now, sender, body));
 }
 
+/// Which lobby slot a name cell label is for: the game draws them as `slotType0` to `slotType7`
+/// (wc2r-plus `NameCellSlot`).
+pub fn name_cell_slot(label: &[u8]) -> Option<u8> {
+    match label.strip_prefix(b"slotType")? {
+        [d @ b'0'..=b'7'] => Some(d - b'0'),
+        _ => None,
+    }
+}
+
+/// The lobby password the host currently has, for the lock message. Empty off the game.
+#[cfg(not(all(windows, target_arch = "x86")))]
+pub fn host_password() -> Vec<u8> {
+    Vec::new()
+}
+
+#[cfg(all(windows, target_arch = "x86"))]
+pub use hook::host_password;
+
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod hook {
     //! The game's two lobby request handlers (wc2r-plus `TeamChangeDetour`, `SlotSwapDetour`):
     //! a peer's request is dropped while its lock is on, and everything else goes through.
 
-    use core::ffi::c_void;
+    use core::ffi::{CStr, c_char, c_void};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -224,7 +266,37 @@ pub mod hook {
     const TEAM_CHANGE: &str = "HandleLobbyTeamChangeRequest";
     const SLOT_SWAP: &str = "HandleLobbyExchangeTwoSlotsRequest";
 
+    const DROPDOWN: &str = "LobbySlotDropdown";
+
     type RequestFn = unsafe extern "C" fn(*const u8, i32);
+    type DropdownFn = unsafe extern "C" fn(
+        i8,
+        i8,
+        *const c_char,
+        *mut c_void,
+        *mut c_void,
+        *mut i8,
+        f32,
+        i8,
+    ) -> i8;
+
+    static ORIGINAL_DROPDOWN: AtomicUsize = AtomicUsize::new(0);
+    static TEAM_OPTIONS: AtomicUsize = AtomicUsize::new(0);
+    static PASSWORD: AtomicUsize = AtomicUsize::new(0);
+
+    /// The password in the game's buffer (a NUL-terminated string of at most capacity - 1 bytes).
+    pub fn host_password() -> Vec<u8> {
+        let at = PASSWORD.load(Ordering::Acquire);
+        if at == 0 {
+            return Vec::new();
+        }
+        let buf = unsafe { core::slice::from_raw_parts(at as *const u8, super::PASSWORD_CAPACITY) };
+        let n = buf
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(super::PASSWORD_CAPACITY - 1);
+        buf[..n.min(super::PASSWORD_CAPACITY - 1)].to_vec()
+    }
 
     static ORIGINAL_TEAM: AtomicUsize = AtomicUsize::new(0);
     static ORIGINAL_SWAP: AtomicUsize = AtomicUsize::new(0);
@@ -246,7 +318,23 @@ pub mod hook {
             slot_swap as *mut c_void,
             &ORIGINAL_SWAP,
         );
-        a && b
+        PASSWORD.store(
+            symbols.address("LobbyPassword").unwrap_or(0),
+            Ordering::Release,
+        );
+        TEAM_OPTIONS.store(
+            symbols.address("MpLobbyTeamOptions").unwrap_or(0),
+            Ordering::Release,
+        );
+        let c = hook_one(
+            image,
+            symbols,
+            log,
+            DROPDOWN,
+            dropdown as *mut c_void,
+            &ORIGINAL_DROPDOWN,
+        );
+        a && b && c
     }
 
     fn hook_one(
@@ -311,6 +399,48 @@ pub mod hook {
             );
         }
         !ok
+    }
+
+    /// Guests see the team dropdown and their own name cell disabled while the host has them
+    /// locked; the host's team dropdown is never disabled (wc2r-plus `DropdownDetour`). Host menus
+    /// come with slice 3.
+    unsafe extern "C" fn dropdown(
+        mut disabled: i8,
+        prev: i8,
+        label: *const c_char,
+        value: *mut c_void,
+        options: *mut c_void,
+        changed: *mut i8,
+        row_h: f32,
+        localize: i8,
+    ) -> i8 {
+        let _ = guarded(|| {
+            let (is_host, locks) = with(|p| {
+                p.touch(crate::chat::now_ms());
+                (p.is_host(), p.locks())
+            });
+            let team_options = TEAM_OPTIONS.load(Ordering::Acquire);
+            if team_options != 0 && options as usize == team_options {
+                if is_host {
+                    disabled = 0;
+                } else if locks.teams {
+                    disabled = 1;
+                }
+            }
+            if disabled == 0 && !is_host && locks.slots && !label.is_null() {
+                let label = unsafe { CStr::from_ptr(label) }.to_bytes();
+                if super::name_cell_slot(label).is_some() {
+                    disabled = 1;
+                }
+            }
+        });
+        let original: DropdownFn =
+            unsafe { core::mem::transmute(ORIGINAL_DROPDOWN.load(Ordering::Acquire)) };
+        unsafe {
+            original(
+                disabled, prev, label, value, options, changed, row_h, localize,
+            )
+        }
     }
 
     unsafe extern "C" fn team_change(packet: *const u8, sender: i32) {
@@ -470,6 +600,31 @@ mod tests {
             "the host takes no locks from the wire"
         );
         assert!(host.allow_team_change(1));
+    }
+
+    #[test]
+    fn the_host_sends_on_change_and_then_every_two_seconds_and_a_guest_never() {
+        let mut p = Policy::default();
+        p.frame(1000, true, Locks::default());
+        assert!(p.take_send(1000), "first frame");
+        assert!(!p.take_send(1500));
+        p.frame(1600, true, BOTH);
+        assert!(p.take_send(1600), "a change goes out at once");
+        assert!(!p.take_send(3599));
+        assert!(p.take_send(3600), "resend");
+        let mut g = Policy::default();
+        g.frame(0, false, BOTH);
+        assert!(!g.take_send(10_000));
+    }
+
+    #[test]
+    fn name_cells_are_slot_type_zero_to_seven() {
+        assert_eq!(name_cell_slot(b"slotType0"), Some(0));
+        assert_eq!(name_cell_slot(b"slotType7"), Some(7));
+        assert_eq!(name_cell_slot(b"slotType8"), None);
+        assert_eq!(name_cell_slot(b"slotType10"), None);
+        assert_eq!(name_cell_slot(b"slotType"), None);
+        assert_eq!(name_cell_slot(b"team3"), None);
     }
 
     #[test]

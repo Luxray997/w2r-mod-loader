@@ -233,6 +233,35 @@ pub fn on_window(name: Option<&str>) {
                 slots: session.config.lock_slot_swaps,
             };
             lobbypolicy::with(|p| p.frame(now, net.transport.is_host(), chosen));
+            while let Some(e) = lobbypolicy::with(|p| p.next_event()) {
+                StartupLog.line(
+                    W2R_LOG_INFO,
+                    "lobbypolicy",
+                    &format!(
+                        "{} {}",
+                        if e.teams {
+                            "team changes"
+                        } else {
+                            "slot swaps"
+                        },
+                        if e.locked { "LOCKED" } else { "unlocked" }
+                    ),
+                );
+            }
+            if net.transport.is_host()
+                && net.transport.connected()
+                && lobbypolicy::with(|p| p.take_send(now))
+            {
+                let locks = lobbypolicy::with(|p| p.locks());
+                if let Some(msg) = lobbypolicy::encode(locks, &lobbypolicy::host_password()) {
+                    for slot in 1..peer::MAX_SLOTS {
+                        let announced = net.handshake.try_borrow().is_ok_and(|h| h.announced(slot));
+                        if announced && !net.transport.send_to(slot, &msg) {
+                            StartupLog.line(W2R_LOG_WARN, "lobbypolicy", "send failed");
+                        }
+                    }
+                }
+            }
             let f = handshake::Frame {
                 now,
                 connected: net.transport.connected(),
