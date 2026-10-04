@@ -165,8 +165,9 @@ plugins over the public ABI (chat may well be the latter).
    lock buttons exist only on the replacement screen and the plugin screen). Lobby policy slices 1 to 3 (locks, broadcast,
    host menus) still await a second-player check.**
 4. Map download: a host feature, spec in [map-download.md](map-download.md) (four slices: pure core,
-   state machines, disk and game glue, prompt and status). **Spec written 2026-10-04, nothing
-   implemented yet.**
+   state machines, disk and game glue, prompt and status). **Spec written 2026-10-04. Slice 1 done
+   (`mapname.rs`, `mapwire.rs`, `pudvalidate.rs`: pure, 19 tests, no game behaviour yet); slices 2 to 4
+   not started.**
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI

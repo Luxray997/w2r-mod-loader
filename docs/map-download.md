@@ -1,6 +1,6 @@
 # Map download (Phase 3, step 4)
 
-Status: spec, not implemented. Port of wc2r-plus `src/features/map_download.cpp` and
+Status: slice 1 (pure core) implemented; slices 2 to 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
 `src/features/map_download/` (about 3,700 lines). The wire format and the safety rules are
 specified in wc2r-plus `PROTOCOL.md` section 3; the C++ is the reference where this document is
 silent or differs. Same parity rule as [chat-plugin.md](chat-plugin.md): players with wc2r-plus,
@@ -100,3 +100,15 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
    Port the lobby screen too (as a separate spec, after this), or leave it at slice 4?
 2. A second modded player is needed to check slices 3 and 4 end to end; so far the lobby policy
    slices are waiting on the same thing.
+
+## Slice 1 notes (2026-10-04)
+
+- The validator's "per-era tile check" review finding is a table (`TILE_ROWS`) with one entry per
+  era. On this build every era's `cv4` is 6,636 bytes, 158 rows, so all four entries are 158; the
+  table is there so a different build is a one-line change, and ERAX selects the swamp entry.
+- REGM is length-checked only, as `PROTOCOL.md` says real maps use nearly every value.
+- `mapwire::decode` takes what follows the five-byte envelope (what the packet hook has);
+  `encode` returns the whole message. Both agree with the lengths in `PROTOCOL.md`'s table, and a
+  test cuts and lengthens every kind by one byte.
+- The `'M'` arm in `peer.rs` still consumes and drops the message; the state machines in slice 2
+  are what it will feed.
