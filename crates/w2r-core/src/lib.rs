@@ -8,8 +8,13 @@ pub mod dispatch;
 pub mod guard;
 pub mod hooks;
 pub mod host;
+pub mod json;
+pub mod lobby;
 pub mod log;
+pub mod manifest;
 pub mod pe;
+pub mod semver;
+pub mod state;
 pub mod symbols;
 pub mod target;
 

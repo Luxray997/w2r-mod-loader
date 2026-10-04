@@ -33,6 +33,15 @@ moves the root elsewhere (development and tests).
 - **Per-plugin settings stay separate** from `state.json` so a plugin's bad write cannot damage
   the trust record.
 
+### `state.json` rules
+
+Strict JSON as in [manifest.md](manifest.md), at most 1 MiB. Exactly two top-level fields:
+`schema` (exactly `1`) and `plugins`, an object keyed by plugin id (id rule from the manifest).
+Each value has exactly `version` (SemVer), `enabled` (boolean), `sha256` (64 hex digits, either
+case) and `approved_capabilities` (duplicate-free subset of the five approvable capabilities).
+Any violation refuses the whole file and the host loads nothing. `crates/w2r-core/src/state.rs`
+is the implementation.
+
 ### `state.json` sketch
 
 ```json
