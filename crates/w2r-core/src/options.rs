@@ -110,7 +110,7 @@ impl Nk {
         })
     }
 
-    fn ctx(&self) -> *mut c_void {
+    pub(crate) fn ctx(&self) -> *mut c_void {
         unsafe { *self.ctx_slot }
     }
 
@@ -126,10 +126,6 @@ impl Nk {
         let place = |x: f32, y: f32, w: f32, h: f32| unsafe { (self.rect)(ctx, x, y, w, h) };
         draw(&GameWidgets { nk: self, ctx }, &place);
         unsafe { (self.space_end)(ctx) };
-    }
-
-    pub(crate) fn ui_size(&self) -> (f32, f32) {
-        (unsafe { (self.ui_width)() }, UI_HEIGHT)
     }
 
     pub(crate) fn push_skin(&self, id: u32) -> u32 {
