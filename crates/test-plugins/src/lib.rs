@@ -34,6 +34,14 @@ pub fn subscribe(id: W2rEventId) -> W2rStatus {
     unsafe { ((*host).subscribe)((*host).token, id) }
 }
 
+pub fn chat_send(text: &str) -> W2rStatus {
+    let host = HOST.load(Ordering::Relaxed);
+    if host.is_null() {
+        return W2R_E_STATE;
+    }
+    unsafe { ((*host).chat_send)((*host).token, str(text)) }
+}
+
 pub const fn table(
     on_load: unsafe extern "C" fn(*const W2rHost) -> W2rStatus,
     on_event: Option<unsafe extern "C" fn(*const W2rEvent)>,

@@ -89,7 +89,7 @@ unsafe extern "C" fn detour(
     opened
 }
 
-fn on_window(_name: *const c_char, _opened: i32) {
+fn on_window(name: *const c_char, _opened: i32) {
     FIRST.call_once(|| {
         let tid = unsafe { GetCurrentThreadId() };
         MAIN_THREAD.store(tid, Ordering::Release);
@@ -101,5 +101,10 @@ fn on_window(_name: *const c_char, _opened: i32) {
             );
         }
     });
-    // TODO(phase 2): load plugins on the first call; lobby window heartbeat -> LOBBY_ENTER/LEAVE.
+    let name = if name.is_null() {
+        None
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(name) }.to_str().ok()
+    };
+    crate::session::on_window(name);
 }

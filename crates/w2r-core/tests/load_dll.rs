@@ -71,7 +71,7 @@ fn registry() -> (Registry, Rc<Lines>) {
 
 fn load(reg: &mut Registry, id: &str, path: &Path) -> Result<usize, LoadError> {
     let pin = sha256_of(path).expect("hash fixture");
-    reg.load_dll(id, path, &pin)
+    reg.load_dll(id, path, &pin, &[])
 }
 
 #[test]
@@ -81,7 +81,8 @@ fn hello_plugin_logs_on_load_and_receives_its_events() {
     assert!(log.has("[1] hello: hello from hello_plugin"));
 
     reg.dispatch(W2R_EVT_LOBBY_LEAVE, core::ptr::null());
-    assert_eq!(log.count("event"), 0);
+    assert_eq!(log.count("event 1"), 0);
+    assert_eq!(log.count("[1] hello: event 2"), 1);
     reg.dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
     assert!(log.has("[1] hello: event 1"));
     assert!(reg.find("hello").unwrap().is_active());
@@ -135,12 +136,14 @@ fn entry_and_load_failures_are_refused_with_the_spec_codes() {
     assert_eq!(err.detail, "no w2r_plugin_main export");
 
     let missing = fixtures().join("does_not_exist.dll");
-    let err = reg.load_dll("missing", &missing, &[0u8; 32]).unwrap_err();
+    let err = reg
+        .load_dll("missing", &missing, &[0u8; 32], &[])
+        .unwrap_err();
     assert_eq!(err.code, "E_ENTRY");
     assert!(err.detail.starts_with("cannot open"), "{err}");
 
     let err = reg
-        .load_dll("badpin", &dll("hello_plugin"), &[0u8; 32])
+        .load_dll("badpin", &dll("hello_plugin"), &[0u8; 32], &[])
         .unwrap_err();
     assert_eq!(err.code, "E_HASH");
     assert!(err.detail.contains("differs from pin 0000"), "{err}");

@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use w2r_abi::*;
 
+use crate::chat::{self, Chat, RateLimit};
 use crate::guard::guarded;
 use crate::hooks::{self, HookError, Owner};
 use crate::pe::Image;
@@ -55,6 +56,7 @@ pub struct Game {
 pub struct Shared {
     pub log: Rc<dyn Log>,
     pub game: Option<Game>,
+    pub chat: Rc<dyn Chat>,
 }
 
 const EMPTY_TABLE: W2rPlugin = W2rPlugin {
@@ -78,6 +80,7 @@ pub struct Slot {
     subs: RefCell<BTreeSet<W2rEventId>>,
     /// Functions already refused for a missing capability (logged once each).
     denied: RefCell<BTreeSet<&'static str>>,
+    chat_rate: RefCell<RateLimit>,
     shared: Rc<Shared>,
     host: W2rHost,
 }
@@ -92,6 +95,7 @@ impl Slot {
             state: RefCell::new(State::Active),
             subs: RefCell::new(BTreeSet::new()),
             denied: RefCell::new(BTreeSet::new()),
+            chat_rate: RefCell::new(RateLimit::default()),
             shared,
             host: host_table(core::ptr::null_mut()),
         });
@@ -472,6 +476,38 @@ mod cb {
         })
     }
 
+    /// docs/abi.md: printable ASCII, at most 200 bytes, 4 per 5 s, only while chat is available.
+    pub unsafe extern "C" fn chat_send(token: *mut c_void, text: W2rStr) -> W2rStatus {
+        run(|| {
+            let Some(slot) = (unsafe { slot(token) }) else {
+                return W2R_E_INVALID;
+            };
+            if let Err(e) = require(slot, "chat_send", caps::CHAT_WRITE) {
+                return e;
+            }
+            if text.ptr.is_null() || text.len == 0 || text.len > W2R_MAX_CHAT_BYTES {
+                return W2R_E_INVALID;
+            }
+            let bytes =
+                unsafe { core::slice::from_raw_parts(text.ptr.cast::<u8>(), text.len as usize) };
+            if !chat::valid_text(bytes) {
+                return W2R_E_INVALID;
+            }
+            let line = core::str::from_utf8(bytes).expect("printable ASCII");
+            if !slot.shared.chat.available() {
+                return W2R_E_STATE;
+            }
+            if !slot.chat_rate.borrow_mut().allow(chat::now_ms()) {
+                return W2R_E_RATE;
+            }
+            if slot.shared.chat.send(line) {
+                W2R_OK
+            } else {
+                W2R_E_STATE
+            }
+        })
+    }
+
     // ---- not implemented yet; each is a later Phase 2 step ------------------------------------
 
     pub unsafe extern "C" fn settings_get_i64(_: *mut c_void, _: W2rStr, _: *mut i64) -> W2rStatus {
@@ -518,9 +554,6 @@ mod cb {
         W2R_E_UNSUPPORTED
     }
     pub unsafe extern "C" fn data_close(_: *mut c_void, _: W2rHandle) -> W2rStatus {
-        W2R_E_UNSUPPORTED
-    }
-    pub unsafe extern "C" fn chat_send(_: *mut c_void, _: W2rStr) -> W2rStatus {
         W2R_E_UNSUPPORTED
     }
     pub unsafe extern "C" fn peer_send(_: *mut c_void, _: u32, _: W2rBuf) -> W2rStatus {

@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use w2r_abi::*;
 
+use crate::chat::{Chat, NoChat};
 use crate::guard::guarded;
 use crate::host::{Game, Log, Shared, Slot};
 
@@ -41,22 +42,19 @@ pub struct Registry {
 
 impl Registry {
     /// A registry with no game behind it (tests, tooling): `game.read` functions report
-    /// `W2R_E_STATE`.
+    /// `W2R_E_STATE` and chat is never available.
     pub fn new(log: Rc<dyn Log>) -> Self {
-        Self::build(Shared { log, game: None })
+        Self::with(log, None, Rc::new(NoChat))
     }
 
     pub fn with_game(log: Rc<dyn Log>, game: Game) -> Self {
-        Self::build(Shared {
-            log,
-            game: Some(game),
-        })
+        Self::with(log, Some(game), Rc::new(NoChat))
     }
 
-    fn build(shared: Shared) -> Self {
+    pub fn with(log: Rc<dyn Log>, game: Option<Game>, chat: Rc<dyn Chat>) -> Self {
         Registry {
             slots: Vec::new(),
-            shared: Rc::new(shared),
+            shared: Rc::new(Shared { log, game, chat }),
             #[cfg(windows)]
             modules: Vec::new(),
         }
@@ -83,20 +81,21 @@ impl Registry {
     }
 
     /// Opens, pins and loads a plugin DLL (docs/load-policy.md, "No check-then-swap gap"), then
-    /// runs [`Registry::load_entry`].
+    /// runs [`Registry::load_entry_with_caps`].
     #[cfg(windows)]
     pub fn load_dll(
         &mut self,
         id: &str,
         path: &std::path::Path,
         pin: &[u8; 32],
+        caps: &[&str],
     ) -> Result<usize, LoadError> {
         let dll = crate::loader::load(path, pin).inspect_err(|e| {
             self.shared.log.line(W2R_LOG_ERROR, id, &e.to_string());
         })?;
         let entry = dll.entry;
         self.modules.push(dll);
-        self.load_entry(id, entry)
+        self.load_entry_with_caps(id, entry, caps)
     }
 
     /// [`Registry::load_entry_with_caps`] with only the implicit capabilities.
@@ -522,14 +521,18 @@ mod tests {
             );
             assert_eq!((h.subscribe)(h.token, W2R_EVT_MATCH_START), W2R_OK);
             assert_eq!((h.unsubscribe)(h.token, 0), W2R_E_NOT_FOUND);
-            assert_eq!((h.chat_send)(h.token, s("x")), W2R_E_UNSUPPORTED);
+            assert_eq!((h.chat_send)(h.token, s("x")), W2R_E_DENIED);
         }
         assert!(reg.slot(i).subscribed(W2R_EVT_MATCH_START));
         let lines = log.0.borrow();
         assert_eq!(lines[0], "[1] p: hi");
         assert_eq!(lines[1], format!("[1] p: {max}"));
         assert_eq!(lines[2], "[1] p: ");
-        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[3],
+            "[2] p: chat_send: capability chat.write not approved"
+        );
+        assert_eq!(lines.len(), 4);
     }
 
     #[test]

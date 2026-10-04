@@ -68,9 +68,13 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    takes a function-symbol handle (`abi.md`); a disabled plugin loses its hooks; `frame.rs`
    hooks `BeginNamedWindow` as the host's main-thread entry.
 4. Event dispatch with crash isolation. Panics must not cross FFI. Access violations need SEH or a
-   vectored exception handler (`microseh` or a tiny C shim). **Spiked: done, see status above.**
-   Remaining: the dispatcher that disables a faulting plugin, and a test that loads a real
-   crashing plugin DLL.
+   vectored exception handler (`microseh` or a tiny C shim). **Done:** `guard.rs`, `dispatch.rs`
+   (disables a faulting plugin, removes its hooks), `tests/load_dll.rs` (real crashing DLL).
+   Startup loading is in: `json.rs`/`manifest.rs`/`state.rs` (checks 1-8 in `plugins.rs`, with
+   dependency order and cycles; `tests/load_all.rs`), `session.rs` runs it on the first frame,
+   `lobby.rs` turns the lobby window into `LOBBY_ENTER`/`LEAVE`, and `chat.rs` implements
+   `chat_send` (lobby chat input + send, rate-limited). The hello-world fixture says hello on
+   lobby entry. Not yet verified in the live game.
 5. Lobby message service: size, rate and lobby-only limits for every plugin; per-plugin
    subsystem ids.
 6. Widget API on the game's Nuklear context; in-game plugin list with enable/disable toggles.

@@ -6,6 +6,7 @@
 //! (docs/abi.md), so that happens from the first main-thread hook, which is a later Phase 2 step.
 
 use core::ffi::c_void;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
@@ -21,9 +22,11 @@ use crate::symbols::Symbols;
 
 const DLL_PROCESS_ATTACH: u32 = 1;
 
-/// What startup established; later steps read it from the main thread.
+/// What startup established; the main-thread session reads it.
 pub struct Startup {
     pub log: FileLog,
+    /// The host root under Saved Games (docs/layout.md).
+    pub root: PathBuf,
     pub game_base: usize,
     pub build_ok: bool,
     /// The game module's headers, when the build guard passed.
@@ -89,6 +92,7 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
         );
         let _ = STARTUP.set(Startup {
             log,
+            root,
             game_base,
             build_ok: false,
             image: None,
@@ -105,6 +109,7 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
     }
     let _ = STARTUP.set(Startup {
         log,
+        root,
         game_base,
         build_ok: true,
         image,

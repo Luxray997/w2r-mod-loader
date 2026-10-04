@@ -4,6 +4,7 @@
 //! Nothing here touches the network; only the manager downloads. See docs/PLAN.md.
 
 pub mod build_guard;
+pub mod chat;
 pub mod dispatch;
 pub mod guard;
 pub mod hooks;
@@ -26,5 +27,9 @@ pub mod frame;
 pub mod loader;
 #[cfg(windows)]
 pub mod paths;
+#[cfg(windows)]
+pub mod plugins;
 #[cfg(all(windows, target_arch = "x86", target_env = "msvc"))]
 pub mod proxy;
+#[cfg(windows)]
+pub mod session;
