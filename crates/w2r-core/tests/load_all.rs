@@ -9,8 +9,8 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use w2r_core::chat::NoChat;
 use w2r_core::host::Log;
+use w2r_core::host::Services;
 use w2r_core::json::{Number, Value};
 use w2r_core::loader::sha256_of;
 use w2r_core::manifest::Build;
@@ -191,7 +191,7 @@ fn an_enabled_valid_plugin_loads_with_its_approved_capabilities() {
     let root = root_with("ok", &[hello, off]);
 
     let log = Rc::new(Lines::default());
-    let reg = load_all(&root, running(), log.clone(), None, Rc::new(NoChat));
+    let reg = load_all(&root, running(), log.clone(), None, Services::none());
     assert_eq!(reg.len(), 1, "{}", log.dump());
     let slot = reg.find("hello-plugin").unwrap();
     assert!(slot.is_active());
@@ -270,7 +270,7 @@ fn each_check_refuses_with_its_code_and_leaves_no_slot() {
     ];
     let root = root_with("refusals", &plugins);
     let log = Rc::new(Lines::default());
-    let reg = load_all(&root, running(), log.clone(), None, Rc::new(NoChat));
+    let reg = load_all(&root, running(), log.clone(), None, Services::none());
 
     for (id, code) in [
         ("no-manifest", "E_STATE: plugin.json is missing"),
@@ -354,7 +354,7 @@ fn dependencies_load_first_and_version_and_cycles_are_enforced() {
     ];
     let root = root_with("deps", &plugins);
     let log = Rc::new(Lines::default());
-    let reg = load_all(&root, running(), log.clone(), None, Rc::new(NoChat));
+    let reg = load_all(&root, running(), log.clone(), None, Services::none());
 
     let hello = reg.find("hello-plugin").expect("hello loaded");
     let needs = reg.find("needs-hello").expect("dependent loaded");
@@ -386,7 +386,7 @@ fn a_missing_or_bad_state_file_loads_nothing() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config")).unwrap();
     let log = Rc::new(Lines::default());
-    let reg = load_all(&root, running(), log.clone(), None, Rc::new(NoChat));
+    let reg = load_all(&root, running(), log.clone(), None, Services::none());
     assert!(reg.is_empty());
     assert!(log.has("no config\\state.json"));
 
@@ -396,7 +396,7 @@ fn a_missing_or_bad_state_file_loads_nothing() {
     )
     .unwrap();
     let log = Rc::new(Lines::default());
-    let reg = load_all(&root, running(), log.clone(), None, Rc::new(NoChat));
+    let reg = load_all(&root, running(), log.clone(), None, Services::none());
     assert!(reg.is_empty());
     assert!(log.has("state.json refused (bad_schema)"));
     let _ = std::fs::remove_dir_all(&root);

@@ -1,7 +1,7 @@
 //! The per-plugin host table (`W2rHost`) and the host functions it serves: `log`, events,
-//! `symbol_lookup`/`symbol_read` (`game.read`) and `hook_install`/`hook_remove` (`hooks.raw`).
-//! Settings, data files, chat and peer messages return `W2R_E_UNSUPPORTED` until their Phase 2
-//! step lands; a plugin must handle that status anyway (older hosts).
+//! `symbol_lookup`/`symbol_read` (`game.read`), `hook_install`/`hook_remove` (`hooks.raw`),
+//! `chat_send` (`chat.write`) and `peer_send` (`net.send`). Settings and data files return
+//! `W2R_E_UNSUPPORTED` until their step lands; a plugin must handle that status anyway.
 //!
 //! Rule for every callback here: validate first, borrow a `RefCell` last, and never hold a
 //! borrow across anything that can fault. A fault abandons frames without running destructors,
@@ -15,10 +15,14 @@ use std::rc::Rc;
 
 use w2r_abi::*;
 
-use crate::chat::{self, Chat, RateLimit};
+use crate::chat::{self, Chat, NoChat};
 use crate::guard::guarded;
 use crate::hooks::{self, HookError, Owner};
 use crate::pe::Image;
+use crate::peer::{
+    self, NoPeers, NoTransport, Nowhere, Presence, Roster, SlidingWindow, Target, TargetError,
+    Transport,
+};
 use crate::symbols::Symbols;
 use crate::target::Kind;
 
@@ -52,11 +56,44 @@ pub struct Game {
     pub symbols: Symbols,
 }
 
+/// The game-facing services behind traits, so every rule is testable with fakes.
+pub struct Services {
+    pub chat: Rc<dyn Chat>,
+    pub transport: Rc<dyn Transport>,
+    pub roster: Rc<dyn Roster>,
+    pub presence: Rc<dyn Presence>,
+}
+
+impl Services {
+    /// No game: nothing available.
+    pub fn none() -> Services {
+        Services {
+            chat: Rc::new(NoChat),
+            transport: Rc::new(NoTransport),
+            roster: Rc::new(NoPeers),
+            presence: Rc::new(Nowhere),
+        }
+    }
+}
+
 /// What every slot shares.
 pub struct Shared {
     pub log: Rc<dyn Log>,
     pub game: Option<Game>,
-    pub chat: Rc<dyn Chat>,
+    pub services: Services,
+    /// `peer_send` across all plugins: 128/s.
+    pub peer_rate: RefCell<SlidingWindow>,
+}
+
+impl Shared {
+    pub fn new(log: Rc<dyn Log>, game: Option<Game>, services: Services) -> Shared {
+        Shared {
+            log,
+            game,
+            services,
+            peer_rate: RefCell::new(SlidingWindow::new(peer::OVERALL_PER_SECOND, 1000)),
+        }
+    }
 }
 
 const EMPTY_TABLE: W2rPlugin = W2rPlugin {
@@ -80,7 +117,10 @@ pub struct Slot {
     subs: RefCell<BTreeSet<W2rEventId>>,
     /// Functions already refused for a missing capability (logged once each).
     denied: RefCell<BTreeSet<&'static str>>,
-    chat_rate: RefCell<RateLimit>,
+    chat_rate: RefCell<SlidingWindow>,
+    peer_rate: RefCell<SlidingWindow>,
+    /// The plugin's peer-message tag (docs/abi.md).
+    pub tag: [u8; 4],
     shared: Rc<Shared>,
     host: W2rHost,
 }
@@ -95,7 +135,9 @@ impl Slot {
             state: RefCell::new(State::Active),
             subs: RefCell::new(BTreeSet::new()),
             denied: RefCell::new(BTreeSet::new()),
-            chat_rate: RefCell::new(RateLimit::default()),
+            chat_rate: RefCell::new(SlidingWindow::new(chat::MAX_PER_WINDOW, chat::WINDOW_MS)),
+            peer_rate: RefCell::new(SlidingWindow::new(peer::PER_PLUGIN_PER_SECOND, 1000)),
+            tag: peer::peer_tag(id),
             shared,
             host: host_table(core::ptr::null_mut()),
         });
@@ -494,17 +536,62 @@ mod cb {
                 return W2R_E_INVALID;
             }
             let line = core::str::from_utf8(bytes).expect("printable ASCII");
-            if !slot.shared.chat.available() {
+            let chat = &slot.shared.services.chat;
+            if !chat.available() {
                 return W2R_E_STATE;
             }
             if !slot.chat_rate.borrow_mut().allow(chat::now_ms()) {
                 return W2R_E_RATE;
             }
-            if slot.shared.chat.send(line) {
-                W2R_OK
-            } else {
-                W2R_E_STATE
+            if chat.send(line) { W2R_OK } else { W2R_E_STATE }
+        })
+    }
+
+    /// docs/abi.md: 1 to 960 bytes, lobby only with the session connected, the target (0-7 or
+    /// `W2R_SLOT_ALL`) must have announced the handshake, 32/s per plugin and 128/s overall.
+    pub unsafe extern "C" fn peer_send(
+        token: *mut c_void,
+        slot_or_all: u32,
+        payload: W2rBuf,
+    ) -> W2rStatus {
+        run(|| {
+            let Some(slot) = (unsafe { slot(token) }) else {
+                return W2R_E_INVALID;
+            };
+            if let Err(e) = require(slot, "peer_send", caps::NET_SEND) {
+                return e;
             }
+            if payload.ptr.is_null() || payload.len == 0 {
+                return W2R_E_INVALID;
+            }
+            if payload.len > W2R_MAX_PEER_PAYLOAD {
+                return W2R_E_LIMIT;
+            }
+            if slot_or_all != W2R_SLOT_ALL && slot_or_all >= peer::MAX_SLOTS {
+                return W2R_E_INVALID;
+            }
+            let services = &slot.shared.services;
+            if !services.presence.in_lobby() || !services.transport.connected() {
+                return W2R_E_STATE;
+            }
+            let target = match peer::resolve_target(&*services.roster, slot_or_all) {
+                Ok(t) => t,
+                Err(TargetError::Invalid) => return W2R_E_INVALID,
+                Err(TargetError::NotAnnounced) => return W2R_E_STATE,
+            };
+            let now = chat::now_ms();
+            if !slot.peer_rate.borrow_mut().allow(now)
+                || !slot.shared.peer_rate.borrow_mut().allow(now)
+            {
+                return W2R_E_RATE;
+            }
+            let bytes = unsafe { core::slice::from_raw_parts(payload.ptr, payload.len as usize) };
+            let msg = peer::encode(slot.tag, bytes).expect("length checked");
+            let sent = match target {
+                Target::All => services.transport.broadcast(&msg),
+                Target::Slot(n) => services.transport.send_to(n, &msg),
+            };
+            if sent { W2R_OK } else { W2R_E_STATE }
         })
     }
 
@@ -554,9 +641,6 @@ mod cb {
         W2R_E_UNSUPPORTED
     }
     pub unsafe extern "C" fn data_close(_: *mut c_void, _: W2rHandle) -> W2rStatus {
-        W2R_E_UNSUPPORTED
-    }
-    pub unsafe extern "C" fn peer_send(_: *mut c_void, _: u32, _: W2rBuf) -> W2rStatus {
         W2R_E_UNSUPPORTED
     }
 }

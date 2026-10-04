@@ -8,24 +8,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use sha2::{Digest, Sha256};
 use w2r_abi::{W2R_ABI_VERSION, W2R_LOG_INFO, W2R_LOG_WARN};
 
-use crate::chat::Chat;
 use crate::dispatch::Registry;
-use crate::host::{Game, Log};
+use crate::host::{Game, Log, Services};
 use crate::loader::sha256_of;
 use crate::manifest::{self, Build, Manifest};
+use crate::peer::peer_tag;
 use crate::semver::Version;
 use crate::state::{self, PluginState};
 
 const HOST: &str = "host";
-
-/// First 4 bytes of SHA-256 of the UTF-8 id: the plugin's peer-message tag.
-pub fn peer_tag(id: &str) -> [u8; 4] {
-    let digest = Sha256::digest(id.as_bytes());
-    [digest[0], digest[1], digest[2], digest[3]]
-}
 
 struct Candidate {
     st: PluginState,
@@ -135,9 +128,9 @@ pub fn load_all(
     running: Build,
     log: Rc<dyn Log>,
     game: Option<Game>,
-    chat: Rc<dyn Chat>,
+    services: Services,
 ) -> Registry {
-    let mut registry = Registry::with(log.clone(), game, chat);
+    let mut registry = Registry::with(log.clone(), game, services);
     let state_path = root.join("config").join("state.json");
     let state = match std::fs::read(&state_path) {
         Ok(raw) => match state::parse(&raw) {
@@ -239,17 +232,4 @@ pub fn load_all(
         ),
     );
     registry
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_tag_matches_the_fingerprint_vectors_definition() {
-        // sha256("example-plugin") starts with these bytes (docs/vectors/fingerprint.json).
-        let expected: [u8; 4] = Sha256::digest(b"example-plugin")[..4].try_into().unwrap();
-        assert_eq!(peer_tag("example-plugin"), expected);
-        assert_ne!(peer_tag("a"), peer_tag("b"));
-    }
 }

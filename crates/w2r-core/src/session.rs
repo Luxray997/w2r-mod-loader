@@ -5,14 +5,17 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use w2r_abi::{W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_INFO};
+use w2r_abi::{W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_INFO, W2R_LOG_WARN};
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 use crate::chat::{self, Chat, NoChat};
 use crate::dispatch::Registry;
 use crate::entry;
-use crate::host::{Game, Log};
+use crate::frame;
+use crate::host::{Game, Log, Services};
 use crate::lobby::{Event, Lobby};
 use crate::manifest::Build;
+use crate::peer::{self, NoPeers, NoTransport, PluginMessage, Presence, Transport};
 use crate::plugins;
 use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
@@ -34,6 +37,15 @@ impl Log for StartupLog {
         if let Some(s) = entry::startup() {
             s.log.line(level, plugin, msg);
         }
+    }
+}
+
+/// Lobby presence for the services, from the shared detector.
+struct LobbyPresence(Rc<RefCell<Lobby>>);
+
+impl Presence for LobbyPresence {
+    fn in_lobby(&self) -> bool {
+        self.0.borrow().in_lobby(chat::now_ms())
     }
 }
 
@@ -67,6 +79,30 @@ pub fn on_window(name: Option<&str>) {
     });
 }
 
+/// A plugin peer message taken off the wire. Delivered only on the main thread, after the
+/// session exists (a message before the first frame has nobody to receive it anyway).
+pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
+    static OFF_THREAD_LOGGED: std::sync::Once = std::sync::Once::new();
+    if unsafe { GetCurrentThreadId() } != frame::main_thread_id() {
+        OFF_THREAD_LOGGED.call_once(|| {
+            StartupLog.line(
+                W2R_LOG_WARN,
+                "host",
+                "peer messages arrive off the main thread; dropping them (needs a queue)",
+            );
+        });
+        return;
+    }
+    SESSION.with(|cell| {
+        let Ok(slot) = cell.try_borrow() else {
+            return;
+        };
+        if let Some(session) = slot.as_ref() {
+            session.registry.dispatch_peer(sender, msg);
+        }
+    });
+}
+
 fn start() -> Session {
     let log: Rc<dyn Log> = Rc::new(StartupLog);
     let lobby = Rc::new(RefCell::new(Lobby::new()));
@@ -81,10 +117,19 @@ fn start() -> Session {
     };
     let symbols = Symbols::new(startup.game_base);
     let game = startup.image.clone().map(|image| Game { image, symbols });
-    let chat: Rc<dyn Chat> = lobby_chat(&symbols, lobby.clone(), &*log);
+    let services = Services {
+        chat: lobby_chat(&symbols, lobby.clone(), &*log),
+        transport: transport(&symbols, &*log),
+        // The handshake feature (Phase 3) will replace this; until then nobody is announced.
+        roster: Rc::new(NoPeers),
+        presence: Rc::new(LobbyPresence(lobby.clone())),
+    };
+    if let Some(image) = &startup.image {
+        peer::hook::install(image, &symbols, &*log);
+    }
 
     log.line(W2R_LOG_INFO, "host", "loading plugins on the main thread");
-    let registry = plugins::load_all(&startup.root, running, log, game, chat);
+    let registry = plugins::load_all(&startup.root, running, log, game, services);
     Session { registry, lobby }
 }
 
@@ -106,4 +151,24 @@ fn lobby_chat(symbols: &Symbols, lobby: Rc<RefCell<Lobby>>, log: &dyn Log) -> Rc
 #[cfg(not(target_arch = "x86"))]
 fn lobby_chat(_: &Symbols, _: Rc<RefCell<Lobby>>, _: &dyn Log) -> Rc<dyn Chat> {
     Rc::new(NoChat)
+}
+
+#[cfg(target_arch = "x86")]
+fn transport(symbols: &Symbols, log: &dyn Log) -> Rc<dyn Transport> {
+    match peer::game::GameTransport::new(symbols) {
+        Some(t) => Rc::new(t),
+        None => {
+            log.line(
+                w2r_abi::W2R_LOG_ERROR,
+                "host",
+                "net session symbol missing; peer_send unavailable",
+            );
+            Rc::new(NoTransport)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn transport(_: &Symbols, _: &dyn Log) -> Rc<dyn Transport> {
+    Rc::new(NoTransport)
 }

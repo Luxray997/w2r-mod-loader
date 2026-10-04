@@ -14,6 +14,7 @@ pub mod lobby;
 pub mod log;
 pub mod manifest;
 pub mod pe;
+pub mod peer;
 pub mod semver;
 pub mod state;
 pub mod symbols;

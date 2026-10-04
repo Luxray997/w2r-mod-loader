@@ -60,7 +60,7 @@ Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
 | `subscribe`, `unsubscribe` | per event | see Events; unknown ids return `W2R_E_NOT_FOUND` |
 | `symbol_lookup`, `symbol_read` | `game.read` | symbol name at most 64 bytes; the handle is valid for the session; at most 4,096 bytes per read; a read that faults returns `W2R_E_INVALID` and never crashes the game |
 | `chat_send` | `chat.write` | at most 200 bytes of printable ASCII; at most 4 per 5 s per plugin; only when the game's chat is available |
-| `peer_send` | `net.send` | payload at most 960 bytes; at most 32 messages/s per plugin and 128/s overall; lobby only; the target slot must have announced the handshake, or `W2R_SLOT_ALL` for every such peer |
+| `peer_send` | `net.send` | payload 1 to 960 bytes (`W2R_E_INVALID` empty, `W2R_E_LIMIT` over); at most 32 messages/s per plugin and 128/s overall (`W2R_E_RATE`); lobby only, with the session connected (`W2R_E_STATE`); the target slot (0-7, else `W2R_E_INVALID`) must have announced the handshake, or `W2R_SLOT_ALL` for every such peer; no announced peer is `W2R_E_STATE` |
 | `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | `target` is a `symbol_lookup` handle of a function symbol (`W2R_E_NOT_FOUND` for a bad handle, `W2R_E_INVALID` for a global), so a hook is always inside the game module's code; `original_out` receives the trampoline before the hook goes live; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
 
 The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,

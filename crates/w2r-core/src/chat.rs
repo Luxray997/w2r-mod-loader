@@ -3,8 +3,6 @@
 //! is behind [`Chat`] so the rules are testable without the game; in the lobby the real
 //! implementation writes the game's chat input and presses send, as wc2r-plus does.
 
-use std::collections::VecDeque;
-
 pub const MAX_PER_WINDOW: usize = 4;
 pub const WINDOW_MS: u64 = 5_000;
 
@@ -24,29 +22,6 @@ impl Chat for NoChat {
     }
     fn send(&self, _: &str) -> bool {
         false
-    }
-}
-
-/// Sliding window: at most `MAX_PER_WINDOW` sends in any `WINDOW_MS`.
-#[derive(Debug, Default)]
-pub struct RateLimit {
-    sent: VecDeque<u64>,
-}
-
-impl RateLimit {
-    pub fn allow(&mut self, now: u64) -> bool {
-        while self
-            .sent
-            .front()
-            .is_some_and(|&t| now.saturating_sub(t) >= WINDOW_MS)
-        {
-            self.sent.pop_front();
-        }
-        if self.sent.len() >= MAX_PER_WINDOW {
-            return false;
-        }
-        self.sent.push_back(now);
-        true
     }
 }
 
@@ -131,23 +106,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rate_limit_is_a_sliding_window() {
-        let mut r = RateLimit::default();
-        for t in [0, 1, 2, 3] {
-            assert!(r.allow(t));
-        }
-        assert!(!r.allow(4));
-        assert!(!r.allow(4_999));
-        assert!(r.allow(5_000), "the first send has aged out");
-        assert!(!r.allow(5_000));
-        assert!(r.allow(5_001));
-        assert!(r.allow(5_002));
-        assert!(r.allow(5_003));
-        assert!(!r.allow(5_004));
-        assert!(r.allow(10_000));
-    }
-
-    #[test]
     fn text_rules() {
         assert!(valid_text(b"hello"));
         assert!(valid_text(b" ~"));
@@ -164,7 +122,7 @@ mod tests {
     #[test]
     fn chat_send_enforces_capability_text_availability_and_rate() {
         use crate::dispatch::Registry;
-        use crate::host::{Log, caps};
+        use crate::host::{Log, Services, caps};
         use std::cell::{Cell, RefCell};
         use std::rc::Rc;
         use w2r_abi::*;
@@ -206,7 +164,11 @@ mod tests {
         };
 
         let fake = Rc::new(Fake::default());
-        let mut reg = Registry::with(Rc::new(Quiet), None, fake.clone());
+        let services = Services {
+            chat: fake.clone(),
+            ..Services::none()
+        };
+        let mut reg = Registry::with(Rc::new(Quiet), None, services);
         let denied = reg.load_entry("nocap", entry).unwrap();
         let i = reg
             .load_entry_with_caps("p", entry, &[caps::CHAT_WRITE])

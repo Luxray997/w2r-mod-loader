@@ -80,9 +80,15 @@ mod tests {
             "GetNextPeerPacket",
             "DisplayChatOrGameMessage",
             "SendComposedChat",
+            "StringAssign",
+            "MpLobbySendChat",
         ] {
             let s = Symbols::get(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(s.kind, Kind::Function, "{name}");
+        }
+        for name in ["NetSession", "MpLobbyChatInput"] {
+            let s = Symbols::get(name).unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!(s.kind, Kind::Object, "{name}");
         }
     }
 

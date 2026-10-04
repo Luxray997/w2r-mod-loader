@@ -78,7 +78,11 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    plugins loaded on the main thread, crash-plugin disabled on its fault, hello-plugin's
    `chat_send` returned OK.
 5. Lobby message service: size, rate and lobby-only limits for every plugin; per-plugin
-   subsystem ids.
+   subsystem ids. **Done:** `peer.rs` (envelope, tag routing, 32/s per plugin and 128/s
+   overall, lobby-only, target must have announced; `GetNextPeerPacket` hook consumes W2R
+   messages and drops the stock 0x2A file transfer), `Registry::dispatch_peer`, `peer_send`.
+   The roster of announced peers is empty until the Phase 3 handshake port fills it, so no
+   message flows in the live game yet.
 6. Widget API on the game's Nuklear context; in-game plugin list with enable/disable toggles.
 Exit: a hello-world plugin prints a chat line on lobby entry and survives a deliberate crash.
 

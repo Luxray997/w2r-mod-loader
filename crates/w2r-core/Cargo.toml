@@ -11,13 +11,14 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 w2r-abi.workspace = true
+# DLL pins, peer tags and the simulation fingerprint.
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # Structured exception handling around every call into a plugin. See src/guard.rs for why.
 microseh = "1.2"
 # Inline hooks (bundled MinHook, BSD-2). See src/hooks.rs.
 minhook-sys = "0.1"
-sha2 = "0.10"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

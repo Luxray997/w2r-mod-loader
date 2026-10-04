@@ -11,9 +11,9 @@ use std::rc::Rc;
 
 use w2r_abi::*;
 
-use crate::chat::{Chat, NoChat};
 use crate::guard::guarded;
-use crate::host::{Game, Log, Shared, Slot};
+use crate::host::{Game, Log, Services, Shared, Slot, caps};
+use crate::peer::PluginMessage;
 
 /// A load-policy refusal: `code` is the table's code, `detail` the logged explanation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,19 +42,19 @@ pub struct Registry {
 
 impl Registry {
     /// A registry with no game behind it (tests, tooling): `game.read` functions report
-    /// `W2R_E_STATE` and chat is never available.
+    /// `W2R_E_STATE`, chat and peers are never available.
     pub fn new(log: Rc<dyn Log>) -> Self {
-        Self::with(log, None, Rc::new(NoChat))
+        Self::with(log, None, Services::none())
     }
 
     pub fn with_game(log: Rc<dyn Log>, game: Game) -> Self {
-        Self::with(log, Some(game), Rc::new(NoChat))
+        Self::with(log, Some(game), Services::none())
     }
 
-    pub fn with(log: Rc<dyn Log>, game: Option<Game>, chat: Rc<dyn Chat>) -> Self {
+    pub fn with(log: Rc<dyn Log>, game: Option<Game>, services: Services) -> Self {
         Registry {
             slots: Vec::new(),
-            shared: Rc::new(Shared { log, game, chat }),
+            shared: Rc::new(Shared::new(log, game, services)),
             #[cfg(windows)]
             modules: Vec::new(),
         }
@@ -179,6 +179,44 @@ impl Registry {
                 slot.disable(format!("on_event({id}): {fault}"));
             }
         }
+    }
+
+    /// Delivers a plugin peer message to the one plugin whose tag matches, if that plugin is
+    /// active, subscribed and allowed to receive (`net.send`), and the sender announced the
+    /// handshake. Anything else is dropped (docs/abi.md). Returns whether it was delivered.
+    pub fn dispatch_peer(&self, sender: u32, msg: PluginMessage<'_>) -> bool {
+        if !self.shared.services.roster.announced(sender) {
+            return false;
+        }
+        let Some(slot) = self.slots.iter().find(|s| s.tag == msg.tag) else {
+            return false;
+        };
+        if !slot.is_active()
+            || !slot.subscribed(W2R_EVT_PEER_MESSAGE)
+            || !slot.has_cap(caps::NET_SEND)
+        {
+            return false;
+        }
+        let Some(on_event) = slot.table.get().on_event else {
+            return false;
+        };
+        let message = W2rEvtPeerMessage {
+            struct_size: size_of::<W2rEvtPeerMessage>() as u32,
+            net_slot: sender,
+            data: W2rBuf {
+                ptr: msg.payload.as_ptr(),
+                len: msg.payload.len() as u32,
+            },
+        };
+        let event = W2rEvent {
+            struct_size: size_of::<W2rEvent>() as u32,
+            id: W2R_EVT_PEER_MESSAGE,
+            payload: (&message as *const W2rEvtPeerMessage).cast(),
+        };
+        if let Err(fault) = guarded(|| unsafe { on_event(&event) }) {
+            slot.disable(format!("on_event({W2R_EVT_PEER_MESSAGE}): {fault}"));
+        }
+        true
     }
 
     /// `W2R_EVT_SHUTDOWN` to subscribers, then best-effort `on_unload` for every active plugin.
