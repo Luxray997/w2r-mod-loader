@@ -164,7 +164,9 @@ plugins over the public ABI (chat may well be the latter).
    verified, and slice 4 is done: `enhanced_create_screen` defaults to on, the 4a overlay was removed (the
    lock buttons exist only on the replacement screen and the plugin screen). Lobby policy slices 1 to 3 (locks, broadcast,
    host menus) still await a second-player check.**
-4. Map download.
+4. Map download: a host feature, spec in [map-download.md](map-download.md) (four slices: pure core,
+   state machines, disk and game glue, prompt and status). **Spec written 2026-10-04, nothing
+   implemented yet.**
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI
