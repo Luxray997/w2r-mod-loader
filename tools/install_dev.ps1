@@ -6,8 +6,8 @@ Developer install of the w2rpm host into the game, with the hello-world fixture 
 Builds w2r_core.dll (release, i686) and copies it into the game's x86 folder as version.dll.
 Sets up the host root under Saved Games\Warcraft2Remastered\w2r with the hello_plugin fixture
 (plugin.json, DLL, pinned hash, chat.write approved). Then launch the game, enter a multiplayer
-lobby, and read logs\w2r.log: the build guard should report PASSED (197/197) and the lobby chat
-should show "hello from w2rpm".
+lobby, and read logs\w2r.log: the build guard should report PASSED (197/197) and the plugin
+should log "hello from hello_plugin".
 
 .PARAMETER Uninstall
 Removes our version.dll from the game folder and restores version.dll.pre-w2rpm if an earlier

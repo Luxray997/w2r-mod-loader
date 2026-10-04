@@ -1,5 +1,5 @@
-//! Logs on load, and on lobby entry says hello in the lobby chat (needs `chat.write`). The
-//! Phase 2 "hello world".
+//! Logs on load and on lobby events, and shows a few widgets on the plugin screen. The Phase 2
+//! "hello world"; it no longer posts to the lobby chat.
 
 use w2r_abi::*;
 use w2r_test_plugins as tp;
@@ -14,10 +14,6 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
 unsafe extern "C" fn on_event(event: *const W2rEvent) {
     let id = unsafe { (*event).id };
     tp::log(W2R_LOG_INFO, &format!("event {id}"));
-    if id == W2R_EVT_LOBBY_ENTER {
-        let status = tp::chat_send("hello from w2rpm");
-        tp::log(W2R_LOG_INFO, &format!("chat_send returned {status}"));
-    }
 }
 
 static GREET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
@@ -29,7 +25,7 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
     unsafe {
         (ui.label)(ui.ctx, tp::str("hello_plugin says hi"));
         let mut greet = GREET.load(Relaxed);
-        if (ui.checkbox)(ui.ctx, tp::str("Greet on lobby entry"), &mut greet) != 0 {
+        if (ui.checkbox)(ui.ctx, tp::str("Example option"), &mut greet) != 0 {
             GREET.store(greet, Relaxed);
             tp::log(W2R_LOG_INFO, &format!("greet set to {greet}"));
         }
