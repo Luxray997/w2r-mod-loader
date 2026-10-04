@@ -248,6 +248,9 @@ pub fn on_window(name: Option<&str>) {
                     ),
                 );
             }
+            if net.transport.is_host() && net.transport.connected() {
+                lobbypolicy::frame_work();
+            }
             if net.transport.is_host()
                 && net.transport.connected()
                 && lobbypolicy::with(|p| p.take_send(now))

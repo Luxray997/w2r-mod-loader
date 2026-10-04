@@ -99,6 +99,7 @@ pub struct Policy {
     is_host: bool,
     last_send: Option<u64>,
     send_now: bool,
+    pending_move: Option<PendingMove>,
 }
 
 impl Policy {
@@ -166,6 +167,15 @@ impl Policy {
         self.is_host
     }
 
+    /// The host picked "Move to Slot N". One move waits at a time; a newer pick replaces it.
+    pub fn queue_move(&mut self, m: PendingMove) {
+        self.pending_move = Some(m);
+    }
+
+    pub fn take_move(&mut self) -> Option<PendingMove> {
+        self.pending_move.take()
+    }
+
     /// A guest takes a lock message from the host, if it is in the lobby, is not the host and the
     /// sender is the host. True when it was accepted.
     pub fn receive(&mut self, now: u64, sender: u32, body: &[u8]) -> bool {
@@ -228,6 +238,53 @@ pub fn deliver(sender: u32, body: &[u8]) {
     with(|p| p.receive(now, sender, body));
 }
 
+/// Bytes per lobby slot, and where the state and the name sit in it (wc2r-plus `struct_offsets.h`).
+pub const LOBBY_SLOT_STRIDE: usize = 0x26;
+pub const LOBBY_SLOT_STATE: usize = 0x08;
+pub const LOBBY_SLOT_NAME: usize = 0x0d;
+pub const LOBBY_SLOT_NAME_MAX: usize = LOBBY_SLOT_STRIDE - LOBBY_SLOT_NAME;
+/// A seated player, and an open slot.
+pub const SLOT_SEATED: u8 = 0;
+pub const SLOT_OPEN: u8 = 5;
+/// The packet the game's slot-swap handler takes: type, from, to.
+pub const SWAP_PACKET_TYPE: u8 = 0x22;
+
+/// A host's move of one player to an open slot, waiting for the next lobby frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingMove {
+    pub from: u8,
+    pub to: u8,
+    /// The mover's name when it was picked.
+    pub who: Vec<u8>,
+}
+
+/// The open slots a player in `slot` can be moved to, from the slot states.
+pub fn move_targets(slot: u8, states: &[u8; 8]) -> Vec<u8> {
+    (0..8u8)
+        .filter(|&t| t != slot && states[t as usize] == SLOT_OPEN)
+        .collect()
+}
+
+/// The menu text for a move target (slots are shown 1 to 8).
+pub fn move_label(target: u8) -> String {
+    format!("Move to Slot {}", target + 1)
+}
+
+/// Which target the dropdown's new text names, if any.
+pub fn picked_target(text: &[u8], targets: &[u8]) -> Option<u8> {
+    targets
+        .iter()
+        .copied()
+        .find(|&t| move_label(t).as_bytes() == text)
+}
+
+/// The lobby may have changed between the pick and the next frame: the mover must still be seated
+/// under the same name and the target still open. `name` is the slot's name field (up to a NUL).
+pub fn move_still_valid(m: &PendingMove, from_state: u8, name: &[u8], to_state: u8) -> bool {
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    from_state == SLOT_SEATED && name[..end] == m.who[..] && to_state == SLOT_OPEN
+}
+
 /// Which lobby slot a name cell label is for: the game draws them as `slotType0` to `slotType7`
 /// (wc2r-plus `NameCellSlot`).
 pub fn name_cell_slot(label: &[u8]) -> Option<u8> {
@@ -243,8 +300,12 @@ pub fn host_password() -> Vec<u8> {
     Vec::new()
 }
 
+/// Per-frame host work in the lobby: carry out a queued slot move. A no-op off the game.
+#[cfg(not(all(windows, target_arch = "x86")))]
+pub fn frame_work() {}
+
 #[cfg(all(windows, target_arch = "x86"))]
-pub use hook::host_password;
+pub use hook::{frame_work, host_password};
 
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod hook {
@@ -252,6 +313,7 @@ pub mod hook {
     //! a peer's request is dropped while its lock is on, and everything else goes through.
 
     use core::ffi::{CStr, c_char, c_void};
+    use std::ffi::CString;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -267,6 +329,15 @@ pub mod hook {
     const SLOT_SWAP: &str = "HandleLobbyExchangeTwoSlotsRequest";
 
     const DROPDOWN: &str = "LobbySlotDropdown";
+    const KICK_KEY: &CStr = c"mp_kick_player";
+    const CLOSE_KEY: &[u8] = b"mp_slot_close";
+    const CLOSED_TEXT: &[u8] = b"Closed";
+    /// MSVC `std::string`: size at +0x10, capacity at +0x14, inline up to 15 bytes.
+    const STR_SIZE: usize = 0x10;
+    const STR_CAPACITY: usize = 0x14;
+    const STR_SSO_MAX: u32 = 15;
+    /// The most option keys the game's lists hold that we will rebuild.
+    const MAX_KEYS: usize = 16;
 
     type RequestFn = unsafe extern "C" fn(*const u8, i32);
     type DropdownFn = unsafe extern "C" fn(
@@ -280,6 +351,20 @@ pub mod hook {
         i8,
     ) -> i8;
 
+    type StringAssignFn =
+        unsafe extern "thiscall" fn(*mut c_void, *const c_char, usize) -> *mut c_void;
+
+    /// The game's option list: a `std::vector<const char*>` (begin, end, capacity).
+    #[repr(C)]
+    struct KeyVector {
+        begin: *const *const c_char,
+        end: *const *const c_char,
+        cap: *const *const c_char,
+    }
+
+    static STRING_ASSIGN: AtomicUsize = AtomicUsize::new(0);
+    static SLOTS: AtomicUsize = AtomicUsize::new(0);
+    static COUNTDOWN: AtomicUsize = AtomicUsize::new(0);
     static ORIGINAL_DROPDOWN: AtomicUsize = AtomicUsize::new(0);
     static TEAM_OPTIONS: AtomicUsize = AtomicUsize::new(0);
     static PASSWORD: AtomicUsize = AtomicUsize::new(0);
@@ -322,6 +407,13 @@ pub mod hook {
             symbols.address("LobbyPassword").unwrap_or(0),
             Ordering::Release,
         );
+        for (cell, name) in [
+            (&STRING_ASSIGN, "StringAssign"),
+            (&SLOTS, "MpLobbySlots"),
+            (&COUNTDOWN, "MpLobbyCountdownActive"),
+        ] {
+            cell.store(symbols.address(name).unwrap_or(0), Ordering::Release);
+        }
         TEAM_OPTIONS.store(
             symbols.address("MpLobbyTeamOptions").unwrap_or(0),
             Ordering::Release,
@@ -401,9 +493,184 @@ pub mod hook {
         !ok
     }
 
+    /// A MSVC `std::string` read out of the game.
+    unsafe fn game_string(s: *const u8) -> Vec<u8> {
+        unsafe {
+            let len = s.add(STR_SIZE).cast::<u32>().read_unaligned() as usize;
+            let cap = s.add(STR_CAPACITY).cast::<u32>().read_unaligned();
+            let data = if cap > STR_SSO_MAX {
+                s.cast::<*const u8>().read_unaligned()
+            } else {
+                s
+            };
+            if data.is_null() || len > 4096 {
+                Vec::new()
+            } else {
+                core::slice::from_raw_parts(data, len).to_vec()
+            }
+        }
+    }
+
+    unsafe fn assign(value: *mut c_void, text: &[u8]) {
+        let f = STRING_ASSIGN.load(Ordering::Acquire);
+        if f != 0 {
+            let f: StringAssignFn = unsafe { core::mem::transmute(f) };
+            unsafe { f(value, text.as_ptr().cast(), text.len()) };
+        }
+    }
+
+    unsafe fn slot_record(slot: usize) -> Option<*const u8> {
+        let at = SLOTS.load(Ordering::Acquire);
+        (at != 0).then(|| (at + slot * super::LOBBY_SLOT_STRIDE) as *const u8)
+    }
+
+    /// The option list is exactly `[mp_kick_player]`: a host's menu for a seated player.
+    unsafe fn is_kick_only(list: *const KeyVector) -> bool {
+        unsafe {
+            let Some(v) = list.as_ref() else {
+                return false;
+            };
+            !v.begin.is_null()
+                && v.end == v.begin.add(1)
+                && !(*v.begin).is_null()
+                && CStr::from_ptr(*v.begin) == KICK_KEY
+        }
+    }
+
+    /// The host's name cell for a seated player: Kick plus "Move to Slot N" for each open slot.
+    /// Picking a move restores the text, queues the move for the next lobby frame and reports
+    /// nothing picked (wc2r-plus `HostPlayerCell`).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn host_player_cell(
+        original: DropdownFn,
+        slot: u8,
+        disabled: i8,
+        prev: i8,
+        label: *const c_char,
+        value: *mut c_void,
+        changed: *mut i8,
+        row_h: f32,
+        localize: i8,
+    ) -> i8 {
+        let mut states = [0u8; 8];
+        for (t, st) in states.iter_mut().enumerate() {
+            if let Some(rec) = unsafe { slot_record(t) } {
+                *st = unsafe { *rec.add(super::LOBBY_SLOT_STATE) };
+            }
+        }
+        let targets = super::move_targets(slot, &states);
+        let labels: Vec<CString> = targets
+            .iter()
+            .filter_map(|&t| CString::new(super::move_label(t)).ok())
+            .collect();
+        let mut keys: Vec<*const c_char> = vec![KICK_KEY.as_ptr()];
+        keys.extend(labels.iter().map(|l| l.as_ptr()));
+        let list = KeyVector {
+            begin: keys.as_ptr(),
+            end: unsafe { keys.as_ptr().add(keys.len()) },
+            cap: unsafe { keys.as_ptr().add(keys.len()) },
+        };
+        let before = unsafe { game_string(value as *const u8) };
+        let picked = unsafe {
+            original(
+                disabled,
+                prev,
+                label,
+                value,
+                &list as *const KeyVector as *mut c_void,
+                changed,
+                row_h,
+                localize,
+            )
+        };
+        if picked == 0 {
+            return picked;
+        }
+        let now = unsafe { game_string(value as *const u8) };
+        let Some(to) = super::picked_target(&now, &targets) else {
+            return picked;
+        };
+        unsafe { assign(value, &before) };
+        let who = unsafe { slot_record(slot as usize) }
+            .map(|rec| {
+                let name = unsafe {
+                    core::slice::from_raw_parts(
+                        rec.add(super::LOBBY_SLOT_NAME),
+                        super::LOBBY_SLOT_NAME_MAX,
+                    )
+                };
+                name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())].to_vec()
+            })
+            .unwrap_or_default();
+        with(|p| {
+            p.queue_move(super::PendingMove {
+                from: slot,
+                to,
+                who,
+            })
+        });
+        0
+    }
+
+    /// The slot-state cell: hides the current state from the list, and shows a closed slot as
+    /// "Closed" while the menu is open (wc2r-plus `SlotStateCell`).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn slot_state_cell(
+        original: DropdownFn,
+        disabled: i8,
+        prev: i8,
+        label: *const c_char,
+        value: *mut c_void,
+        options: *mut c_void,
+        changed: *mut i8,
+        row_h: f32,
+        localize: i8,
+    ) -> i8 {
+        let current = unsafe { game_string(value as *const u8) };
+        let mut keys: Vec<*const c_char> = Vec::new();
+        let mut list_ptr = options;
+        let mut filtered: Option<KeyVector> = None;
+        let input = options as *const KeyVector;
+        if disabled == 0
+            && let Some(v) = unsafe { input.as_ref() }
+            && !v.begin.is_null()
+            && v.end >= v.begin
+            && (unsafe { v.end.offset_from(v.begin) }) as usize <= MAX_KEYS
+        {
+            let mut k = v.begin;
+            while k != v.end {
+                let key = unsafe { *k };
+                let same = !key.is_null() && unsafe { CStr::from_ptr(key) }.to_bytes() == current;
+                if !same {
+                    keys.push(key);
+                }
+                k = unsafe { k.add(1) };
+            }
+            let list = filtered.insert(KeyVector {
+                begin: keys.as_ptr(),
+                end: unsafe { keys.as_ptr().add(keys.len()) },
+                cap: unsafe { keys.as_ptr().add(keys.len()) },
+            });
+            list_ptr = list as *mut KeyVector as *mut c_void;
+        }
+        let closed = current == CLOSE_KEY;
+        if closed {
+            unsafe { assign(value, CLOSED_TEXT) };
+        }
+        let picked = unsafe {
+            original(
+                disabled, prev, label, value, list_ptr, changed, row_h, localize,
+            )
+        };
+        if closed && picked == 0 {
+            unsafe { assign(value, &current) };
+        }
+        picked
+    }
+
     /// Guests see the team dropdown and their own name cell disabled while the host has them
-    /// locked; the host's team dropdown is never disabled (wc2r-plus `DropdownDetour`). Host menus
-    /// come with slice 3.
+    /// locked; the host's team dropdown is never disabled, and its name cells get the move menu
+    /// and the closed-slot text (wc2r-plus `DropdownDetour`).
     unsafe extern "C" fn dropdown(
         mut disabled: i8,
         prev: i8,
@@ -414,7 +681,9 @@ pub mod hook {
         row_h: f32,
         localize: i8,
     ) -> i8 {
-        let _ = guarded(|| {
+        let original: DropdownFn =
+            unsafe { core::mem::transmute(ORIGINAL_DROPDOWN.load(Ordering::Acquire)) };
+        let plan = guarded(|| {
             let (is_host, locks) = with(|p| {
                 p.touch(crate::chat::now_ms());
                 (p.is_host(), p.locks())
@@ -427,19 +696,102 @@ pub mod hook {
                     disabled = 1;
                 }
             }
-            if disabled == 0 && !is_host && locks.slots && !label.is_null() {
-                let label = unsafe { CStr::from_ptr(label) }.to_bytes();
-                if super::name_cell_slot(label).is_some() {
+            let slot = if label.is_null() {
+                None
+            } else {
+                super::name_cell_slot(unsafe { CStr::from_ptr(label) }.to_bytes())
+            };
+            let mut host_menu = false;
+            if slot.is_some() && disabled == 0 {
+                if is_host
+                    && !value.is_null()
+                    && unsafe { is_kick_only(options as *const KeyVector) }
+                {
+                    host_menu = true;
+                } else if !is_host && locks.slots {
                     disabled = 1;
                 }
             }
+            (slot, host_menu, disabled)
         });
-        let original: DropdownFn =
-            unsafe { core::mem::transmute(ORIGINAL_DROPDOWN.load(Ordering::Acquire)) };
-        unsafe {
-            original(
-                disabled, prev, label, value, options, changed, row_h, localize,
+        let Ok((slot, host_menu, d)) = plan else {
+            return unsafe {
+                original(
+                    disabled, prev, label, value, options, changed, row_h, localize,
+                )
+            };
+        };
+        disabled = d;
+        match slot {
+            Some(slot) if host_menu => unsafe {
+                host_player_cell(
+                    original, slot, disabled, prev, label, value, changed, row_h, localize,
+                )
+            },
+            Some(_) if !value.is_null() => unsafe {
+                slot_state_cell(
+                    original, disabled, prev, label, value, options, changed, row_h, localize,
+                )
+            },
+            _ => unsafe {
+                original(
+                    disabled, prev, label, value, options, changed, row_h, localize,
+                )
+            },
+        }
+    }
+
+    /// Host, connected, lobby window drawn: carry out a queued move, unless the start countdown
+    /// is running or the lobby changed since the pick (wc2r-plus `ApplyPendingMove`).
+    pub fn frame_work() {
+        let _ = guarded(|| unsafe { apply_pending_move() });
+    }
+
+    unsafe fn apply_pending_move() {
+        let countdown = COUNTDOWN.load(Ordering::Acquire) as *const u8;
+        if !countdown.is_null() && unsafe { *countdown } != 0 {
+            with(|p| p.take_move());
+            return;
+        }
+        let Some(m) = with(|p| p.take_move()) else {
+            return;
+        };
+        let (Some(from), Some(to)) = (unsafe { slot_record(m.from as usize) }, unsafe {
+            slot_record(m.to as usize)
+        }) else {
+            return;
+        };
+        let name = unsafe {
+            core::slice::from_raw_parts(
+                from.add(super::LOBBY_SLOT_NAME),
+                super::LOBBY_SLOT_NAME_MAX,
             )
+        };
+        let who = String::from_utf8_lossy(&m.who).into_owned();
+        let still = super::move_still_valid(
+            &m,
+            unsafe { *from.add(super::LOBBY_SLOT_STATE) },
+            name,
+            unsafe { *to.add(super::LOBBY_SLOT_STATE) },
+        );
+        let line = if still {
+            let packet = [super::SWAP_PACKET_TYPE, m.from, m.to];
+            let swap: RequestFn =
+                unsafe { core::mem::transmute(ORIGINAL_SWAP.load(Ordering::Acquire)) };
+            unsafe { swap(packet.as_ptr(), 0) };
+            format!(
+                "moved '{who}' from slot {} to slot {}",
+                m.from + 1,
+                m.to + 1
+            )
+        } else {
+            format!(
+                "move of '{who}' to slot {} dropped: the lobby changed first",
+                m.to + 1
+            )
+        };
+        if let Some(s) = crate::entry::startup() {
+            s.log.line(W2R_LOG_INFO, "lobbypolicy", &line);
         }
     }
 
@@ -625,6 +977,62 @@ mod tests {
         assert_eq!(name_cell_slot(b"slotType10"), None);
         assert_eq!(name_cell_slot(b"slotType"), None);
         assert_eq!(name_cell_slot(b"team3"), None);
+    }
+
+    #[test]
+    fn move_menus_list_the_other_open_slots_and_read_back_the_pick() {
+        let states = [0, 5, 3, 5, 0, 5, 3, 3];
+        assert_eq!(move_targets(0, &states), vec![1, 3, 5]);
+        assert_eq!(move_targets(1, &states), vec![3, 5], "not its own slot");
+        assert_eq!(move_targets(0, &[0; 8]), Vec::<u8>::new());
+        assert_eq!(move_label(0), "Move to Slot 1");
+        assert_eq!(move_label(7), "Move to Slot 8");
+        assert_eq!(picked_target(b"Move to Slot 4", &[1, 3, 5]), Some(3));
+        assert_eq!(picked_target(b"Move to Slot 3", &[1, 3, 5]), None);
+        assert_eq!(picked_target(b"mp_kick_player", &[1, 3, 5]), None);
+    }
+
+    #[test]
+    fn a_move_is_dropped_if_the_lobby_changed_after_the_pick() {
+        let m = PendingMove {
+            from: 2,
+            to: 4,
+            who: b"Ann".to_vec(),
+        };
+        let mut name = [0u8; LOBBY_SLOT_NAME_MAX];
+        name[..3].copy_from_slice(b"Ann");
+        assert!(move_still_valid(&m, SLOT_SEATED, &name, SLOT_OPEN));
+        assert!(!move_still_valid(&m, 3, &name, SLOT_OPEN), "mover left");
+        assert!(!move_still_valid(&m, SLOT_SEATED, &name, 0), "target taken");
+        name[..3].copy_from_slice(b"Bob");
+        assert!(
+            !move_still_valid(&m, SLOT_SEATED, &name, SLOT_OPEN),
+            "someone else sits there"
+        );
+        name[..3].copy_from_slice(b"Ann");
+        name[3] = b'a';
+        assert!(
+            !move_still_valid(&m, SLOT_SEATED, &name, SLOT_OPEN),
+            "longer name"
+        );
+    }
+
+    #[test]
+    fn one_move_waits_and_a_new_lobby_forgets_it() {
+        let mv = |to| PendingMove {
+            from: 0,
+            to,
+            who: b"A".to_vec(),
+        };
+        let mut p = Policy::default();
+        p.frame(0, true, Locks::default());
+        p.queue_move(mv(1));
+        p.queue_move(mv(2));
+        assert_eq!(p.take_move().map(|m| m.to), Some(2));
+        assert_eq!(p.take_move(), None);
+        p.queue_move(mv(3));
+        p.frame(LOBBY_GAP_MS * 2, true, Locks::default());
+        assert_eq!(p.take_move(), None);
     }
 
     #[test]

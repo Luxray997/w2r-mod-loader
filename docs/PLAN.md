@@ -153,7 +153,8 @@ plugins over the public ABI (chat may well be the latter).
    two request hooks, `lock_team_changes`/`lock_slot_swaps` in `host.json` and two plugin-screen
    checkboxes), awaiting the in-game check), slice 2 written (host broadcast on change and every 2 s,
    guest adoption, disabled team/name dropdowns on guests, lock events in the log), also awaiting
-   the check; slices 3 and 4 not started.**
+   the check; slice 3 written (host "Move to Slot N" menu, Closed slots, on the same
+   `LobbySlotDropdown` hook), awaiting the check; slice 4 (create screen) not started.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 
