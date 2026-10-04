@@ -110,9 +110,34 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
 Exit: a hello-world plugin prints a chat line on lobby entry and survives a deliberate crash.
 
 ### 3. Port wc2r-plus features as first-party plugins
-Order: handshake, chat, lobby policy, map download. Fix the known review findings while porting:
-per-era tile and REGM validation in the PUD validator, throttled logging, no packet-loop
-starvation, no unvalidated UNC paths.
+Status: in progress. Order: handshake, chat, lobby policy, map download. Fix the known review
+findings while porting: per-era tile and REGM validation in the PUD validator, throttled
+logging, no packet-loop starvation, no unvalidated UNC paths.
+Decision (handshake step): features that own a reserved subsystem (`'H'`, `'M'`, `'L'`) are
+compiled into the host, not shipped as plugins. The handshake's roster gates `peer_send`, its
+fingerprint covers what the host loaded, and refusing a player is a host action; none of that
+fits behind the plugin ABI, and the host must work with no plugin installed. Chat, lobby
+policy and map download decide at their turn whether they are host features or first-party
+plugins over the public ABI (chat may well be the latter).
+1. Handshake. **Done (code and unit tests, 2026-10-03; not yet run in the live game):**
+   `handshake.rs` (wire-compatible with wc2r-plus, docs/peer-protocol.md; nonce-change and
+   caps-change log throttles with a regression test; roster from the transport's peer list,
+   re-HELLO on joiners, leavers forgotten), `fingerprint.rs` (checked against
+   docs/vectors/fingerprint.json; `plugins.rs` computes it over loaded `affects_simulation` or
+   `hooks.raw` plugins and logs it), `hostcfg.rs` (`config\host.json`,
+   `require_matching_plugins`), the strict kick through `KickLobbyPeer`, lobby warnings drawn
+   in a window of ours after the lobby window ends (`notice.rs`, hook on `EndCurrentWindow`)
+   and listed on the plugin screen next to a strict-mode checkbox. `session.rs` now queues
+   messages that arrive off the main thread or while the session is busy (bounded, 256) and
+   drains them on the next frame, closing the Phase 2 gap. `Transport` gained `is_host`,
+   `peers` (EnumPeers vtable slot, freed through the game's sized `operator delete`),
+   `lobby_slots` and `kick`. To verify in the game: lobby entry logs `announced (nonce …)`;
+   with a second player (wc2r-plus or another w2rpm) the log shows `net slot N … runs …` and
+   `replied`; `tools\install_dev.ps1 -Simulation` gives a non-zero fingerprint so a mismatch
+   warning can be seen.
+2. Chat.
+3. Lobby policy.
+4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI

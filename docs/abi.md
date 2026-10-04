@@ -120,9 +120,11 @@ Plugins send through `peer_send`; the host builds the envelope:
 - A plugin receives only messages carrying its own tag, only from peers that announced the
   handshake, and only while in a lobby. The sender slot is the one the transport reports, never one
   named inside a message.
-- Subsystems `'H'`, `'M'` and `'L'` are reserved for the first-party handshake, map-sharing and
-  lobby-settings features; Phase 3 decides how those ports reach them. `'P'` is the only subsystem
-  third-party plugins use.
+- Subsystems `'H'`, `'M'` and `'L'` belong to the first-party handshake, map-sharing and
+  lobby-settings features, which are compiled into the host rather than shipped as plugins: the
+  handshake's roster is the host's own policy input and its fingerprint covers what the host
+  loaded, so no plugin could provide it ([peer-protocol.md](peer-protocol.md)). `'P'` is the only
+  subsystem third-party plugins use.
 - A whole message is at most 969 bytes, below the game's 989-byte limit for its reliable channel.
   Messages are removed from the stream before the game sees them, and the host never sends
   outside a lobby.

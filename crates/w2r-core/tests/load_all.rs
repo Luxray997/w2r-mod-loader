@@ -9,6 +9,7 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use w2r_core::fingerprint;
 use w2r_core::host::Log;
 use w2r_core::host::Services;
 use w2r_core::json::{Number, Value};
@@ -193,7 +194,7 @@ fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
     let root = root_with("ok", &[hello, off]);
 
     let log = Rc::new(Lines::default());
-    let (reg, _) = load_all(&root, running(), log.clone(), None, Services::none());
+    let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
     assert_eq!(reg.len(), 1, "{}", log.dump());
     let slot = reg.find("hello-plugin").unwrap();
     assert!(slot.is_active());
@@ -207,6 +208,88 @@ fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
     );
     assert!(log.has("1 of 1 enabled plugins loaded"), "{}", log.dump());
     assert!(reg.find("off-plugin").is_none());
+    assert!(
+        log.has("simulation fingerprint 00000000 (no simulation-affecting plugins)"),
+        "{}",
+        log.dump()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// docs/load-policy.md, "Simulation fingerprint": loaded plugins with `affects_simulation` or
+/// `hooks.raw` count, in id order, as (id, version, DLL hash); nothing else does.
+#[test]
+fn the_fingerprint_covers_simulation_and_raw_hook_plugins_only() {
+    let mut sim = manifest("sim-plugin", "hello_plugin.dll");
+    set(&mut sim, "affects_simulation", Value::Bool(true));
+    set(&mut sim, "version", s("2.1.0"));
+    let mut hooks = manifest("hooky", "hello_plugin.dll");
+    set(&mut hooks, "capabilities", arr(vec![s("hooks.raw")]));
+    let mut hooky = Plugin::new("hooky", "hello_plugin", hooks);
+    hooky.approved = vec!["hooks.raw"];
+    let plain = Plugin::new(
+        "plain",
+        "hello_plugin",
+        manifest("plain", "hello_plugin.dll"),
+    );
+    let mut off = manifest("off-sim", "hello_plugin.dll");
+    set(&mut off, "affects_simulation", Value::Bool(true));
+    let off = Plugin {
+        enabled: false,
+        ..Plugin::new("off-sim", "hello_plugin", off)
+    };
+    // Refused before loading (bad pin): not part of the session, so not in the fingerprint.
+    let mut refused_m = manifest("refused", "hello_plugin.dll");
+    set(&mut refused_m, "affects_simulation", Value::Bool(true));
+    let refused = Plugin {
+        pin: Some("00".repeat(32)),
+        ..Plugin::new("refused", "hello_plugin", refused_m)
+    };
+    let root = root_with(
+        "fingerprint",
+        &[
+            Plugin::new("sim-plugin", "hello_plugin", sim),
+            hooky,
+            plain,
+            off,
+            refused,
+        ],
+    );
+
+    let log = Rc::new(Lines::default());
+    let loaded = load_all(&root, running(), log.clone(), None, Services::none());
+    assert_eq!(
+        loaded.simulation,
+        vec!["hooky".to_owned(), "sim-plugin".to_owned()]
+    );
+    let dll = root
+        .join("plugins")
+        .join("sim-plugin")
+        .join("hello_plugin.dll");
+    let sha = sha256_of(&dll).unwrap();
+    let expected = fingerprint::compute(&[
+        fingerprint::Entry {
+            id: "sim-plugin",
+            version: "2.1.0",
+            sha256: &sha,
+        },
+        fingerprint::Entry {
+            id: "hooky",
+            version: "1.0.0",
+            sha256: &sha,
+        },
+    ])
+    .unwrap();
+    assert_eq!(loaded.fingerprint, expected);
+    assert_ne!(loaded.fingerprint, [0; 4]);
+    assert!(
+        log.has(&format!(
+            "simulation fingerprint {} (hooky, sim-plugin)",
+            fingerprint::hex(&expected)
+        )),
+        "{}",
+        log.dump()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -272,7 +355,7 @@ fn each_check_refuses_with_its_code_and_leaves_no_slot() {
     ];
     let root = root_with("refusals", &plugins);
     let log = Rc::new(Lines::default());
-    let (reg, _) = load_all(&root, running(), log.clone(), None, Services::none());
+    let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
 
     for (id, code) in [
         ("no-manifest", "E_STATE: plugin.json is missing"),
@@ -356,7 +439,7 @@ fn dependencies_load_first_and_version_and_cycles_are_enforced() {
     ];
     let root = root_with("deps", &plugins);
     let log = Rc::new(Lines::default());
-    let (reg, _) = load_all(&root, running(), log.clone(), None, Services::none());
+    let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
 
     let hello = reg.find("hello-plugin").expect("hello loaded");
     let needs = reg.find("needs-hello").expect("dependent loaded");
@@ -388,7 +471,7 @@ fn a_missing_or_bad_state_file_loads_nothing() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config")).unwrap();
     let log = Rc::new(Lines::default());
-    let (reg, _) = load_all(&root, running(), log.clone(), None, Services::none());
+    let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
     assert!(reg.is_empty());
     assert!(log.has("no config\\state.json"));
 
@@ -398,7 +481,7 @@ fn a_missing_or_bad_state_file_loads_nothing() {
     )
     .unwrap();
     let log = Rc::new(Lines::default());
-    let (reg, _) = load_all(&root, running(), log.clone(), None, Services::none());
+    let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
     assert!(reg.is_empty());
     assert!(log.has("state.json refused (bad_schema)"));
     let _ = std::fs::remove_dir_all(&root);

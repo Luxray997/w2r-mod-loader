@@ -85,13 +85,13 @@ unsafe extern "C" fn detour(
     let opened = unsafe { original(ctx, name, x, y, w, h, flags) };
     // Host work runs after the game's own and under the crash guard: a host bug must not take
     // the game down, and the game must never see a different return value because of it.
-    if let Err(fault) = guarded(|| on_window(name, opened)) {
+    if let Err(fault) = guarded(|| on_window(ctx, name, opened)) {
         crate::session::host_fault(SYMBOL, &fault);
     }
     opened
 }
 
-fn on_window(name: *const c_char, _opened: i32) {
+fn on_window(ctx: *mut c_void, name: *const c_char, _opened: i32) {
     FIRST.call_once(|| {
         let tid = unsafe { GetCurrentThreadId() };
         MAIN_THREAD.store(tid, Ordering::Release);
@@ -108,5 +108,9 @@ fn on_window(name: *const c_char, _opened: i32) {
     } else {
         unsafe { core::ffi::CStr::from_ptr(name) }.to_str().ok()
     };
+    #[cfg(target_arch = "x86")]
+    crate::notice::note_begin(ctx, name);
+    #[cfg(not(target_arch = "x86"))]
+    let _ = ctx;
     crate::session::on_window(name);
 }

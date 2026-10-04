@@ -11,7 +11,8 @@ use std::rc::Rc;
 use w2r_abi::{W2R_ABI_VERSION, W2R_LOG_INFO, W2R_LOG_WARN};
 
 use crate::dispatch::Registry;
-use crate::host::{Game, Log, Services};
+use crate::fingerprint;
+use crate::host::{Game, Log, Services, caps};
 use crate::loader::sha256_of;
 use crate::manifest::{self, Build, Manifest};
 use crate::peer::peer_tag;
@@ -132,15 +133,37 @@ fn load_order(accepted: Vec<Candidate>) -> (Vec<Candidate>, Vec<Candidate>) {
     (order, cycle)
 }
 
-/// Loads everything `state.json` enables. Returns the registry, with a slot per plugin that
-/// reached check 9.
+/// What startup loading produced.
+pub struct Loaded {
+    /// A slot per plugin that reached check 9.
+    pub registry: Registry,
+    /// `state.json` as read (empty when it was missing or refused).
+    pub state: State,
+    /// The simulation fingerprint of what loaded (docs/load-policy.md).
+    pub fingerprint: [u8; 4],
+    /// The plugins in it, by id.
+    pub simulation: Vec<String>,
+}
+
+impl Loaded {
+    fn empty(registry: Registry) -> Loaded {
+        Loaded {
+            registry,
+            state: State::default(),
+            fingerprint: [0; 4],
+            simulation: Vec::new(),
+        }
+    }
+}
+
+/// Loads everything `state.json` enables.
 pub fn load_all(
     root: &Path,
     running: Build,
     log: Rc<dyn Log>,
     game: Option<Game>,
     services: Services,
-) -> (Registry, State) {
+) -> Loaded {
     let mut registry = Registry::with(log.clone(), game, services);
     let state_path = root.join("config").join("state.json");
     let state = match read_bounded(&state_path, state::MAX_BYTES) {
@@ -152,7 +175,7 @@ pub fn load_all(
                     HOST,
                     &format!("state.json refused ({code}); loading nothing"),
                 );
-                return (registry, State::default());
+                return Loaded::empty(registry);
             }
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -161,7 +184,7 @@ pub fn load_all(
                 HOST,
                 "no config\\state.json: no plugins to load",
             );
-            return (registry, State::default());
+            return Loaded::empty(registry);
         }
         Err(e) => {
             log.line(
@@ -169,7 +192,7 @@ pub fn load_all(
                 HOST,
                 &format!("state.json unreadable ({e}); loading nothing"),
             );
-            return (registry, State::default());
+            return Loaded::empty(registry);
         }
     };
 
@@ -201,6 +224,8 @@ pub fn load_all(
     // Checks 8-10 at each plugin's turn, in dependency order.
     let (order, cycle) = load_order(accepted);
     let mut loaded: BTreeMap<String, Version> = BTreeMap::new();
+    // (id, manifest version text, pin) of each loaded plugin that counts for the fingerprint.
+    let mut simulation: Vec<(String, String, [u8; 32])> = Vec::new();
     for c in order {
         let unmet = c
             .manifest
@@ -226,6 +251,14 @@ pub fn load_all(
             .is_ok()
         {
             loaded.insert(c.st.id.clone(), c.manifest.version.clone());
+            // A raw hook can change anything, so it always counts (docs/load-policy.md).
+            if c.manifest.affects_simulation || caps.contains(&caps::HOOKS_RAW) {
+                simulation.push((
+                    c.st.id.clone(),
+                    c.manifest.version_text.clone(),
+                    c.st.sha256,
+                ));
+            }
         }
     }
     for c in cycle {
@@ -244,5 +277,34 @@ pub fn load_all(
             state.plugins.iter().filter(|p| p.enabled).count()
         ),
     );
-    (registry, state)
+    let entries: Vec<fingerprint::Entry<'_>> = simulation
+        .iter()
+        .map(|(id, version, sha256)| fingerprint::Entry {
+            id,
+            version,
+            sha256,
+        })
+        .collect();
+    // Ids are unique in state.json, so this cannot fail; stay zero rather than panic if it did.
+    let fp = fingerprint::compute(&entries).unwrap_or([0; 4]);
+    let ids: Vec<String> = simulation.into_iter().map(|(id, _, _)| id).collect();
+    log.line(
+        W2R_LOG_INFO,
+        HOST,
+        &format!(
+            "simulation fingerprint {} ({})",
+            fingerprint::hex(&fp),
+            if ids.is_empty() {
+                "no simulation-affecting plugins".to_owned()
+            } else {
+                ids.join(", ")
+            }
+        ),
+    );
+    Loaded {
+        registry,
+        state,
+        fingerprint: fp,
+        simulation: ids,
+    }
 }

@@ -82,14 +82,21 @@ them.
 - **On the wire:** the 4 bytes go, in that order, into the handshake's 4-byte "simulation" field at
   offset 15 (the little-endian u32 of those bytes). wc2r-plus sends zeros, which equals "no
   simulation-affecting plugins".
-- **Strict bit:** handshake capability bit 1, unused so far, means "this host requires matching
-  fingerprints".
+- **Strict bit:** handshake capability bit 1 means "this host requires matching fingerprints".
+  It is `require_matching_plugins` in `config\host.json` ([layout.md](layout.md)), off by default
+  and togglable on the in-game plugin screen; a change takes effect at once and is re-announced.
 - **Policy:** a player whose fingerprint differs from the host's sees a clear warning in the lobby.
-  When the host has the strict bit set, the host refuses that player. The check applies only
-  between players who announced the handshake; players without the mod are never affected.
+  When the host has the strict bit set, the host refuses that player (the game's own kick, once
+  per handshake nonce). The check applies only between players who announced the handshake;
+  players without the mod are never affected.
 - A host with simulation-affecting plugins loaded also sees a lobby warning when any joiner has not
-  announced the handshake, because the mod cannot detect or refuse mismatch with a player who does
-  not run it (such players are never affected by the strict bit).
+  announced the handshake within 3 s of appearing, because the mod cannot detect or refuse
+  mismatch with a player who does not run it (such players are never affected by the strict bit).
+  A joiner with such plugins sees the same warning about a host that has not announced.
+- Implementation: `crates/w2r-core/src/fingerprint.rs` computes it after startup loading
+  (`plugins.rs` logs it as `simulation fingerprint <hex> (<ids>)`), `handshake.rs` exchanges and
+  compares it ([peer-protocol.md](peer-protocol.md)), and the warnings are drawn over the lobby
+  (`notice.rs`) and listed on the plugin screen.
 - The fingerprint covers plugin identity and binary only, **not plugin settings**. A plugin that
   affects the simulation must not let local settings change it, or must agree them between players
   itself through peer messages; otherwise two players with the same plugin can desync unwarned.

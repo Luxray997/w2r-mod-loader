@@ -5,8 +5,9 @@
 //! game sees them; everything else passes through, except the stock `0x2A` legacy file
 //! transfer, which wc2r-plus drops and so do we.
 //!
-//! Subsystems `'H'`, `'M'` and `'L'` are reserved for the first-party features (Phase 3);
-//! only `'P'` reaches plugins, routed by the 4-byte tag that is SHA-256 of the plugin id.
+//! Subsystem `'H'` is the host's own handshake (`handshake` module); `'M'` and `'L'` are
+//! reserved for the other first-party features (Phase 3). Only `'P'` reaches plugins, routed by
+//! the 4-byte tag that is SHA-256 of the plugin id.
 
 use std::collections::VecDeque;
 
@@ -18,6 +19,7 @@ pub const MAGIC: [u8; 3] = *b"W2R";
 /// type + magic + subsystem.
 pub const BASE_HEADER_LEN: usize = 5;
 pub const SUBSYSTEM_PLUGIN: u8 = b'P';
+pub const SUBSYSTEM_HANDSHAKE: u8 = b'H';
 pub const RESERVED_SUBSYSTEMS: [u8; 3] = *b"HML";
 /// The plugin header: base header + 4-byte tag.
 pub const HEADER_LEN: usize = W2R_PEER_HEADER_BYTES as usize;
@@ -141,14 +143,31 @@ impl SlidingWindow {
     }
 }
 
-/// The game's reliable peer channel.
+/// The game's reliable peer channel, plus the facts about the net session the handshake
+/// needs. The defaults say "cannot tell", which keeps the handshake quiet.
 pub trait Transport {
     fn connected(&self) -> bool;
     fn broadcast(&self, msg: &[u8]) -> bool;
     fn send_to(&self, slot: u32, msg: &[u8]) -> bool;
+    /// Whether the local player hosts the session (net slot 0).
+    fn is_host(&self) -> bool {
+        false
+    }
+    /// The net slots the transport currently knows, when it can list them.
+    fn peers(&self) -> Option<Vec<u32>> {
+        None
+    }
+    /// Lobby slot (0-7) per net slot, when readable.
+    fn lobby_slots(&self) -> Option<[Option<u8>; 8]> {
+        None
+    }
+    /// Removes a player from the lobby (host only). False when the game refused.
+    fn kick(&self, _slot: u32) -> bool {
+        false
+    }
 }
 
-/// Which net slots announced the handshake (the Phase 3 handshake feature fills this in).
+/// Which net slots announced the handshake; the `handshake` module is the live source.
 pub trait Roster {
     fn announced(&self, slot: u32) -> bool;
     fn any_announced(&self) -> bool;
@@ -228,23 +247,55 @@ pub mod game {
     use crate::symbols::Symbols;
     use core::ffi::c_void;
 
+    const SESSION_IS_HOST: usize = 0x18;
     const SESSION_CONNECTED: usize = 0x19;
     const SESSION_TRANSPORT: usize = 0x68;
     const VT_SEND_TO_PEER: usize = 0x3C / 4;
     const VT_BROADCAST: usize = 0x40 / 4;
+    const VT_ENUM_PEERS: usize = 0x48 / 4;
+    /// MSVC frees small blocks through the sized `operator delete`; wc2r-plus frees the peer
+    /// list only below this capacity, and so do we (a larger one is left to leak).
+    const FREE_BELOW: usize = 0x1000;
 
     type BroadcastFn = unsafe extern "thiscall" fn(*mut c_void, *const u8, i32) -> i32;
     type SendToFn = unsafe extern "thiscall" fn(*mut c_void, i32, *const u8, i32) -> i32;
+    /// Fills a `std::vector<uint8_t>` of net slots that the caller must free.
+    type EnumPeersFn = unsafe extern "thiscall" fn(*mut c_void, *mut ByteVec) -> *mut ByteVec;
+    /// The game's `operator delete(void*, size_t)`.
+    type OperatorDeleteFn = unsafe extern "C" fn(*mut c_void, usize);
+    /// `KickLobbyPeer(netSlot, reason)`; wc2r-plus passes reason 0.
+    type KickFn = unsafe extern "C" fn(u32, u8);
+
+    /// MSVC `std::vector<uint8_t>` as the game lays it out.
+    #[repr(C)]
+    struct ByteVec {
+        begin: *mut u8,
+        end: *mut u8,
+        cap: *mut u8,
+    }
 
     pub struct GameTransport {
         /// `NetSession`: a global holding the session pointer.
         session_slot: *const *const u8,
+        operator_delete: OperatorDeleteFn,
+        kick: KickFn,
+        /// `LobbySlotByNetSlot`: 8 u32s, lobby slot in the low byte.
+        lobby_slot_by_net_slot: *const u32,
     }
 
     impl GameTransport {
         pub fn new(symbols: &Symbols) -> Option<GameTransport> {
             Some(GameTransport {
                 session_slot: symbols.address("NetSession")? as *const *const u8,
+                operator_delete: unsafe {
+                    core::mem::transmute::<usize, OperatorDeleteFn>(
+                        symbols.address("GameOperatorDelete")?,
+                    )
+                },
+                kick: unsafe {
+                    core::mem::transmute::<usize, KickFn>(symbols.address("KickLobbyPeer")?)
+                },
+                lobby_slot_by_net_slot: symbols.address("LobbySlotByNetSlot")? as *const u32,
             })
         }
 
@@ -302,6 +353,64 @@ pub mod game {
                 f(transport, slot as i32, msg.as_ptr(), msg.len() as i32);
             })
             .is_ok()
+        }
+
+        fn is_host(&self) -> bool {
+            self.transport()
+                .and_then(|(session, _)| {
+                    guarded(|| unsafe { *session.add(SESSION_IS_HOST) != 0 }).ok()
+                })
+                .unwrap_or(false)
+        }
+
+        fn peers(&self) -> Option<Vec<u32>> {
+            let (_, transport) = self.transport()?;
+            guarded(|| unsafe {
+                let f: EnumPeersFn =
+                    core::mem::transmute(Self::vtable_entry(transport, VT_ENUM_PEERS));
+                let mut v = ByteVec {
+                    begin: core::ptr::null_mut(),
+                    end: core::ptr::null_mut(),
+                    cap: core::ptr::null_mut(),
+                };
+                f(transport, &mut v);
+                let mut out = Vec::new();
+                if !v.begin.is_null() && v.end > v.begin {
+                    let n = (v.end as usize - v.begin as usize).min(MAX_SLOTS as usize * 4);
+                    out.extend(
+                        core::slice::from_raw_parts(v.begin, n)
+                            .iter()
+                            .map(|&b| b as u32),
+                    );
+                }
+                if !v.begin.is_null() {
+                    let capacity = v.cap as usize - v.begin as usize;
+                    if capacity < FREE_BELOW {
+                        (self.operator_delete)(v.begin.cast(), capacity);
+                    }
+                }
+                out
+            })
+            .ok()
+        }
+
+        fn lobby_slots(&self) -> Option<[Option<u8>; 8]> {
+            guarded(|| unsafe {
+                let mut out = [None; 8];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    let l = (*self.lobby_slot_by_net_slot.add(i) & 0xff) as u8;
+                    *slot = (l < 8).then_some(l);
+                }
+                out
+            })
+            .ok()
+        }
+
+        fn kick(&self, slot: u32) -> bool {
+            if slot >= MAX_SLOTS || !self.is_host() {
+                return false;
+            }
+            guarded(|| unsafe { (self.kick)(slot, 0) }).is_ok()
         }
     }
 }
@@ -420,7 +529,14 @@ pub mod hook {
                 }
                 true
             }
-            // Reserved subsystems have no handler until Phase 3; still ours, still consumed.
+            Packet::Ours {
+                subsystem: SUBSYSTEM_HANDSHAKE,
+                body,
+            } => {
+                crate::session::deliver_handshake(sender, body);
+                true
+            }
+            // 'M' and 'L' have no handler yet; still ours, still consumed.
             Packet::Ours { .. } => true,
         }
     }

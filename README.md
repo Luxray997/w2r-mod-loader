@@ -11,6 +11,7 @@ and [docs/layout.md](docs/layout.md).
 - [docs/manifest.md](docs/manifest.md): `plugin.json`
 - [docs/index.md](docs/index.md): signed plugin index
 - [docs/load-policy.md](docs/load-policy.md): when the host loads a plugin, and the simulation fingerprint
+- [docs/peer-protocol.md](docs/peer-protocol.md): the host's own peer messages (the handshake), wire-compatible with wc2r-plus
 - [docs/vectors/](docs/vectors/): test vectors
 
 Run `bash tools/run_all.sh` to check the vectors and the C header.

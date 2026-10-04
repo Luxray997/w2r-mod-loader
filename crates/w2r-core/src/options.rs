@@ -114,11 +114,11 @@ impl Nk {
         unsafe { *self.ctx_slot }
     }
 
-    fn push_skin(&self, id: u32) -> u32 {
+    pub(crate) fn push_skin(&self, id: u32) -> u32 {
         unsafe { (self.set_skin)(self.skin_manager, id) }
     }
 
-    fn window_skin(&self) -> u32 {
+    pub(crate) fn window_skin(&self) -> u32 {
         unsafe {
             if *self.skin_alt_flag != 0 {
                 *self.skin_window_alt
@@ -126,6 +126,29 @@ impl Nk {
                 *self.skin_window
             }
         }
+    }
+
+    pub(crate) fn ui_width(&self) -> f32 {
+        unsafe { (self.ui_width)() }
+    }
+
+    /// Begins a window of ours; true when it is visible. `end_window` must follow either way.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_window(
+        &self,
+        ctx: *mut c_void,
+        name: &core::ffi::CStr,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        flags: u32,
+    ) -> bool {
+        unsafe { (self.begin_window)(ctx, name.as_ptr(), x, y, w, h, flags) != 0 }
+    }
+
+    pub(crate) fn end_window(&self, ctx: *mut c_void) {
+        unsafe { (self.end_window)(ctx) }
     }
 }
 
@@ -145,7 +168,11 @@ pub struct GameWidgets<'a> {
     ctx: *mut c_void,
 }
 
-impl GameWidgets<'_> {
+impl<'a> GameWidgets<'a> {
+    pub(crate) fn new(nk: &'a Nk, ctx: *mut c_void) -> GameWidgets<'a> {
+        GameWidgets { nk, ctx }
+    }
+
     fn call<R: Default>(what: &str, f: impl FnOnce() -> R) -> R {
         match guarded(f) {
             Ok(r) => r,

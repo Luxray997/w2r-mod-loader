@@ -18,12 +18,19 @@ is left in place.
 Also installs the crash_plugin fixture, which faults on lobby entry; the log should show it
 disabled while the game and hello_plugin carry on.
 
+.PARAMETER Simulation
+Marks the hello_plugin fixture affects_simulation, so the session's simulation fingerprint is
+non-zero and the handshake (Phase 3) has something to compare: the log shows the fingerprint,
+the plugin screen shows it, and a second player whose fingerprint differs gets the lobby
+warning.
+
 .PARAMETER GameDir
 The game's x86 folder. Defaults to D:\Games\Warcraft II Remastered\x86.
 #>
 param(
     [switch]$Uninstall,
     [switch]$WithCrasher,
+    [switch]$Simulation,
     [string]$GameDir = "D:\Games\Warcraft II Remastered\x86"
 )
 $ErrorActionPreference = "Stop"
@@ -90,12 +97,13 @@ foreach ($sub in "plugins", "config", "cache", "logs") {
     New-Item -ItemType Directory -Force (Join-Path $root $sub) | Out-Null
 }
 
-function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities) {
+function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities, [bool]$AffectsSimulation = $false) {
     $folder = Join-Path $root "plugins\$Id"
     New-Item -ItemType Directory -Force $folder | Out-Null
     $entry = "$Example.dll"
     Copy-Item (Join-Path $examples $entry) (Join-Path $folder $entry) -Force
     $capsJson = ($Capabilities | ForEach-Object { '"' + $_ + '"' }) -join ", "
+    $simJson = if ($AffectsSimulation) { "true" } else { "false" }
     $manifest = @"
 {
   "schema": 1,
@@ -108,7 +116,7 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities)
   "abi": 1,
   "game_builds": ["1.0.2.2818"],
   "capabilities": [$capsJson],
-  "affects_simulation": false,
+  "affects_simulation": $simJson,
   "dependencies": []
 }
 "@
@@ -124,7 +132,7 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities)
 "@
 }
 
-$entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write"))
+$entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write") $Simulation.IsPresent)
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
 $statePath = Join-Path $root "config\state.json"
@@ -138,3 +146,4 @@ if (Test-Path $statePath) {
 
 Write-Host "host root: $root"
 Write-Host "now launch the game, enter a multiplayer lobby, then read $root\logs\w2r.log"
+Write-Host "the handshake logs 'announced (nonce ...)' on lobby entry; config\host.json holds require_matching_plugins"

@@ -1,11 +1,16 @@
-//! The host's main-thread state: the plugin registry, lobby presence and the user's
-//! `state.json`. Created on the first frame the game draws after startup and driven by every
-//! `BeginNamedWindow` call from then on. Only the game's main thread touches it, which is why a
-//! `thread_local` holds it.
+//! The host's main-thread state: the plugin registry, lobby presence, the handshake and the
+//! user's `state.json` and `host.json`. Created on the first frame the game draws after
+//! startup and driven by every `BeginNamedWindow` call from then on. Only the game's main
+//! thread touches the session, which is why a `thread_local` holds it; messages that arrive
+//! elsewhere wait in a queue for the next frame.
 
+#[cfg(target_arch = "x86")]
+use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use w2r_abi::{
@@ -18,17 +23,19 @@ use crate::dispatch::Registry;
 use crate::entry;
 use crate::frame;
 use crate::guard::Fault;
+use crate::handshake::{self, Handshake, Out};
 use crate::host::{Game, Log, Services, State as SlotState};
-use crate::lobby::{Event, Lobby};
+use crate::hostcfg::{self, HostConfig};
+use crate::lobby::{self, Event, Lobby};
 use crate::manifest::Build;
 #[cfg(target_arch = "x86")]
 use crate::options;
-use crate::peer::{self, NoPeers, NoTransport, PluginMessage, Presence, Transport};
+use crate::peer::{self, NoTransport, PluginMessage, Presence, Roster, Transport};
 use crate::plugins;
 use crate::state::{self, State};
 use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
-use crate::ui::{self, Action, PluginRow, Status, Widgets};
+use crate::ui::{self, Action, HostRow, PluginRow, Status, Widgets};
 
 struct Session {
     registry: Registry,
@@ -36,14 +43,78 @@ struct Session {
     /// As loaded at startup, plus the user's toggles (which take effect at the next launch).
     state: State,
     root: PathBuf,
+    config: HostConfig,
+    fingerprint: [u8; 4],
+    /// The plugins in the fingerprint.
+    simulation: Vec<String>,
+    net: Rc<Net>,
     #[cfg(target_arch = "x86")]
     nk: Option<options::Nk>,
+}
+
+/// The handshake and the game's net session. Separate from [`Session`] because the packet
+/// hook may hand a message in while the session is borrowed (the game can poll packets from
+/// inside a plugin callback); the handshake must still see it.
+struct Net {
+    handshake: RefCell<Handshake>,
+    transport: Rc<dyn Transport>,
+}
+
+impl Net {
+    fn idle() -> Net {
+        Net {
+            handshake: RefCell::new(Handshake::new(handshake::Local {
+                strict: false,
+                fingerprint: [0; 4],
+            })),
+            transport: Rc::new(NoTransport),
+        }
+    }
+
+    /// Carries out what the handshake asked for. No handshake borrow is live here: the
+    /// transport calls run game code under the guard.
+    fn run(&self, outs: Vec<Out>) {
+        for out in outs {
+            let failed = match out {
+                Out::Broadcast(m) => (!self.transport.broadcast(&m)).then_some("broadcast"),
+                Out::SendTo(slot, m) => (!self.transport.send_to(slot, &m)).then_some("send"),
+                Out::Kick(slot) => (!self.transport.kick(slot)).then_some("kick"),
+                Out::Log(level, msg) => {
+                    StartupLog.line(level, "handshake", &msg);
+                    None
+                }
+            };
+            if let Some(what) = failed {
+                StartupLog.line(W2R_LOG_WARN, "handshake", &format!("{what} failed"));
+            }
+        }
+    }
+}
+
+/// The roster `peer_send` and peer delivery consult (docs/abi.md).
+struct HandshakeRoster(Rc<Net>);
+
+impl Roster for HandshakeRoster {
+    fn announced(&self, slot: u32) -> bool {
+        self.0
+            .handshake
+            .try_borrow()
+            .is_ok_and(|h| h.announced(slot))
+    }
+    fn any_announced(&self) -> bool {
+        self.0
+            .handshake
+            .try_borrow()
+            .is_ok_and(|h| h.any_announced())
+    }
 }
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
     /// Set while `start` runs, so a nested frame does not start a second session.
     static STARTING: Cell<bool> = const { Cell::new(false) };
+    /// The session's [`Net`], reachable without the session borrow.
+    static NET: RefCell<Option<Rc<Net>>> = const { RefCell::new(None) };
 }
 
 /// A fault in host code under one of the host's own hooks (not a plugin's). Logged for the
@@ -80,14 +151,34 @@ impl Presence for LobbyPresence {
     }
 }
 
+fn on_main_thread() -> bool {
+    let current = unsafe { GetCurrentThreadId() };
+    current == frame::main_thread_id()
+}
+
+/// A nonce for one stay in a lobby: unique enough to tell our own broadcast from a peer's and
+/// a rejoin from the last stay. Not a secret (docs/peer-protocol.md).
+fn nonce() -> u32 {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let mut h = RandomState::new().build_hasher();
+    h.write_u64(chat::now_ms());
+    h.write_u32(std::process::id());
+    let n = h.finish() as u32;
+    if n == 0 { 1 } else { n }
+}
+
 /// One `BeginNamedWindow` call on the main thread. `name` is the window the game is starting,
 /// if it gave one.
 pub fn on_window(name: Option<&str>) {
     let now = chat::now_ms();
     ensure_started();
+    // Queued messages first, at the top level only: a nested call (a plugin callback made the
+    // game draw a window, which lands back here) sees the session borrowed and must not touch
+    // it.
+    if SESSION.with(|c| c.try_borrow().is_ok()) {
+        drain_queue();
+    }
     SESSION.with(|cell| {
-        // A plugin callback below may make the game draw a window, which lands back here;
-        // that nested call must not touch the session.
         let Ok(mut slot) = cell.try_borrow_mut() else {
             return;
         };
@@ -102,13 +193,33 @@ pub fn on_window(name: Option<&str>) {
             }
         };
         match event {
-            Some(Event::Enter) => session
-                .registry
-                .dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null()),
-            Some(Event::Leave) => session
-                .registry
-                .dispatch(W2R_EVT_LOBBY_LEAVE, core::ptr::null()),
+            Some(Event::Enter) => {
+                session.net.handshake.borrow_mut().enter(nonce());
+                session
+                    .registry
+                    .dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
+            }
+            Some(Event::Leave) => {
+                session.net.handshake.borrow_mut().leave();
+                session
+                    .registry
+                    .dispatch(W2R_EVT_LOBBY_LEAVE, core::ptr::null());
+            }
             None => {}
+        }
+        if name == Some(lobby::WINDOW) {
+            let net = session.net.clone();
+            let f = handshake::Frame {
+                now,
+                connected: net.transport.connected(),
+                is_host: net.transport.is_host(),
+                lobby_slots: net.transport.lobby_slots(),
+            };
+            let outs = match net.handshake.try_borrow_mut() {
+                Ok(mut h) => h.frame(f, || net.transport.peers()),
+                Err(_) => Vec::new(),
+            };
+            net.run(outs);
         }
     });
 }
@@ -131,38 +242,131 @@ fn ensure_started() {
     STARTING.set(false);
 }
 
-/// A plugin peer message taken off the wire. Delivered only on the main thread, after the
-/// session exists (a message before the first frame has nobody to receive it anyway).
-pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
-    static OFF_THREAD_LOGGED: std::sync::Once = std::sync::Once::new();
-    static BUSY_LOGGED: std::sync::Once = std::sync::Once::new();
-    if unsafe { GetCurrentThreadId() } != frame::main_thread_id() {
-        OFF_THREAD_LOGGED.call_once(|| {
+// ---- inbound messages ---------------------------------------------------------------------
+
+/// A W2R message taken off the wire, owned so it can wait.
+enum Inbound {
+    Plugin {
+        sender: u32,
+        tag: [u8; 4],
+        payload: Vec<u8>,
+    },
+    Handshake {
+        sender: u32,
+        body: Vec<u8>,
+    },
+}
+
+/// Messages that could not be handled where they arrived (another thread, or the session was
+/// busy) wait here for the next frame. Bounded: a flood drops the excess, counted.
+const QUEUE_CAP: usize = 256;
+static QUEUE: Mutex<VecDeque<Inbound>> = Mutex::new(VecDeque::new());
+static QUEUE_DROPPED: AtomicU32 = AtomicU32::new(0);
+
+fn enqueue(item: Inbound) {
+    static OFF_THREAD: std::sync::Once = std::sync::Once::new();
+    if !on_main_thread() {
+        OFF_THREAD.call_once(|| {
+            StartupLog.line(
+                W2R_LOG_INFO,
+                "host",
+                "peer messages arrive off the main thread; queued for the next frame",
+            );
+        });
+    }
+    let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    if q.len() >= QUEUE_CAP {
+        drop(q);
+        let n = QUEUE_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n % 1000 == 0 {
             StartupLog.line(
                 W2R_LOG_WARN,
                 "host",
-                "peer messages arrive off the main thread; dropping them (needs a queue)",
+                &format!("inbound queue full ({QUEUE_CAP}); dropped a message ({n} so far)"),
             );
-        });
+        }
         return;
     }
-    SESSION.with(|cell| {
-        let Ok(slot) = cell.try_borrow() else {
-            // The game polled packets from inside a plugin callback; the message is gone.
-            BUSY_LOGGED.call_once(|| {
-                StartupLog.line(
-                    W2R_LOG_WARN,
-                    "host",
-                    "a peer message arrived while the session was busy; dropped (logged once)",
-                );
-            });
+    q.push_back(item);
+}
+
+/// Hands one message on. False when the receiver is busy right now (the caller queues it).
+/// Main thread only.
+fn deliver_now(item: &Inbound) -> bool {
+    match item {
+        Inbound::Plugin {
+            sender,
+            tag,
+            payload,
+        } => SESSION.with(|cell| {
+            let Ok(slot) = cell.try_borrow() else {
+                return false;
+            };
+            if let Some(session) = slot.as_ref() {
+                session
+                    .registry
+                    .dispatch_peer(*sender, PluginMessage { tag: *tag, payload });
+            }
+            true
+        }),
+        Inbound::Handshake { sender, body } => {
+            let Some(net) = NET.with(|n| n.borrow().clone()) else {
+                // No session yet: nobody is in a lobby, so there is nothing to answer.
+                return true;
+            };
+            let outs = match net.handshake.try_borrow_mut() {
+                Ok(mut h) => h.receive(chat::now_ms(), *sender, body),
+                Err(_) => return false,
+            };
+            net.run(outs);
+            true
+        }
+    }
+}
+
+/// Main thread, top level: delivers what waited. Bounded per frame so a flood from another
+/// thread cannot keep this loop running.
+fn drain_queue() {
+    for _ in 0..QUEUE_CAP {
+        let item = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+        let Some(item) = item else {
             return;
         };
-        if let Some(session) = slot.as_ref() {
-            session.registry.dispatch_peer(sender, msg);
+        if !deliver_now(&item) {
+            QUEUE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_front(item);
+            return;
         }
-    });
+    }
 }
+
+/// A plugin peer message taken off the wire. Delivered now when possible, otherwise on the
+/// next frame.
+pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
+    let item = Inbound::Plugin {
+        sender,
+        tag: msg.tag,
+        payload: msg.payload.to_vec(),
+    };
+    if !on_main_thread() || !deliver_now(&item) {
+        enqueue(item);
+    }
+}
+
+/// A handshake message (`'H'`) taken off the wire; `body` is everything after the envelope.
+pub fn deliver_handshake(sender: u32, body: &[u8]) {
+    let item = Inbound::Handshake {
+        sender,
+        body: body.to_vec(),
+    };
+    if !on_main_thread() || !deliver_now(&item) {
+        enqueue(item);
+    }
+}
+
+// ---- UI -----------------------------------------------------------------------------------
 
 /// Runs `f` with the game's UI functions, if the session has them.
 #[cfg(target_arch = "x86")]
@@ -175,6 +379,31 @@ pub fn with_nk(f: impl FnOnce(&options::Nk)) {
     if let Some(nk) = nk {
         f(&nk);
     }
+}
+
+/// What the lobby should tell the local player right now (docs/load-policy.md, "Policy").
+pub fn lobby_warnings() -> Vec<String> {
+    NET.with(|n| {
+        n.borrow()
+            .as_ref()
+            .and_then(|net| {
+                net.handshake
+                    .try_borrow()
+                    .ok()
+                    .map(|h| h.warnings(chat::now_ms()))
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Draws the handshake's warnings over the lobby, after the game's lobby window ended.
+#[cfg(target_arch = "x86")]
+pub fn draw_lobby_notice(ctx: *mut c_void) {
+    let lines = lobby_warnings();
+    if lines.is_empty() {
+        return;
+    }
+    with_nk(|nk| crate::notice::draw(nk, ctx, &lines));
 }
 
 /// Draws the plugin list with `w` and applies the user's toggles. Called from the options
@@ -208,33 +437,66 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 }
             })
             .collect();
+        let mut host = HostRow {
+            fingerprint: session.fingerprint,
+            simulation: session.simulation.clone(),
+            strict: session.config.require_matching_plugins,
+            lobby: lobby_warnings(),
+        };
         let registry = &session.registry;
         let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-        let action = ui::draw_plugin_screen(w, &mut rows, |w, i| {
+        let action = ui::draw_plugin_screen(w, &mut host, &mut rows, |w, i| {
             if let Some(s) = registry.find(&ids[i]) {
                 ui::with_frame(w, |table| registry.call_on_ui(s, table));
             }
         });
-        if let Action::Toggle(i) = action {
-            let row = &rows[i];
-            session.state.set_enabled(&row.id, row.enabled);
-            let path = session.root.join("config").join("state.json");
-            match state::write(&path, &session.state) {
-                Ok(()) => StartupLog.line(
-                    W2R_LOG_INFO,
-                    "host",
-                    &format!(
-                        "{} {} for the next launch",
-                        row.id,
-                        if row.enabled { "enabled" } else { "disabled" }
+        match action {
+            Action::Toggle(i) => {
+                let row = &rows[i];
+                session.state.set_enabled(&row.id, row.enabled);
+                let path = session.root.join("config").join("state.json");
+                match state::write(&path, &session.state) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "{} {} for the next launch",
+                            row.id,
+                            if row.enabled { "enabled" } else { "disabled" }
+                        ),
                     ),
-                ),
-                Err(e) => StartupLog.line(
-                    W2R_LOG_ERROR,
-                    "host",
-                    &format!("cannot write state.json: {e}"),
-                ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write state.json: {e}"),
+                    ),
+                }
             }
+            Action::ToggleStrict => {
+                session.config.require_matching_plugins = host.strict;
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "require_matching_plugins {}",
+                            if host.strict { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
+                }
+                let net = session.net.clone();
+                let outs = match net.handshake.try_borrow_mut() {
+                    Ok(mut h) => h.set_strict(host.strict),
+                    Err(_) => Vec::new(),
+                };
+                net.run(outs);
+            }
+            Action::None | Action::Back => {}
         }
         action
     })
@@ -251,6 +513,8 @@ fn state_version(p: &state::PluginState) -> String {
     )
 }
 
+// ---- startup ------------------------------------------------------------------------------
+
 fn start() -> Session {
     let log: Rc<dyn Log> = Rc::new(StartupLog);
     let lobby = Rc::new(RefCell::new(Lobby::new()));
@@ -258,22 +522,47 @@ fn start() -> Session {
 
     let Some(startup) = entry::startup() else {
         // Cannot happen: the frame hook exists only after startup; keep an empty session.
+        let net = Rc::new(Net::idle());
+        NET.with(|n| *n.borrow_mut() = Some(net.clone()));
         return Session {
             registry: Registry::new(log),
             lobby,
             state: State::default(),
             root: PathBuf::new(),
+            config: HostConfig::default(),
+            fingerprint: [0; 4],
+            simulation: Vec::new(),
+            net,
             #[cfg(target_arch = "x86")]
             nk: None,
         };
     };
+    let (config, warning) = hostcfg::read(&startup.root);
+    if let Some(w) = warning {
+        log.line(W2R_LOG_WARN, "host", &w);
+    }
+    if config.require_matching_plugins {
+        log.line(
+            W2R_LOG_INFO,
+            "host",
+            "require_matching_plugins is on: when hosting, mismatched players are removed",
+        );
+    }
     let symbols = Symbols::new(startup.game_base);
     let game = startup.image.clone().map(|image| Game { image, symbols });
+    let transport = transport(&symbols, &*log);
+    let net = Rc::new(Net {
+        handshake: RefCell::new(Handshake::new(handshake::Local {
+            strict: config.require_matching_plugins,
+            fingerprint: [0; 4],
+        })),
+        transport: transport.clone(),
+    });
+    NET.with(|n| *n.borrow_mut() = Some(net.clone()));
     let services = Services {
         chat: lobby_chat(&symbols, lobby.clone(), &*log),
-        transport: transport(&symbols, &*log),
-        // The handshake feature (Phase 3) will replace this; until then nobody is announced.
-        roster: Rc::new(NoPeers),
+        transport,
+        roster: Rc::new(HandshakeRoster(net.clone())),
         presence: Rc::new(LobbyPresence(lobby.clone())),
     };
     if let Some(image) = &startup.image {
@@ -285,6 +574,7 @@ fn start() -> Session {
         match (&nk, &startup.image) {
             (Some(_), Some(image)) => {
                 options::install(image, &symbols, &*log);
+                crate::notice::install(image, &symbols, &*log);
             }
             _ => log.line(
                 W2R_LOG_ERROR,
@@ -296,12 +586,19 @@ fn start() -> Session {
     };
 
     log.line(W2R_LOG_INFO, "host", "loading plugins on the main thread");
-    let (registry, state) = plugins::load_all(&startup.root, running, log, game, services);
+    let loaded = plugins::load_all(&startup.root, running, log, game, services);
+    net.handshake
+        .borrow_mut()
+        .set_fingerprint(loaded.fingerprint);
     Session {
-        registry,
+        registry: loaded.registry,
         lobby,
-        state,
+        state: loaded.state,
         root: startup.root.clone(),
+        config,
+        fingerprint: loaded.fingerprint,
+        simulation: loaded.simulation,
+        net,
         #[cfg(target_arch = "x86")]
         nk,
     }
@@ -335,7 +632,7 @@ fn transport(symbols: &Symbols, log: &dyn Log) -> Rc<dyn Transport> {
             log.line(
                 W2R_LOG_ERROR,
                 "host",
-                "net session symbol missing; peer_send unavailable",
+                "net session symbols missing; peer_send and the handshake are unavailable",
             );
             Rc::new(NoTransport)
         }

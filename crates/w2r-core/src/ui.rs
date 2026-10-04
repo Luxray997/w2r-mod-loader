@@ -179,21 +179,62 @@ pub enum Status {
     NotLoaded,
 }
 
+/// The host's own section at the top of the screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostRow {
+    /// The simulation fingerprint of this session (docs/load-policy.md).
+    pub fingerprint: [u8; 4],
+    /// The plugins in it, by id.
+    pub simulation: Vec<String>,
+    /// `require_matching_plugins` (`host.json`); takes effect at once.
+    pub strict: bool,
+    /// The handshake's current lobby warnings, if any.
+    pub lobby: Vec<String>,
+}
+
+pub const STRICT_LABEL: &str = "When hosting, remove players whose simulation plugins differ";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     None,
     Back,
     /// The user flipped a plugin's enabled flag.
     Toggle(usize),
+    /// The user flipped `require_matching_plugins`.
+    ToggleStrict,
 }
 
-/// Draws the plugin list. `draw_section` draws the plugin's own widgets for an active row.
+/// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
+/// for an active row.
 pub fn draw_plugin_screen(
     w: &dyn Widgets,
+    host: &mut HostRow,
     rows: &mut [PluginRow],
     mut draw_section: impl FnMut(&dyn Widgets, usize),
 ) -> Action {
     let mut action = Action::None;
+    w.row(HEADING_H, 1);
+    w.label("Host");
+    w.row(ROW_H, 1);
+    w.label(&format!(
+        "Simulation fingerprint: {} ({})",
+        crate::fingerprint::hex(&host.fingerprint),
+        if host.simulation.is_empty() {
+            "no simulation-affecting plugins".to_owned()
+        } else {
+            host.simulation.join(", ")
+        }
+    ));
+    w.row(ROW_H, 1);
+    let mut strict = host.strict;
+    if w.checkbox(STRICT_LABEL, &mut strict) {
+        host.strict = strict;
+        action = Action::ToggleStrict;
+    }
+    for line in &host.lobby {
+        w.row(ROW_H, 1);
+        w.label(&format!("Lobby: {line}"));
+    }
     w.row(HEADING_H, 1);
     w.label(&format!("Plugins ({})", rows.len()));
     if rows.is_empty() {
@@ -403,14 +444,31 @@ mod tests {
                 slow: true,
             },
         ];
+        let mut host = HostRow {
+            fingerprint: [0xaa, 0xbb, 0xcc, 0xdd],
+            simulation: vec!["a".into(), "c".into()],
+            strict: false,
+            lobby: vec!["Player 2 runs different simulation plugins".into()],
+        };
         let mut sections = Vec::new();
-        let action = draw_plugin_screen(&fake, &mut rows, |_, i| sections.push(i));
+        let action = draw_plugin_screen(&fake, &mut host, &mut rows, |_, i| sections.push(i));
         // Every row's checkbox flipped; the last flip wins as the reported action.
         assert_eq!(action, Action::Toggle(2));
         assert!(!rows[0].enabled && rows[1].enabled && !rows[2].enabled);
+        assert!(!host.strict, "not flipped");
         assert_eq!(sections, vec![0], "only active plugins draw their section");
         let calls = fake.calls.borrow();
-        assert_eq!(calls[1], "label \"Plugins (3)\"");
+        assert_eq!(calls[1], "label \"Host\"");
+        assert_eq!(
+            calls[3],
+            "label \"Simulation fingerprint: aabbccdd (a, c)\""
+        );
+        assert_eq!(calls[5], format!("checkbox {STRICT_LABEL:?} false"));
+        assert_eq!(
+            calls[7],
+            "label \"Lobby: Player 2 runs different simulation plugins\""
+        );
+        assert_eq!(calls[9], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
         assert!(
             calls
@@ -426,12 +484,33 @@ mod tests {
 
         let fake = FakeWidgets::default();
         fake.press.borrow_mut().push("Back".into());
-        assert_eq!(draw_plugin_screen(&fake, &mut [], |_, _| {}), Action::Back);
-        assert!(
-            fake.calls
-                .borrow()
-                .iter()
-                .any(|c| c.contains("No plugins installed"))
+        let mut host = HostRow {
+            fingerprint: [0; 4],
+            simulation: Vec::new(),
+            strict: false,
+            lobby: Vec::new(),
+        };
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::Back
         );
+        let calls = fake.calls.borrow();
+        assert!(calls.iter().any(|c| c.contains("No plugins installed")));
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("00000000 (no simulation-affecting plugins)"))
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("label \"Lobby:")));
+        drop(calls);
+
+        // The strict checkbox is its own action.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(STRICT_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleStrict
+        );
+        assert!(host.strict);
     }
 }

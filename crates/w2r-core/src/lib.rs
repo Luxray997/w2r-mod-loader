@@ -6,9 +6,12 @@
 pub mod build_guard;
 pub mod chat;
 pub mod dispatch;
+pub mod fingerprint;
 pub mod guard;
+pub mod handshake;
 pub mod hooks;
 pub mod host;
+pub mod hostcfg;
 pub mod json;
 pub mod lobby;
 pub mod log;
@@ -27,6 +30,8 @@ pub mod entry;
 pub mod frame;
 #[cfg(windows)]
 pub mod loader;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod notice;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod options;
 #[cfg(windows)]
