@@ -32,6 +32,8 @@ pub fn startup() -> Option<&'static Startup> {
     STARTUP.get()
 }
 
+// The signature is fixed by Windows; `instance` is only handed back to the loader, never read.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(instance: HMODULE, reason: u32, _reserved: *mut c_void) -> i32 {
     if reason == DLL_PROCESS_ATTACH {

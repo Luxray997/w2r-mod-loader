@@ -27,6 +27,11 @@ macro_rules! forwards {
         }
 
         $(
+            /// Forwarder to the real version.dll export of the same name.
+            ///
+            /// # Safety
+            /// Only the game calls this, with that export's real arguments and calling
+            /// convention. The jump target is 0 until [`init`] has resolved it.
             #[unsafe(no_mangle)]
             #[unsafe(naked)]
             #[allow(non_snake_case)]
