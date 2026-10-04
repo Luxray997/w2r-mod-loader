@@ -1,5 +1,5 @@
 fn main() {
-    // The integration tests build the fixture plugin DLLs for the same target they run on.
+    // The integration tests build fixture DLLs (and the host itself) for the target they run on.
     println!(
         "cargo:rustc-env=W2R_TARGET={}",
         std::env::var("TARGET").unwrap()

@@ -55,9 +55,12 @@ SEH via `microseh` outside, `catch_unwind` inside, `guard.rs`), the pinned DLL l
 checks 9-10 (`loader.rs`), the registry/dispatcher that disables a faulting plugin
 (`dispatch.rs`), and the host table with `log`/`subscribe`/`unsubscribe` (`host.rs`; the
 rest return `E_UNSUPPORTED` until their step). `crates/test-plugins` holds fixture DLLs;
-`tests/load_dll.rs` loads a real crashing plugin and survives. Build and test the host with
-`--target i686-pc-windows-msvc`. Step 1 waits on the wc2r-plus source.
-1. `version.dll` proxy, build guard, logging (port from wc2r-plus).
+`tests/load_dll.rs` loads a real crashing plugin and survives. Step 1 is ported: `proxy.rs`
+(17 naked forwarders, exported by rustc), `build_guard.rs` + `target/signatures.rs` (197
+signatures generated from wc2r-plus by `tools/gen_signatures.py`), `log.rs`, `paths.rs`,
+`entry.rs` (`DllMain` → startup thread → log + guard); `tests/proxy_dll.rs` loads the built
+DLL like the game does. Build and test the host with `--target i686-pc-windows-msvc`.
+1. `version.dll` proxy, build guard, logging (port from wc2r-plus). **Done.**
 2. Symbol table: named game functions/globals per detected build.
 3. Hook registry with patch-overlap detection.
 4. Event dispatch with crash isolation. Panics must not cross FFI. Access violations need SEH or a

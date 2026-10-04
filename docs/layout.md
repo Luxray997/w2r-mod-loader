@@ -18,7 +18,8 @@ All paths are per-user; nothing needs administrator rights.
         w2r.log
 ```
 
-The game folder only holds the `version.dll` proxy.
+The game folder only holds the `version.dll` proxy. Setting the environment variable `W2R_ROOT`
+moves the root elsewhere (development and tests).
 
 ## Decisions
 
