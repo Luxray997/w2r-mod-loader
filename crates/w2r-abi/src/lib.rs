@@ -256,7 +256,7 @@ pub struct W2rPlugin {
 
 /// The single export every plugin DLL provides, named `w2r_plugin_main`.
 pub type W2rPluginMain = unsafe extern "C" fn(host: *const W2rHost) -> *const W2rPlugin;
-pub const W2R_PLUGIN_MAIN_SYMBOL: &str = "w2r_plugin_main";
+pub const W2R_PLUGIN_MAIN_SYMBOL: &core::ffi::CStr = c"w2r_plugin_main";
 
 /// Minimum `struct_size` a version-1 `W2rPlugin` may report.
 pub const W2R_PLUGIN_V1_SIZE: u32 = core::mem::size_of::<W2rPlugin>() as u32;

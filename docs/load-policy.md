@@ -21,8 +21,8 @@ next plugin. A failing plugin never stops the game or other plugins.
 | 6 | `E_CAPS` | manifest `capabilities` is not a subset of `approved_capabilities` |
 | 7 | `E_TAG` | an already-accepted plugin has the same 4-byte peer tag (the later plugin by id order is refused) |
 | 8 | `E_DEP` | a dependency is missing, disabled, failed an earlier check, does not satisfy `version_req`, or is part of a dependency cycle (every member of the cycle fails) |
-| 9 | `E_ENTRY` | the DLL has no `w2r_plugin_main`, it returns null or a `W2rPlugin` whose `struct_size` is below the version-1 minimum, or the call faults |
-| 10 | `E_LOAD` | `on_load` returns a non-zero status |
+| 9 | `E_ENTRY` | the DLL cannot be opened or loaded, has no `w2r_plugin_main`, the call faults, or it returns null or a `W2rPlugin` whose `struct_size` is below the version-1 minimum or whose `on_load` is null |
+| 10 | `E_LOAD` | `on_load` returns a non-zero status or faults |
 
 Details:
 

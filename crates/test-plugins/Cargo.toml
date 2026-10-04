@@ -1,0 +1,30 @@
+[package]
+name = "w2r-test-plugins"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Fixture plugin DLLs for w2r-core's integration tests; each example is one DLL"
+
+[dependencies]
+w2r-abi.workspace = true
+
+[lints.clippy]
+# Fixture exports; the ABI header documents the contract.
+missing_safety_doc = "allow"
+
+[[example]]
+name = "hello_plugin"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "crash_plugin"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "null_entry"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "load_fails"
+crate-type = ["cdylib"]

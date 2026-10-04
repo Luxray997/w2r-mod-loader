@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "In-game plugin host for Warcraft II Remastered (32-bit cdylib, version.dll proxy)"
+build = "build.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -14,3 +15,9 @@ w2r-abi.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Structured exception handling around every call into a plugin. See src/guard.rs for why.
 microseh = "1.2"
+sha2 = "0.10"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+] }
