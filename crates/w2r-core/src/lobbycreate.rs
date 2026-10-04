@@ -91,7 +91,7 @@ const PANEL_CLIP: usize = 0x3c;
 const FOOTER_BOTTOM_GAP: f32 = 230.0;
 const FOOTER_H: f32 = 135.0;
 const FRAME_PAD: f32 = 100.0;
-const BUTTON_W: f32 = 330.0;
+const BUTTON_W: f32 = 560.0;
 const GAP: f32 = 30.0;
 
 /// The rectangle `(x, y, w, h)` of the window being built, from its panel's clip.
