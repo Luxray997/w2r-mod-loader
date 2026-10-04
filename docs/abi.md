@@ -125,9 +125,12 @@ Plugins send through `peer_send`; the host builds the envelope:
 ## Crash and unload contract
 
 - Every call into a plugin runs under a host guard that contains panics and access violations. A
-  plugin that faults is disabled for the rest of the session, and the reason is logged. Which
-  mechanism does this (structured exception handling or a vectored handler) is the first spike of
-  Phase 2.
+  plugin that faults is disabled for the rest of the session, and the reason is logged. The
+  mechanism (settled by the Phase 2 spike, `crates/w2r-core/src/guard.rs`): a structured
+  exception handling frame (`__try`/`__except` via `microseh`) outermost, with
+  `std::panic::catch_unwind` inside it. A caught fault abandons the Rust frames between the
+  handler and the faulting instruction without running destructors, so the guard owns no state
+  that needs cleanup. Stack overflow is not recoverable.
 - **Hook detours are outside this guard.** A detour installed with `hook_install` is called by the
   game, on whatever thread the game uses, not by the host. The host cannot wrap it, and the
   main-thread rule does not apply to it: a detour must be thread-safe and must not call host

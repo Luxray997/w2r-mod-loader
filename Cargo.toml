@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+w2r-abi = { path = "crates/w2r-abi" }

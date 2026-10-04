@@ -50,11 +50,16 @@ Status: written (`docs/abi.md`, `manifest.md`, `index.md`, `load-policy.md`); ve
 Exit: specs in `docs/`, test vectors for the manifest and index parsers.
 
 ### 2. Core host (`w2r-core`)
+Status: in progress. Workspace and `w2r-abi` Rust bindings exist; the crash-isolation spike
+(step 4) passed on `i686-pc-windows-msvc`: SEH via `microseh` outside, `catch_unwind` inside
+(`crates/w2r-core/src/guard.rs`). Build the host with `--target i686-pc-windows-msvc`.
 1. `version.dll` proxy, build guard, logging (port from wc2r-plus).
 2. Symbol table: named game functions/globals per detected build.
 3. Hook registry with patch-overlap detection.
 4. Event dispatch with crash isolation. Panics must not cross FFI. Access violations need SEH or a
-   vectored exception handler (`microseh` or a tiny C shim). **Spike this first.**
+   vectored exception handler (`microseh` or a tiny C shim). **Spiked: done, see status above.**
+   Remaining: the dispatcher that disables a faulting plugin, and a test that loads a real
+   crashing plugin DLL.
 5. Lobby message service: size, rate and lobby-only limits for every plugin; per-plugin
    subsystem ids.
 6. Widget API on the game's Nuklear context; in-game plugin list with enable/disable toggles.

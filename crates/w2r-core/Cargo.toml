@@ -1,0 +1,16 @@
+[package]
+name = "w2r-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "In-game plugin host for Warcraft II Remastered (32-bit cdylib, version.dll proxy)"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+w2r-abi.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Structured exception handling around every call into a plugin. See src/guard.rs for why.
+microseh = "1.2"
