@@ -84,6 +84,11 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    The roster of announced peers is empty until the Phase 3 handshake port fills it, so no
    message flows in the live game yet.
 6. Widget API on the game's Nuklear context; in-game plugin list with enable/disable toggles.
+   **Done (pending a look in the live game):** `ui.rs` (`W2rUi` over a `Widgets` trait, one
+   row per call; the plugin screen), `options.rs` (a "Plugins" button over the options screen
+   opens our screen, drawn with the game's menu widgets and skins), toggles rewrite
+   `state.json` atomically for the next launch, slow callbacks (>50 ms, 10 in a row) are
+   logged and shown.
 Exit: a hello-world plugin prints a chat line on lobby entry and survives a deliberate crash.
 
 ### 3. Port wc2r-plus features as first-party plugins

@@ -124,6 +124,78 @@ pub fn parse(raw: &[u8]) -> Result<State, Reason> {
     Ok(State { plugins })
 }
 
+impl State {
+    /// The file form (docs/layout.md), with plugins in their current order.
+    pub fn to_json(&self) -> String {
+        let plugins = self
+            .plugins
+            .iter()
+            .map(|p| {
+                let caps = p
+                    .approved_capabilities
+                    .iter()
+                    .map(|c| Value::String(c.clone()))
+                    .collect();
+                let hex: String = p.sha256.iter().map(|b| format!("{b:02x}")).collect();
+                let fields = vec![
+                    (
+                        "version".to_owned(),
+                        Value::String(version_text(&p.version)),
+                    ),
+                    ("enabled".to_owned(), Value::Bool(p.enabled)),
+                    ("sha256".to_owned(), Value::String(hex)),
+                    ("approved_capabilities".to_owned(), Value::Array(caps)),
+                ];
+                (p.id.clone(), Value::Object(fields))
+            })
+            .collect();
+        Value::Object(vec![
+            (
+                "schema".to_owned(),
+                Value::Number(json::Number { text: "1".into() }),
+            ),
+            ("plugins".to_owned(), Value::Object(plugins)),
+        ])
+        .to_json()
+    }
+
+    /// Flips one plugin's `enabled`; false when the id is unknown.
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        match self.plugins.iter_mut().find(|p| p.id == id) {
+            Some(p) => {
+                p.enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+fn version_text(v: &Version) -> String {
+    use crate::semver::Identifier;
+    let mut s = format!("{}.{}.{}", v.major, v.minor, v.patch);
+    if !v.pre.is_empty() {
+        s.push('-');
+        let parts: Vec<String> = v
+            .pre
+            .iter()
+            .map(|i| match i {
+                Identifier::Numeric(n) => n.to_string(),
+                Identifier::Alpha(a) => a.clone(),
+            })
+            .collect();
+        s.push_str(&parts.join("."));
+    }
+    s
+}
+
+/// Writes `state.json` atomically: a temp file next to it, then a rename (docs/layout.md).
+pub fn write(path: &std::path::Path, state: &State) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, state.to_json())?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +287,30 @@ mod tests {
             assert_eq!(parse(raw.as_bytes()), Err(expect), "{raw}");
         }
         assert_eq!(parse(&vec![b' '; MAX_BYTES + 1]), Err("too_large"));
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    #[test]
+    fn to_json_round_trips_and_write_is_atomic() {
+        let raw = br#"{"schema": 1, "plugins": {"b-plugin": {"version": "1.2.0-rc.1", "enabled": true, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "approved_capabilities": ["chat.write"]}, "a-plugin": {"version": "0.1.0", "enabled": false, "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "approved_capabilities": []}}}"#;
+        let mut state = parse(raw).unwrap();
+        let again = parse(state.to_json().as_bytes()).unwrap();
+        assert_eq!(again, state);
+        assert_eq!(again.plugins[0].id, "b-plugin", "order kept");
+        assert!(state.set_enabled("a-plugin", true));
+        assert!(!state.set_enabled("nope", true));
+
+        let dir = std::env::temp_dir().join(format!("w2r-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        write(&path, &state).unwrap();
+        assert!(!path.with_extension("json.tmp").exists());
+        let back = parse(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(back.get("a-plugin").unwrap().enabled);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

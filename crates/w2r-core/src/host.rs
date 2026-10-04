@@ -121,6 +121,8 @@ pub struct Slot {
     peer_rate: RefCell<SlidingWindow>,
     /// The plugin's peer-message tag (docs/abi.md).
     pub tag: [u8; 4],
+    /// Consecutive callbacks over [`Slot::SLOW_MS`].
+    slow: Cell<u32>,
     shared: Rc<Shared>,
     host: W2rHost,
 }
@@ -138,12 +140,32 @@ impl Slot {
             chat_rate: RefCell::new(SlidingWindow::new(chat::MAX_PER_WINDOW, chat::WINDOW_MS)),
             peer_rate: RefCell::new(SlidingWindow::new(peer::PER_PLUGIN_PER_SECOND, 1000)),
             tag: peer::peer_tag(id),
+            slow: Cell::new(0),
             shared,
             host: host_table(core::ptr::null_mut()),
         });
         let token: *mut Slot = &mut *slot;
         slot.host.token = token.cast();
         slot
+    }
+
+    /// docs/abi.md: callbacks over this are logged...
+    pub const SLOW_MS: u128 = 50;
+    /// ...and after this many in a row the plugin list shows a warning.
+    pub const SLOW_STREAK: u32 = 10;
+
+    /// Records how long a callback took.
+    pub fn note_duration(&self, ms: u128, what: &str) {
+        if ms > Self::SLOW_MS {
+            self.slow.set(self.slow.get().saturating_add(1));
+            self.log(W2R_LOG_WARN, &format!("{what} took {ms} ms"));
+        } else {
+            self.slow.set(0);
+        }
+    }
+
+    pub fn is_slow(&self) -> bool {
+        self.slow.get() >= Self::SLOW_STREAK
     }
 
     /// The table handed to the plugin. Valid for as long as the slot lives.

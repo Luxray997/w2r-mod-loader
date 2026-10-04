@@ -54,3 +54,17 @@ pub const fn table(
         on_unload: None,
     }
 }
+
+pub const fn table_with_ui(
+    on_load: unsafe extern "C" fn(*const W2rHost) -> W2rStatus,
+    on_event: Option<unsafe extern "C" fn(*const W2rEvent)>,
+    on_ui: Option<unsafe extern "C" fn(*const W2rUi)>,
+) -> W2rPlugin {
+    W2rPlugin {
+        struct_size: W2R_PLUGIN_V1_SIZE,
+        on_load: Some(on_load),
+        on_event,
+        on_ui,
+        on_unload: None,
+    }
+}

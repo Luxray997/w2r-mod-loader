@@ -64,8 +64,11 @@ Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
 | `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | `target` is a `symbol_lookup` handle of a function symbol (`W2R_E_NOT_FOUND` for a bad handle, `W2R_E_INVALID` for a global), so a hook is always inside the game module's code; `original_out` receives the trampoline before the hook goes live; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
 
 The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,
-`button`, `checkbox` and `slider_int`; strings are at most 128 bytes. A plugin's section appears in
-the in-game plugin list.
+`button`, `checkbox` and `slider_int`; each call draws one row in the plugin's section of the
+in-game plugin list (reached from the options screen). Strings are at most 128 bytes of UTF-8;
+a longer or invalid string, a null value pointer or `min >= max` makes the call a no-op that
+reports 0. `button` returns 1 when pressed this frame; `checkbox` and `slider_int` return 1 when
+they changed the value this frame (the slider clamps it to the range first). `ctx` is opaque.
 
 ## Strings and untrusted data
 

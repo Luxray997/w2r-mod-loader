@@ -16,7 +16,7 @@ use crate::loader::sha256_of;
 use crate::manifest::{self, Build, Manifest};
 use crate::peer::peer_tag;
 use crate::semver::Version;
-use crate::state::{self, PluginState};
+use crate::state::{self, PluginState, State};
 
 const HOST: &str = "host";
 
@@ -129,7 +129,7 @@ pub fn load_all(
     log: Rc<dyn Log>,
     game: Option<Game>,
     services: Services,
-) -> Registry {
+) -> (Registry, State) {
     let mut registry = Registry::with(log.clone(), game, services);
     let state_path = root.join("config").join("state.json");
     let state = match std::fs::read(&state_path) {
@@ -141,7 +141,7 @@ pub fn load_all(
                     HOST,
                     &format!("state.json refused ({code}); loading nothing"),
                 );
-                return registry;
+                return (registry, State::default());
             }
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -150,7 +150,7 @@ pub fn load_all(
                 HOST,
                 "no config\\state.json: no plugins to load",
             );
-            return registry;
+            return (registry, State::default());
         }
         Err(e) => {
             log.line(
@@ -158,7 +158,7 @@ pub fn load_all(
                 HOST,
                 &format!("state.json unreadable ({e}); loading nothing"),
             );
-            return registry;
+            return (registry, State::default());
         }
     };
 
@@ -231,5 +231,5 @@ pub fn load_all(
             state.plugins.iter().filter(|p| p.enabled).count()
         ),
     );
-    registry
+    (registry, state)
 }

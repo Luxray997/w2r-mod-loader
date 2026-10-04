@@ -20,7 +20,33 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
     }
 }
 
-static PLUGIN: W2rPlugin = tp::table(on_load, Some(on_event));
+static GREET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+static VOLUME: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(5);
+
+unsafe extern "C" fn on_ui(ui: *const W2rUi) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ui = unsafe { &*ui };
+    unsafe {
+        (ui.label)(ui.ctx, tp::str("hello_plugin says hi"));
+        let mut greet = GREET.load(Relaxed);
+        if (ui.checkbox)(ui.ctx, tp::str("Greet on lobby entry"), &mut greet) != 0 {
+            GREET.store(greet, Relaxed);
+            tp::log(W2R_LOG_INFO, &format!("greet set to {greet}"));
+        }
+        let mut volume = VOLUME.load(Relaxed);
+        if (ui.slider_int)(ui.ctx, tp::str("Enthusiasm"), &mut volume, 0, 10) != 0 {
+            VOLUME.store(volume, Relaxed);
+        }
+        if (ui.button)(ui.ctx, tp::str("Log a line")) != 0 {
+            tp::log(
+                W2R_LOG_INFO,
+                &format!("button pressed, enthusiasm {volume}"),
+            );
+        }
+    }
+}
+
+static PLUGIN: W2rPlugin = tp::table_with_ui(on_load, Some(on_event), Some(on_ui));
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn w2r_plugin_main(_host: *const W2rHost) -> *const W2rPlugin {

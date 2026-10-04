@@ -19,6 +19,7 @@ pub mod semver;
 pub mod state;
 pub mod symbols;
 pub mod target;
+pub mod ui;
 
 #[cfg(windows)]
 pub mod entry;
@@ -26,6 +27,8 @@ pub mod entry;
 pub mod frame;
 #[cfg(windows)]
 pub mod loader;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod options;
 #[cfg(windows)]
 pub mod paths;
 #[cfg(windows)]

@@ -82,11 +82,36 @@ mod tests {
             "SendComposedChat",
             "StringAssign",
             "MpLobbySendChat",
+            "EndCurrentWindow",
+            "GetUiSpaceWidth",
+            "OverrideNextRect",
+            "LayoutSpaceBegin",
+            "LayoutSpaceEnd",
+            "BeginNamedGroup",
+            "EndGroup",
+            "LayoutRowDynamic",
+            "DrawLabel",
+            "DrawMenuButton",
+            "FlagCheckbox",
+            "SliderU32",
+            "DisableBegin",
+            "DisableEnd",
+            "SetSkin",
+            "BuildOptionsMenuScreen",
         ] {
             let s = Symbols::get(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(s.kind, Kind::Function, "{name}");
         }
-        for name in ["NetSession", "MpLobbyChatInput"] {
+        for name in [
+            "NetSession",
+            "MpLobbyChatInput",
+            "NkContextMenus",
+            "SkinManager",
+            "SkinWindow",
+            "SkinWindowAlt",
+            "SkinAltFlag",
+            "SkinContentPanel",
+        ] {
             let s = Symbols::get(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(s.kind, Kind::Object, "{name}");
         }

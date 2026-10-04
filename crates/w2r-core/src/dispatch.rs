@@ -175,9 +175,11 @@ impl Registry {
             let Some(on_event) = slot.table.get().on_event else {
                 continue;
             };
+            let started = std::time::Instant::now();
             if let Err(fault) = guarded(|| unsafe { on_event(&event) }) {
                 slot.disable(format!("on_event({id}): {fault}"));
             }
+            slot.note_duration(started.elapsed().as_millis(), "on_event");
         }
     }
 
@@ -216,6 +218,27 @@ impl Registry {
         if let Err(fault) = guarded(|| unsafe { on_event(&event) }) {
             slot.disable(format!("on_event({W2R_EVT_PEER_MESSAGE}): {fault}"));
         }
+        true
+    }
+
+    pub fn slots(&self) -> impl Iterator<Item = &Slot> {
+        self.slots.iter().map(|s| &**s)
+    }
+
+    /// Calls one active plugin's `on_ui` with `ui`, under the guard; a fault disables it.
+    /// Returns whether the plugin has an `on_ui` and was called.
+    pub fn call_on_ui(&self, slot: &Slot, ui: &W2rUi) -> bool {
+        if !slot.is_active() {
+            return false;
+        }
+        let Some(on_ui) = slot.table.get().on_ui else {
+            return false;
+        };
+        let started = std::time::Instant::now();
+        if let Err(fault) = guarded(|| unsafe { on_ui(ui) }) {
+            slot.disable(format!("on_ui: {fault}"));
+        }
+        slot.note_duration(started.elapsed().as_millis(), "on_ui");
         true
     }
 

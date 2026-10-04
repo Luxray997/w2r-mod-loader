@@ -1,28 +1,41 @@
-//! The host's main-thread state: the plugin registry and lobby presence. Created on the first
-//! frame the game draws after startup and driven by every `BeginNamedWindow` call from then on.
-//! Only the game's main thread touches it, which is why a `thread_local` holds it.
+//! The host's main-thread state: the plugin registry, lobby presence and the user's
+//! `state.json`. Created on the first frame the game draws after startup and driven by every
+//! `BeginNamedWindow` call from then on. Only the game's main thread touches it, which is why a
+//! `thread_local` holds it.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use w2r_abi::{W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_INFO, W2R_LOG_WARN};
+use w2r_abi::{
+    W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN,
+};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 use crate::chat::{self, Chat, NoChat};
 use crate::dispatch::Registry;
 use crate::entry;
 use crate::frame;
-use crate::host::{Game, Log, Services};
+use crate::host::{Game, Log, Services, State as SlotState};
 use crate::lobby::{Event, Lobby};
 use crate::manifest::Build;
+#[cfg(target_arch = "x86")]
+use crate::options;
 use crate::peer::{self, NoPeers, NoTransport, PluginMessage, Presence, Transport};
 use crate::plugins;
+use crate::state::{self, State};
 use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
+use crate::ui::{self, Action, Frame, PluginRow, Status, Widgets};
 
 struct Session {
     registry: Registry,
     lobby: Rc<RefCell<Lobby>>,
+    /// As loaded at startup, plus the user's toggles (which take effect at the next launch).
+    state: State,
+    root: PathBuf,
+    #[cfg(target_arch = "x86")]
+    nk: Option<options::Nk>,
 }
 
 thread_local! {
@@ -103,6 +116,95 @@ pub fn deliver_peer(sender: u32, msg: PluginMessage<'_>) {
     });
 }
 
+/// Runs `f` with the game's UI functions, if the session has them.
+#[cfg(target_arch = "x86")]
+pub fn with_nk(f: impl FnOnce(&options::Nk)) {
+    let nk = SESSION.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().and_then(|s| s.nk))
+    });
+    if let Some(nk) = nk {
+        f(&nk);
+    }
+}
+
+/// Draws the plugin list with `w` and applies the user's toggles. Called from the options
+/// screen hook on the main thread.
+pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
+    SESSION.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return Action::None;
+        };
+        let Some(session) = slot.as_mut() else {
+            return Action::None;
+        };
+        let mut rows: Vec<PluginRow> = session
+            .state
+            .plugins
+            .iter()
+            .map(|p| {
+                let (status, slow) = match session.registry.find(&p.id) {
+                    Some(s) => match s.state() {
+                        SlotState::Active => (Status::Active, s.is_slow()),
+                        SlotState::Disabled { reason } => (Status::Disabled(reason), false),
+                    },
+                    None => (Status::NotLoaded, false),
+                };
+                PluginRow {
+                    id: p.id.clone(),
+                    version: state_version(p),
+                    enabled: p.enabled,
+                    status,
+                    slow,
+                }
+            })
+            .collect();
+        let registry = &session.registry;
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let action = ui::draw_plugin_screen(w, &mut rows, |w, i| {
+            if let Some(s) = registry.find(&ids[i]) {
+                let mut frame = Frame::new(w);
+                let table = frame.table();
+                registry.call_on_ui(s, &table);
+            }
+        });
+        if let Action::Toggle(i) = action {
+            let row = &rows[i];
+            session.state.set_enabled(&row.id, row.enabled);
+            let path = session.root.join("config").join("state.json");
+            match state::write(&path, &session.state) {
+                Ok(()) => StartupLog.line(
+                    W2R_LOG_INFO,
+                    "host",
+                    &format!(
+                        "{} {} for the next launch",
+                        row.id,
+                        if row.enabled { "enabled" } else { "disabled" }
+                    ),
+                ),
+                Err(e) => StartupLog.line(
+                    W2R_LOG_ERROR,
+                    "host",
+                    &format!("cannot write state.json: {e}"),
+                ),
+            }
+        }
+        action
+    })
+}
+
+fn state_version(p: &state::PluginState) -> String {
+    let v = &p.version;
+    format!(
+        "{}.{}.{}{}",
+        v.major,
+        v.minor,
+        v.patch,
+        if v.pre.is_empty() { "" } else { "-pre" }
+    )
+}
+
 fn start() -> Session {
     let log: Rc<dyn Log> = Rc::new(StartupLog);
     let lobby = Rc::new(RefCell::new(Lobby::new()));
@@ -113,6 +215,10 @@ fn start() -> Session {
         return Session {
             registry: Registry::new(log),
             lobby,
+            state: State::default(),
+            root: PathBuf::new(),
+            #[cfg(target_arch = "x86")]
+            nk: None,
         };
     };
     let symbols = Symbols::new(startup.game_base);
@@ -127,10 +233,32 @@ fn start() -> Session {
     if let Some(image) = &startup.image {
         peer::hook::install(image, &symbols, &*log);
     }
+    #[cfg(target_arch = "x86")]
+    let nk = {
+        let nk = options::Nk::new(&symbols);
+        match (&nk, &startup.image) {
+            (Some(_), Some(image)) => {
+                options::install(image, &symbols, &*log);
+            }
+            _ => log.line(
+                W2R_LOG_ERROR,
+                "host",
+                "UI symbols missing; no plugin screen",
+            ),
+        }
+        nk
+    };
 
     log.line(W2R_LOG_INFO, "host", "loading plugins on the main thread");
-    let registry = plugins::load_all(&startup.root, running, log, game, services);
-    Session { registry, lobby }
+    let (registry, state) = plugins::load_all(&startup.root, running, log, game, services);
+    Session {
+        registry,
+        lobby,
+        state,
+        root: startup.root.clone(),
+        #[cfg(target_arch = "x86")]
+        nk,
+    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -139,7 +267,7 @@ fn lobby_chat(symbols: &Symbols, lobby: Rc<RefCell<Lobby>>, log: &dyn Log) -> Rc
         Some(c) => Rc::new(c),
         None => {
             log.line(
-                w2r_abi::W2R_LOG_ERROR,
+                W2R_LOG_ERROR,
                 "host",
                 "lobby chat symbols missing; chat_send unavailable",
             );
@@ -159,7 +287,7 @@ fn transport(symbols: &Symbols, log: &dyn Log) -> Rc<dyn Transport> {
         Some(t) => Rc::new(t),
         None => {
             log.line(
-                w2r_abi::W2R_LOG_ERROR,
+                W2R_LOG_ERROR,
                 "host",
                 "net session symbol missing; peer_send unavailable",
             );
