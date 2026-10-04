@@ -35,6 +35,8 @@ pub mod frame;
 #[cfg(windows)]
 pub mod loader;
 #[cfg(all(windows, target_arch = "x86"))]
+pub mod lobbycreate;
+#[cfg(all(windows, target_arch = "x86"))]
 pub mod matchstart;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod options;

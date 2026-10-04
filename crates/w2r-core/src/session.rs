@@ -546,29 +546,58 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 net.run(outs);
             }
             Action::ToggleLocks => {
-                session.config.lock_team_changes = host.lock_teams;
-                session.config.lock_slot_swaps = host.lock_slots;
-                match hostcfg::write(&session.root, &session.config) {
-                    Ok(()) => StartupLog.line(
-                        W2R_LOG_INFO,
-                        "host",
-                        &format!(
-                            "lobby locks: team changes {}, slot swaps {}",
-                            if host.lock_teams { "locked" } else { "open" },
-                            if host.lock_slots { "locked" } else { "open" }
-                        ),
-                    ),
-                    Err(e) => StartupLog.line(
-                        W2R_LOG_ERROR,
-                        "host",
-                        &format!("cannot write {}: {e}", hostcfg::FILE),
-                    ),
-                }
+                save_locks(session, host.lock_teams, host.lock_slots);
             }
             Action::None | Action::Back => {}
         }
         action
     })
+}
+
+/// The host's current lock choice, `(teams, slots)`, for the create screen's buttons.
+pub fn lock_choice() -> Option<(bool, bool)> {
+    SESSION.with(|cell| {
+        let slot = cell.try_borrow().ok()?;
+        let s = slot.as_ref()?;
+        Some((s.config.lock_team_changes, s.config.lock_slot_swaps))
+    })
+}
+
+/// Stores the lock choice in `host.json` (applied when hosting, see `on_window`).
+pub fn set_lock_choice(teams: bool, slots: bool) {
+    SESSION.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut()
+            && let Some(s) = slot.as_mut()
+        {
+            save_locks(s, teams, slots);
+        }
+    });
+}
+
+/// A log line from another host module.
+pub fn log_info(source: &str, msg: &str) {
+    StartupLog.line(W2R_LOG_INFO, source, msg);
+}
+
+fn save_locks(session: &mut Session, teams: bool, slots: bool) {
+    session.config.lock_team_changes = teams;
+    session.config.lock_slot_swaps = slots;
+    match hostcfg::write(&session.root, &session.config) {
+        Ok(()) => StartupLog.line(
+            W2R_LOG_INFO,
+            "host",
+            &format!(
+                "lobby locks: team changes {}, slot swaps {}",
+                if teams { "locked" } else { "open" },
+                if slots { "locked" } else { "open" }
+            ),
+        ),
+        Err(e) => StartupLog.line(
+            W2R_LOG_ERROR,
+            "host",
+            &format!("cannot write {}: {e}", hostcfg::FILE),
+        ),
+    }
 }
 
 fn state_version(p: &state::PluginState) -> String {
@@ -648,6 +677,7 @@ fn start() -> Session {
         match (&nk, &startup.image) {
             (Some(_), Some(image)) => {
                 options::install(image, &symbols, &*log);
+                crate::lobbycreate::install(image, &symbols, &*log);
             }
             _ => log.line(
                 W2R_LOG_ERROR,
