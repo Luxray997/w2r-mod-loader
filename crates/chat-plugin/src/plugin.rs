@@ -1,0 +1,1024 @@
+//! The game-facing half of the chat plugin (32-bit only): symbol resolution, the detours, and
+//! the Nuklear drawing, ported from wc2r-plus `chat.cpp` with its constants and offsets (game
+//! build 1.0.2.2818). Everything here runs on the game's main thread except possibly the message
+//! hooks, so state sits behind a mutex that is never held across a call into the game.
+//!
+//! Detours are outside the host's crash guard (docs/abi.md): each one forwards to the original
+//! whatever happens in our code, and a panic is caught before it can unwind into the game.
+
+use core::ffi::{CStr, c_char, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
+
+use w2r_abi::*;
+
+mod hud;
+
+use crate::model::{
+    self, Backlog, CURSOR_COLOUR, Channel, Message, Settings, apply_colour_factor, faded, revealed,
+    rgba, visibility,
+};
+
+// ---- Nuklear and game layout (wc2r-plus target/struct_offsets.h) ---------------------------
+
+mod off {
+    pub const CTX_CURRENT_WINDOW: usize = 0x3d28;
+    pub const CTX_FONT: usize = 0x1e0;
+    pub const USER_FONT_HEIGHT: usize = 0x04;
+    pub const USER_FONT_WIDTH: usize = 0x08;
+    pub const CTX_TEXT_EXTRA0: usize = 0x210;
+    pub const CTX_TEXT_PADDING_X: usize = 0x214;
+    pub const CTX_TEXT_PADDING_Y: usize = 0x218;
+    pub const CTX_TEXT_EXTRA1: usize = 0x21c;
+    pub const CTX_TEXT_EXTRA2: usize = 0x220;
+    pub const CTX_TEXT_COLOUR_FACTOR: usize = 0x224;
+    pub const CTX_WINDOW_BACKGROUND: usize = 0x1f9c;
+    pub const CTX_SCROLLBAR_SIZE: usize = 0x2008;
+    pub const CTX_GROUP_PADDING_Y: usize = 0x201c;
+    pub const CTX_SCROLL_H: usize = 0x13d0;
+    pub const CTX_SCROLL_V: usize = 0x1648;
+    pub const WINDOW_BUFFER: usize = 0x64;
+    pub const WINDOW_PANEL: usize = 0x8c;
+    pub const PANEL_BOUNDS_X: usize = 0x08;
+    pub const PANEL_OFFSET_Y: usize = 0x1c;
+    pub const PANEL_AT_Y: usize = 0x24;
+    pub const PANEL_ROW_HEIGHT: usize = 0x6c;
+    pub const SCROLLBAR_STRIDE: usize = 0x278;
+    pub const SCROLLBAR_TROUGH: [usize; 3] = [0x00, 0x20, 0x40];
+    pub const SCROLLBAR_CURSOR: [usize; 3] = [0x64, 0x84, 0xa4];
+    pub const SCROLLBAR_BORDER: usize = 0xc8;
+    pub const SCROLLBAR_BORDER_CURSOR: usize = 0xd0;
+    pub const SCROLLBAR_SHOW_BUTTONS: usize = 0xe8;
+    pub const MESSAGE_SLOT_STRIDE: usize = 0xd0;
+    pub const MESSAGE_SLOT_HIGHLIGHT: usize = 0xcc;
+}
+
+const SLOT_STICKY: usize = 15;
+const SLOT_PROMPT: usize = 16;
+const SCROLL_STYLE_SPAN: usize = off::SCROLLBAR_STRIDE * 2;
+const SCROLLV_OFFSET: usize = off::CTX_SCROLL_V - off::CTX_SCROLL_H;
+const SCROLL_TO_BOTTOM_Y: i32 = 1_000_000;
+const INDICATOR_WIDTH: f32 = 4.0;
+/// The game's player count: a sender index at or above this is not a player.
+const PLAYER_COUNT: u8 = 8;
+
+unsafe fn rd<T: Copy>(base: *const u8, offset: usize) -> T {
+    unsafe { base.add(offset).cast::<T>().read_unaligned() }
+}
+
+unsafe fn wr<T: Copy>(base: *mut u8, offset: usize, value: T) {
+    unsafe { base.add(offset).cast::<T>().write_unaligned(value) }
+}
+
+unsafe fn current_window(ctx: *const u8) -> *const u8 {
+    unsafe { rd::<*const u8>(ctx, off::CTX_CURRENT_WINDOW) }
+}
+
+unsafe fn current_panel(ctx: *const u8) -> *const u8 {
+    let win = unsafe { current_window(ctx) };
+    if win.is_null() {
+        core::ptr::null()
+    } else {
+        unsafe { rd::<*const u8>(win, off::WINDOW_PANEL) }
+    }
+}
+
+unsafe fn window_canvas(ctx: *const u8) -> *mut c_void {
+    let win = unsafe { current_window(ctx) };
+    if win.is_null() {
+        core::ptr::null_mut()
+    } else {
+        unsafe { win.add(off::WINDOW_BUFFER) as *mut c_void }
+    }
+}
+
+unsafe fn scroll_offset_y(panel: *const u8) -> f32 {
+    let p = unsafe { rd::<*const u32>(panel, off::PANEL_OFFSET_Y) };
+    if p.is_null() {
+        0.0
+    } else {
+        unsafe { *p as f32 }
+    }
+}
+
+// ---- resolved game functions ---------------------------------------------------------------
+
+type DrawMapMessageLineFn =
+    unsafe extern "C" fn(*mut c_void, *const c_char, f32, f32, f32, f32, i32, i32, i32) -> i32;
+type CountWrappedLinesFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32, f32) -> i32;
+type OverrideNextRectFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32);
+type DrawWrappedLabelFn = unsafe extern "C" fn(*mut c_void, *const c_char, u32);
+type ContentRegionSizeFn = unsafe extern "C" fn(*mut c_void) -> u64;
+type BeginNamedGroupFn = unsafe extern "C" fn(*mut c_void, *const c_char, u32) -> i32;
+type LayoutRowDynamicFn = unsafe extern "C" fn(*mut c_void, f32, i32);
+type ScrollGroupToFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32, i32);
+type LayoutSpaceBeginFn = unsafe extern "C" fn(*mut c_void, i32, f32, i32);
+type CtxFn = unsafe extern "C" fn(*mut c_void);
+type ExpireSlotFn = unsafe extern "C" fn(*mut c_void, u32);
+type GetClockMsFn = unsafe extern "C" fn() -> u32;
+type FillRectFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32, f32, u32);
+type AllocSpaceFn = unsafe extern "C" fn(*mut f32, *mut c_void);
+type TextClampFn = unsafe extern "C" fn(
+    *const c_void,
+    *const c_char,
+    i32,
+    f32,
+    *mut i32,
+    *mut f32,
+    *const u32,
+    i32,
+) -> i32;
+type WidgetTextFn = unsafe extern "C" fn(
+    *mut c_void,
+    f32,
+    f32,
+    f32,
+    f32,
+    *const c_char,
+    i32,
+    *const c_void,
+    u32,
+    *const c_void,
+);
+type TextWidthFn = unsafe extern "C" fn(*mut c_void, f32, *const c_char, i32) -> f32;
+
+type PushMapMessageFn = unsafe extern "C" fn(*const c_char, i32, u32);
+type DrawMapMessageListFn = unsafe extern "C" fn(*mut c_void, i32);
+type BuildMapMessagesPanelFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32, i32);
+type DisplayChatOrGameMessageFn = unsafe extern "C" fn(*const c_char, u8, u32, c_char);
+
+struct Game {
+    draw_message_line: DrawMapMessageLineFn,
+    count_wrapped: CountWrappedLinesFn,
+    override_rect: OverrideNextRectFn,
+    draw_wrapped_label: DrawWrappedLabelFn,
+    content_region: ContentRegionSizeFn,
+    begin_group: BeginNamedGroupFn,
+    row_dynamic: LayoutRowDynamicFn,
+    scroll_group_to: ScrollGroupToFn,
+    space_begin: LayoutSpaceBeginFn,
+    space_end: CtxFn,
+    end_group: CtxFn,
+    expire_slot: ExpireSlotFn,
+    get_clock_ms: GetClockMsFn,
+    fill_rect: FillRectFn,
+    alloc_space: AllocSpaceFn,
+    text_clamp: TextClampFn,
+    widget_text: WidgetTextFn,
+    wrap_separators: *const u32,
+    chat_target_mode: *const u8,
+    pause_flags: *const u8,
+    slots: *mut u8,
+}
+
+// SAFETY: plain function and data addresses of the game, fixed for the session.
+unsafe impl Send for Game {}
+unsafe impl Sync for Game {}
+
+static GAME: OnceLock<Game> = OnceLock::new();
+
+fn game() -> Option<&'static Game> {
+    GAME.get()
+}
+
+// ---- host access ---------------------------------------------------------------------------
+
+static HOST: AtomicPtr<W2rHost> = AtomicPtr::new(core::ptr::null_mut());
+
+fn host() -> Option<&'static W2rHost> {
+    unsafe { HOST.load(Ordering::Acquire).as_ref() }
+}
+
+fn s(text: &str) -> W2rStr {
+    W2rStr {
+        ptr: text.as_ptr().cast(),
+        len: text.len() as u32,
+    }
+}
+
+fn log(level: u32, msg: &str) {
+    if let Some(h) = host() {
+        unsafe { (h.log)(h.token, level, s(msg)) };
+    }
+}
+
+fn lookup(name: &str) -> Option<usize> {
+    let h = host()?;
+    let mut handle = 0;
+    let mut addr = 0usize;
+    unsafe {
+        if (h.symbol_lookup)(h.token, s(name), &mut handle) != W2R_OK {
+            return None;
+        }
+        if (h.symbol_address)(h.token, handle, &mut addr) != W2R_OK {
+            return None;
+        }
+    }
+    Some(addr)
+}
+
+fn handle_of(name: &str) -> Option<W2rHandle> {
+    let h = host()?;
+    let mut handle = 0;
+    (unsafe { (h.symbol_lookup)(h.token, s(name), &mut handle) } == W2R_OK).then_some(handle)
+}
+
+macro_rules! need {
+    ($name:literal, $t:ty) => {{
+        let addr = lookup($name).ok_or($name)?;
+        unsafe { core::mem::transmute::<usize, $t>(addr) }
+    }};
+}
+
+fn resolve() -> Result<Game, &'static str> {
+    Ok(Game {
+        draw_message_line: need!("DrawMapMessageLine", DrawMapMessageLineFn),
+        count_wrapped: need!("CountWrappedLines", CountWrappedLinesFn),
+        override_rect: need!("OverrideNextRect", OverrideNextRectFn),
+        draw_wrapped_label: need!("DrawWrappedLabel", DrawWrappedLabelFn),
+        content_region: need!("ContentRegionSize", ContentRegionSizeFn),
+        begin_group: need!("BeginNamedGroup", BeginNamedGroupFn),
+        row_dynamic: need!("LayoutRowDynamic", LayoutRowDynamicFn),
+        scroll_group_to: need!("ScrollGroupTo", ScrollGroupToFn),
+        space_begin: need!("LayoutSpaceBegin", LayoutSpaceBeginFn),
+        space_end: need!("LayoutSpaceEnd", CtxFn),
+        end_group: need!("EndGroup", CtxFn),
+        expire_slot: need!("ExpireSlot", ExpireSlotFn),
+        get_clock_ms: need!("GetClockMs", GetClockMsFn),
+        fill_rect: need!("NkFillRect", FillRectFn),
+        alloc_space: need!("NkPanelAllocSpace", AllocSpaceFn),
+        text_clamp: need!("NkTextClamp", TextClampFn),
+        widget_text: need!("NkWidgetText", WidgetTextFn),
+        wrap_separators: lookup("NkWrapSeparators").ok_or("NkWrapSeparators")? as *const u32,
+        chat_target_mode: lookup("ChatTargetMode").ok_or("ChatTargetMode")? as *const u8,
+        pause_flags: lookup("MatchPauseFlags").ok_or("MatchPauseFlags")? as *const u8,
+        slots: lookup("MapMessageSlots").ok_or("MapMessageSlots")? as *mut u8,
+    })
+}
+
+// ---- state ---------------------------------------------------------------------------------
+
+#[derive(Default)]
+struct State {
+    settings: Settings,
+    backlog: Backlog,
+    /// The player whose chat line the game is displaying right now (set around
+    /// `DisplayChatOrGameMessage`, read by the nested `PushMapMessage`).
+    sender: Option<u8>,
+}
+
+static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+/// Locks the state, creating it on first use; a poisoned lock is still usable.
+fn state() -> MutexGuard<'static, Option<State>> {
+    let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = Some(State::default());
+    }
+    g
+}
+
+fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    let mut g = state();
+    f(g.as_mut().expect("created"))
+}
+
+fn now_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+fn enabled() -> bool {
+    with_state(|st| st.settings.enabled)
+}
+
+// ---- original functions (trampolines) ------------------------------------------------------
+
+static ORIG_PUSH: AtomicUsize = AtomicUsize::new(0);
+static ORIG_DRAW_LIST: AtomicUsize = AtomicUsize::new(0);
+static ORIG_BUILD_PANEL: AtomicUsize = AtomicUsize::new(0);
+static ORIG_DISPLAY: AtomicUsize = AtomicUsize::new(0);
+
+macro_rules! original {
+    ($slot:expr, $t:ty) => {{
+        #[allow(unused_unsafe)]
+        unsafe {
+            core::mem::transmute::<usize, $t>($slot.load(Ordering::Acquire))
+        }
+    }};
+}
+
+// ---- drawing -------------------------------------------------------------------------------
+
+/// The scroll area of the current group, as the game reports it (`AbsoluteGroupRegion`).
+unsafe fn group_region(g: &Game, ctx: *mut c_void) -> Option<(f32, f32)> {
+    let packed = unsafe { (g.content_region)(ctx) };
+    let w = f32::from_bits((packed & 0xffff_ffff) as u32);
+    let h = f32::from_bits((packed >> 32) as u32);
+    let padding = unsafe { rd::<f32>(ctx as *const u8, off::CTX_GROUP_PADDING_Y) };
+    let h = h - padding * 2.0;
+    (w > 8.0 && w < 20000.0 && h > 0.0 && h < 20000.0).then_some((w, h))
+}
+
+unsafe fn fill_group_background(g: &Game, ctx: *mut c_void, alpha: i32) {
+    if alpha <= 0 {
+        return;
+    }
+    let c = ctx as *const u8;
+    let canvas = unsafe { window_canvas(c) };
+    let panel = unsafe { current_panel(c) };
+    if canvas.is_null() || panel.is_null() {
+        return;
+    }
+    let b = unsafe { rd::<[f32; 4]>(panel, off::PANEL_BOUNDS_X) };
+    if b[2] > 0.0 && b[3] > 0.0 {
+        unsafe {
+            (g.fill_rect)(
+                canvas,
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                0.0,
+                rgba(0, 0, 0, alpha as u8),
+            )
+        };
+    }
+}
+
+unsafe fn flatten_scrollbar(sb: *mut u8, trough: u32, cursor: u32) {
+    unsafe {
+        for o in off::SCROLLBAR_TROUGH {
+            wr::<u32>(sb, o, 0);
+            wr::<u32>(sb, o + 4, trough);
+        }
+        for o in off::SCROLLBAR_CURSOR {
+            wr::<u32>(sb, o, 0);
+            wr::<u32>(sb, o + 4, cursor);
+        }
+        wr::<f32>(sb, off::SCROLLBAR_BORDER, 0.0);
+        wr::<f32>(sb, off::SCROLLBAR_BORDER_CURSOR, 0.0);
+    }
+}
+
+unsafe fn draw_scroll_indicator(g: &Game, ctx: *mut c_void, strip_w: f32) {
+    let c = ctx as *const u8;
+    let canvas = unsafe { window_canvas(c) };
+    let panel = unsafe { current_panel(c) };
+    if canvas.is_null() || panel.is_null() {
+        return;
+    }
+    let bounds = unsafe { rd::<[f32; 4]>(panel, off::PANEL_BOUNDS_X) };
+    let at_y = unsafe { rd::<f32>(panel, off::PANEL_AT_Y) };
+    let row_h = unsafe { rd::<f32>(panel, off::PANEL_ROW_HEIGHT) };
+    let offset_y = unsafe { scroll_offset_y(panel) };
+
+    let content_h = (at_y + row_h) - bounds[1];
+    let view_h = bounds[3];
+    if content_h <= view_h + 0.5 {
+        return;
+    }
+    let max_offset = content_h - view_h;
+    let thumb_h = (view_h * (view_h / content_h)).max(strip_w).min(view_h);
+    let frac = if max_offset > 0.0 {
+        (offset_y / max_offset).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb_y = bounds[1] + frac * (view_h - thumb_h);
+    let thumb_x = bounds[0] + bounds[2] - strip_w;
+    unsafe {
+        (g.fill_rect)(
+            canvas,
+            thumb_x,
+            thumb_y,
+            strip_w,
+            thumb_h,
+            strip_w * 0.5,
+            CURSOR_COLOUR,
+        )
+    };
+}
+
+struct LineLook {
+    alpha: f32,
+    band: u32,
+}
+
+/// One message laid out by hand so it can fade and sit on a band: wraps it with the game's own
+/// text clamp, and draws each line with the game's own widget text (`DrawNamedLine`; slice 4 adds
+/// the coloured name spans).
+unsafe fn draw_line(g: &Game, ctx: *mut c_void, m: &Message, colour: u32, look: &LineLook) {
+    let c = ctx as *const u8;
+    if unsafe { current_panel(c) }.is_null() {
+        return;
+    }
+    let canvas = unsafe { window_canvas(c) };
+    let font = unsafe { rd::<*const u8>(c, off::CTX_FONT) };
+    if canvas.is_null() || font.is_null() {
+        return;
+    }
+    let font_userdata = unsafe { rd::<*mut c_void>(font, 0) };
+    let font_h = unsafe { rd::<f32>(font, off::USER_FONT_HEIGHT) };
+    let Some(width) = (unsafe { rd::<Option<TextWidthFn>>(font, off::USER_FONT_WIDTH) }) else {
+        return;
+    };
+
+    let mut b = [0f32; 4];
+    unsafe { (g.alloc_space)(b.as_mut_ptr(), ctx) };
+    if look.band >> 24 != 0 {
+        unsafe { (g.fill_rect)(canvas, b[0], b[1], b[2], b[3], 0.0, look.band) };
+    }
+
+    let pad_x = unsafe { rd::<f32>(c, off::CTX_TEXT_PADDING_X) };
+    let pad_y = unsafe { rd::<f32>(c, off::CTX_TEXT_PADDING_Y) };
+    let factor = unsafe { rd::<f32>(c, off::CTX_TEXT_COLOUR_FACTOR) };
+
+    let mut style = [0u32; 7];
+    unsafe {
+        style[2] = rd::<u32>(c, off::CTX_WINDOW_BACKGROUND);
+        style[4] = rd::<u32>(c, off::CTX_TEXT_EXTRA0);
+        style[5] = rd::<u32>(c, off::CTX_TEXT_EXTRA1);
+        style[6] = rd::<u32>(c, off::CTX_TEXT_EXTRA2);
+    }
+    let text_fg = faded(apply_colour_factor(colour, factor), look.alpha);
+
+    let box_w = b[2].max(pad_x * 2.0);
+    let box_h = b[3].max(pad_y * 2.0);
+    let bottom = b[1] + (box_h - pad_y * 2.0);
+    let line_x = b[0] + pad_x;
+    let line_w = box_w - pad_x * 2.0;
+    let line_h = pad_y * 2.0 + font_h;
+    let mut line_y = b[1] + pad_y;
+
+    let text = m.text.as_ptr();
+    let len = m.text.as_bytes().len() as i32;
+    let mut done = 0i32;
+    let mut glyphs = 0i32;
+    let mut fit_w = 0f32;
+    let clamp = |from: i32, glyphs: &mut i32, fit_w: &mut f32| unsafe {
+        (g.text_clamp)(
+            font.cast(),
+            text.add(from as usize),
+            len - from,
+            line_w,
+            glyphs,
+            fit_w,
+            g.wrap_separators,
+            1,
+        )
+    };
+    let mut fitting = clamp(done, &mut glyphs, &mut fit_w);
+    while done < len && fitting != 0 && line_y + line_h <= bottom {
+        let line_end = done + fitting;
+        style[3] = text_fg;
+        unsafe {
+            (g.widget_text)(
+                canvas,
+                line_x,
+                line_y,
+                line_w,
+                line_h,
+                text.add(done as usize),
+                line_end - done,
+                style.as_ptr().cast(),
+                0x11,
+                font.cast(),
+            );
+        }
+        let _ = width; // used by the name-span pieces in slice 4
+        let _ = font_userdata;
+        done = line_end;
+        line_y += pad_y * 2.0 + font_h;
+        fitting = clamp(done, &mut glyphs, &mut fit_w);
+    }
+}
+
+unsafe fn wrapped_lines(g: &Game, ctx: *mut c_void, m: &Message, w: f32) -> i32 {
+    let n = unsafe { (g.count_wrapped)(ctx, m.text.as_ptr(), m.text.as_bytes().len() as i32, w) };
+    n.max(1)
+}
+
+unsafe fn draw_backlog_rows(g: &Game, ctx: *mut c_void, w: f32, line_height: f32) {
+    let messages = with_state(|st| st.backlog.snapshot());
+    for m in &messages {
+        let n = unsafe { wrapped_lines(g, ctx, m, w) };
+        unsafe {
+            (g.row_dynamic)(ctx, n as f32 * line_height, 1);
+            (g.draw_wrapped_label)(ctx, m.text.as_ptr(), m.colour());
+        }
+    }
+    unsafe { (g.row_dynamic)(ctx, 0.01, 1) };
+    if with_state(|st| st.backlog.take_scroll()) {
+        unsafe { (g.scroll_group_to)(ctx, c"messages_history".as_ptr(), 0, SCROLL_TO_BOTTOM_Y) };
+    }
+}
+
+unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
+    let Some((w, h)) = (unsafe { group_region(g, ctx) }) else {
+        return;
+    };
+    let (hold_ms, bg, recent) = with_state(|st| {
+        (
+            st.settings.fade_seconds.max(0) as u64 * 1000,
+            st.settings.bg_alpha,
+            // Enough to fill the biggest panel; the loop stops at the first one that does not fit.
+            st.backlog
+                .recent_first()
+                .take(32)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    });
+    let now = now_ms();
+    let max_lines = h as i32 / line_height;
+    let mut used = 0;
+    for m in &recent {
+        let alpha = visibility(m.arrived_ms, now, hold_ms);
+        if alpha <= 0.0 {
+            break;
+        }
+        let n = unsafe { wrapped_lines(g, ctx, m, w) };
+        if used + n > max_lines {
+            break;
+        }
+        used += n;
+        unsafe {
+            (g.override_rect)(
+                ctx,
+                0.0,
+                h - (used * line_height) as f32,
+                w,
+                (n * line_height) as f32,
+            );
+            draw_line(
+                g,
+                ctx,
+                m,
+                m.colour(),
+                &LineLook {
+                    alpha,
+                    band: rgba(0, 0, 0, (bg as f32 * alpha) as u8),
+                },
+            );
+        }
+    }
+}
+
+// ---- detours -------------------------------------------------------------------------------
+
+unsafe extern "C" fn push_map_message(text: *const c_char, highlight: i32, duration_ms: u32) {
+    if !text.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            if !enabled() {
+                return;
+            }
+            let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
+            let now = now_ms();
+            with_state(|st| {
+                // Slice 1: a line the game is displaying for a player is chat (grey), anything
+                // else a system line (gold). wc2r-plus also looks the sender's name up; slice 4.
+                let channel = if st.sender.is_some() {
+                    Channel::All
+                } else {
+                    Channel::System
+                };
+                if let Some(m) = Message::new(bytes, highlight != 0, channel, now) {
+                    let cap = st.settings.backlog;
+                    st.backlog.push(m, cap);
+                }
+            });
+        }));
+    }
+    unsafe { original!(ORIG_PUSH, PushMapMessageFn)(text, highlight, duration_ms) };
+}
+
+unsafe extern "C" fn display_chat_or_game_message(
+    text: *const c_char,
+    who: u8,
+    duration_ms: u32,
+    target_mode: c_char,
+) {
+    let saved = with_state(|st| {
+        let saved = st.sender;
+        st.sender = (who < PLAYER_COUNT).then_some(who);
+        saved
+    });
+    unsafe {
+        original!(ORIG_DISPLAY, DisplayChatOrGameMessageFn)(text, who, duration_ms, target_mode)
+    };
+    with_state(|st| st.sender = saved);
+}
+
+unsafe extern "C" fn draw_map_message_list(ctx: *mut c_void, line_height: i32) {
+    let original = original!(ORIG_DRAW_LIST, DrawMapMessageListFn);
+    let drawn = catch_unwind(AssertUnwindSafe(|| {
+        let Some(g) = game() else { return false };
+        if !enabled() || ctx.is_null() || line_height <= 0 {
+            return false;
+        }
+        unsafe { draw_message_strip(g, ctx, line_height) }
+    }))
+    .unwrap_or(false);
+    if !drawn {
+        unsafe { original(ctx, line_height) };
+    }
+}
+
+/// The prompt line, then the sticky line below it. False when the group has no usable region
+/// (the game's own drawing runs instead).
+unsafe fn draw_message_strip(g: &Game, ctx: *mut c_void, line_height: i32) -> bool {
+    let Some((w, h)) = (unsafe { group_region(g, ctx) }) else {
+        return false;
+    };
+    unsafe {
+        let prompt = g.slots.add(SLOT_PROMPT * off::MESSAGE_SLOT_STRIDE);
+        let sticky = g.slots.add(SLOT_STICKY * off::MESSAGE_SLOT_STRIDE);
+        let used = (g.draw_message_line)(
+            ctx,
+            prompt.cast(),
+            0.0,
+            0.0,
+            w,
+            h,
+            rd::<u8>(prompt, off::MESSAGE_SLOT_HIGHLIGHT) as i32,
+            0,
+            line_height,
+        );
+        (g.draw_message_line)(
+            ctx,
+            sticky.cast(),
+            0.0,
+            0.0,
+            w,
+            h,
+            rd::<u8>(sticky, off::MESSAGE_SLOT_HIGHLIGHT) as i32,
+            used,
+            line_height,
+        );
+    }
+    true
+}
+
+unsafe extern "C" fn build_map_messages_panel(
+    ctx: *mut c_void,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    line_height: i32,
+) {
+    let original = original!(ORIG_BUILD_PANEL, BuildMapMessagesPanelFn);
+    let Some(g) = game() else {
+        return unsafe { original(ctx, x, y, w, h, line_height) };
+    };
+    if !enabled() || ctx.is_null() || line_height <= 0 {
+        return unsafe { original(ctx, x, y, w, h, line_height) };
+    }
+
+    // The game's style fields are borrowed for the duration and always put back, even if our
+    // drawing panics.
+    let c = ctx as *mut u8;
+    let scroll_style = unsafe { c.add(off::CTX_SCROLL_H) };
+    let mut saved_style = [0u8; SCROLL_STYLE_SPAN];
+    unsafe {
+        core::ptr::copy_nonoverlapping(scroll_style, saved_style.as_mut_ptr(), SCROLL_STYLE_SPAN)
+    };
+    let saved_scrollbar = unsafe { rd::<[f32; 2]>(c, off::CTX_SCROLLBAR_SIZE) };
+    let drew = catch_unwind(AssertUnwindSafe(|| unsafe {
+        draw_panel(g, ctx, x, y, w, h, line_height, scroll_style)
+    }));
+    unsafe {
+        core::ptr::copy_nonoverlapping(saved_style.as_ptr(), scroll_style, SCROLL_STYLE_SPAN);
+        wr::<[f32; 2]>(c, off::CTX_SCROLLBAR_SIZE, saved_scrollbar);
+    }
+    if drew.is_err() {
+        // Nothing sensible was drawn: let the game draw its own.
+        unsafe { original(ctx, x, y, w, h, line_height) };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_panel(
+    g: &Game,
+    ctx: *mut c_void,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    line_height: i32,
+    scroll_style: *mut u8,
+) {
+    let lh = line_height as f32;
+    let now = unsafe { (g.get_clock_ms)() };
+    for i in 0..15 {
+        unsafe { (g.expire_slot)(g.slots.add(i * off::MESSAGE_SLOT_STRIDE).cast(), now) };
+    }
+    unsafe {
+        (g.expire_slot)(
+            g.slots.add(SLOT_STICKY * off::MESSAGE_SLOT_STRIDE).cast(),
+            now,
+        )
+    };
+
+    let strip_h = (2.0 * lh).min(h);
+    let prompt = unsafe { *g.slots.add(SLOT_PROMPT * off::MESSAGE_SLOT_STRIDE) };
+    let sticky = unsafe { *g.slots.add(SLOT_STICKY * off::MESSAGE_SLOT_STRIDE) };
+    let strip_has_content = prompt != 0 || sticky != 0;
+
+    let (lines, bg, fade) = with_state(|st| {
+        (
+            st.settings.lines,
+            st.settings.bg_alpha,
+            st.settings.fade_seconds,
+        )
+    });
+    let history_max = h - strip_h;
+    let history_h = (lines as f32 * lh).min(history_max).max(0.0);
+    let panel_h = history_h + strip_h;
+    // Anchored to the bottom, as wc2r-plus does.
+    let top = y + h - panel_h;
+
+    unsafe {
+        flatten_scrollbar(scroll_style.add(SCROLLV_OFFSET), 0, 0);
+        wr::<i32>(
+            scroll_style,
+            SCROLLV_OFFSET + off::SCROLLBAR_SHOW_BUTTONS,
+            0,
+        );
+        wr::<[f32; 2]>(
+            ctx as *mut u8,
+            off::CTX_SCROLLBAR_SIZE,
+            [INDICATOR_WIDTH, 0.0],
+        );
+    }
+
+    static WAS_REVEALED: Mutex<bool> = Mutex::new(true);
+    let is_revealed = unsafe { revealed(fade, *g.chat_target_mode, *g.pause_flags) };
+    {
+        let mut was = WAS_REVEALED.lock().unwrap_or_else(|e| e.into_inner());
+        if is_revealed && !*was {
+            with_state(|st| st.backlog.request_scroll());
+        }
+        *was = is_revealed;
+    }
+
+    if !is_revealed && history_h > lh * 0.5 {
+        unsafe {
+            (g.override_rect)(ctx, x, top, w, history_h);
+            if (g.begin_group)(ctx, c"messages_recent".as_ptr(), 0x20) != 0 {
+                (g.space_begin)(ctx, 1, 0.0, 1000);
+                draw_recent_lines(g, ctx, line_height);
+                (g.space_end)(ctx);
+                (g.end_group)(ctx);
+            }
+        }
+    }
+
+    if is_revealed && history_h > lh * 0.5 {
+        unsafe {
+            (g.override_rect)(ctx, x, top, w, history_h);
+            if (g.begin_group)(ctx, c"messages_history".as_ptr(), 0) != 0 {
+                fill_group_background(g, ctx, bg);
+                draw_backlog_rows(g, ctx, w, lh);
+                draw_scroll_indicator(g, ctx, INDICATOR_WIDTH);
+                (g.end_group)(ctx);
+            }
+        }
+    }
+
+    if strip_has_content {
+        unsafe {
+            (g.override_rect)(ctx, x, top + history_h, w, strip_h);
+            if (g.begin_group)(ctx, c"messages".as_ptr(), 0x20) != 0 {
+                (g.space_begin)(ctx, 1, 0.0, 1000);
+                fill_group_background(g, ctx, bg);
+                if !draw_message_strip(g, ctx, line_height) {
+                    // No region to draw into this frame; nothing to do.
+                }
+                (g.space_end)(ctx);
+                (g.end_group)(ctx);
+            }
+        }
+    }
+}
+
+// ---- hooks ---------------------------------------------------------------------------------
+
+static HOOKS: Mutex<Vec<W2rHandle>> = Mutex::new(Vec::new());
+
+fn install_hook(
+    symbol: &str,
+    detour: *mut c_void,
+    original: &AtomicUsize,
+) -> Result<W2rHandle, String> {
+    let h = host().ok_or("no host")?;
+    let target = handle_of(symbol).ok_or_else(|| format!("{symbol}: unknown symbol"))?;
+    let mut trampoline: *mut c_void = core::ptr::null_mut();
+    let mut hook = 0;
+    let status = unsafe { (h.hook_install)(h.token, target, detour, &mut trampoline, &mut hook) };
+    if status != W2R_OK {
+        return Err(format!("{symbol}: hook_install returned {status}"));
+    }
+    original.store(trampoline as usize, Ordering::Release);
+    Ok(hook)
+}
+
+fn remove_hooks() {
+    let handles = std::mem::take(&mut *HOOKS.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(h) = host() {
+        for hook in handles.into_iter().rev() {
+            unsafe { (h.hook_remove)(h.token, hook) };
+        }
+    }
+}
+
+// ---- plugin entry --------------------------------------------------------------------------
+
+fn load_settings() -> Settings {
+    let mut settings = Settings::default();
+    if let Some(h) = host() {
+        for key in [
+            model::ENABLED.key,
+            model::LINES.key,
+            model::FADE.key,
+            model::BACKLOG.key,
+            model::BG.key,
+        ] {
+            let mut v = 0i64;
+            if unsafe { (h.settings_get_i64)(h.token, s(key), &mut v) } == W2R_OK {
+                settings.apply(key, v);
+            }
+        }
+    }
+    settings
+}
+
+fn save_setting(key: &str, value: i64) {
+    if let Some(h) = host() {
+        unsafe { (h.settings_set_i64)(h.token, s(key), value) };
+    }
+}
+
+unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
+    HOST.store(host.cast_mut(), Ordering::Release);
+    let g = match resolve() {
+        Ok(g) => g,
+        Err(name) => {
+            log(
+                W2R_LOG_ERROR,
+                &format!("symbol {name} not available; chat not started"),
+            );
+            return W2R_E_STATE;
+        }
+    };
+    let _ = GAME.set(g);
+    with_state(|st| st.settings = load_settings());
+
+    let hooks: [(&str, *mut c_void, &AtomicUsize); 4] = [
+        (
+            "PushMapMessage",
+            push_map_message as *mut c_void,
+            &ORIG_PUSH,
+        ),
+        (
+            "DisplayChatOrGameMessage",
+            display_chat_or_game_message as *mut c_void,
+            &ORIG_DISPLAY,
+        ),
+        (
+            "DrawMapMessageList",
+            draw_map_message_list as *mut c_void,
+            &ORIG_DRAW_LIST,
+        ),
+        (
+            "BuildMapMessagesPanel",
+            build_map_messages_panel as *mut c_void,
+            &ORIG_BUILD_PANEL,
+        ),
+    ];
+    let mut hooks = hooks.to_vec();
+    // The paused-game HUD (wc2r-plus in_match_hud.cpp). Optional: without it the history still
+    // shows while typing, just not while paused.
+    static HUD_BUILD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    match hud::resolve() {
+        Ok(()) => {
+            hooks.push((
+                "BuildInMatchHud",
+                hud::build_in_match_hud as *mut c_void,
+                &HUD_BUILD_ORIGINAL,
+            ));
+            hooks.push((
+                "EditControlEventProc",
+                hud::edit_control_event as *mut c_void,
+                &hud::ORIG_EDIT_PROC,
+            ));
+        }
+        Err(name) => log(
+            W2R_LOG_WARN,
+            &format!("symbol {name} not available; the HUD is left alone (no chat while paused)"),
+        ),
+    }
+    for (name, detour, original) in hooks {
+        match install_hook(name, detour, original) {
+            Ok(handle) => HOOKS.lock().unwrap_or_else(|e| e.into_inner()).push(handle),
+            Err(msg) => {
+                log(W2R_LOG_ERROR, &msg);
+                remove_hooks();
+                return W2R_E_STATE;
+            }
+        }
+    }
+    if let Some(h) = self::host() {
+        unsafe { (h.subscribe)(h.token, W2R_EVT_MATCH_START) };
+    }
+    log(W2R_LOG_INFO, "chat history active");
+    W2R_OK
+}
+
+unsafe extern "C" fn on_event(event: *const W2rEvent) {
+    let id = unsafe { (*event).id };
+    if id == W2R_EVT_MATCH_START {
+        with_state(|st| st.backlog.clear());
+        log(W2R_LOG_INFO, "match start: backlog cleared");
+    }
+}
+
+unsafe extern "C" fn on_ui(ui: *const W2rUi) {
+    let ui = unsafe { &*ui };
+    let mut changed: Vec<(&'static str, i64)> = Vec::new();
+    let (mut lines, mut fade, mut backlog, mut bg) = with_state(|st| {
+        (
+            st.settings.lines,
+            st.settings.fade_seconds,
+            st.settings.backlog as i32,
+            st.settings.bg_alpha,
+        )
+    });
+    unsafe {
+        (ui.label)(ui.ctx, s("Chat history (port of wc2r-plus)"));
+        if (ui.slider_int)(
+            ui.ctx,
+            s("History height (lines)"),
+            &mut lines,
+            model::LINES.min as i32,
+            model::LINES.max as i32,
+        ) != 0
+        {
+            changed.push((model::LINES.key, lines as i64));
+        }
+        if (ui.slider_int)(
+            ui.ctx,
+            s("Fade time (seconds, 0 = never)"),
+            &mut fade,
+            model::FADE.min as i32,
+            model::FADE.max as i32,
+        ) != 0
+        {
+            changed.push((model::FADE.key, fade as i64));
+        }
+        if (ui.slider_int)(
+            ui.ctx,
+            s("Saved message limit"),
+            &mut backlog,
+            model::BACKLOG.min as i32,
+            model::BACKLOG.max as i32,
+        ) != 0
+        {
+            changed.push((model::BACKLOG.key, backlog as i64));
+        }
+        if (ui.slider_int)(
+            ui.ctx,
+            s("Background opacity"),
+            &mut bg,
+            model::BG.min as i32,
+            model::BG.max as i32,
+        ) != 0
+        {
+            changed.push((model::BG.key, bg as i64));
+        }
+    }
+    for (key, value) in changed {
+        with_state(|st| st.settings.apply(key, value));
+        save_setting(key, value);
+    }
+}
+
+unsafe extern "C" fn on_unload() {
+    remove_hooks();
+}
+
+static TABLE: W2rPlugin = W2rPlugin {
+    struct_size: W2R_PLUGIN_V1_SIZE,
+    on_load: Some(on_load),
+    on_event: Some(on_event),
+    on_ui: Some(on_ui),
+    on_unload: Some(on_unload),
+};
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn w2r_plugin_main(_host: *const W2rHost) -> *const W2rPlugin {
+    &TABLE
+}

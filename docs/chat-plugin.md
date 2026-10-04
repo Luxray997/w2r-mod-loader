@@ -93,6 +93,8 @@ noted. Signatures are the game's, as in `src/target/addresses.h` of wc2r-plus.
 | `MinimapTerrainKeyProc` | `(void* dlg, uint8_t* event)` | Tab while composing cycles the channel |
 | `SendComposedChat` | `(const char* text)` | set target mode and recipient mask for the chosen channel around the call, restore after |
 | `WriteChatPromptLine` | `(const char* fmt, const char* a1, const char* a2)` | prefix the channel label, remember the prompt channel |
+| `BuildInMatchHud` | `(char whichView)` | **replaced outright** (never forwards): the stock HUD pieces in the stock order plus the chat block always. The stock builder draws no chat block while paused, so without this there is no history and no prompt in a paused game. This is wc2r-plus `features/ui/in_match_hud.cpp`, not `chat.cpp`, and was missing from the first version of this spec |
+| `EditControlEventProc` | `(uint8_t* control, uint8_t* event)` | after the original: while paused (`MatchPauseFlags == 1`) append the typed character to the chat edit control by hand, since the stock control refuses typing |
 | `HandlePauseCommand`, `HandleResumeCommand` | `()` | set an "in handler" flag around the call; announce when the pause flag changed |
 
 Game globals the plugin reads or writes: `MapMessageSlots` (16 slots, stride from wc2r-plus
@@ -119,8 +121,8 @@ the Nuklear context offsets in wc2r-plus `struct_offsets.h` (`kCtxScrollH`, `kCt
 - Crate `crates/chat-plugin` (cdylib, i686, Rust; builds against `w2r-abi`, with the SDK pieces
   it needs inline until `w2r-sdk` exists). It moves to the `w2r-plugins` repo in Phase 6.
 - Manifest: id `w2r-chat`, capabilities `game.read` and `hooks.raw`; `chat.read` is **not** needed (the plugin
-  sees chat through its own hooks, with the game's raw text; it must therefore apply the same
-  printable-ASCII reduction the host applies for other plugins before storing or drawing),
+  sees chat through its own hooks, with the game's raw text, and hands it straight back to
+  the game's own renderer exactly as wc2r-plus does; it only cuts a message at a NUL),
   `affects_simulation: false` (it only changes display and the target mode of an outgoing
   message the game would send anyway).
 - State is a main-thread value behind a mutex, as wc2r-plus does with a critical section: the
@@ -135,7 +137,7 @@ player, so checks are single-player or against a vanilla peer, and the host's wa
 0. **Host prerequisites.** `symbol_address`; `settings_*`; `data_*`; fire `MATCH_START` (done in the same slice).
    Unit and integration tests in `w2r-core/tests`, an ABI doc update, and a
    capability-prompt wording update for `hooks.raw`. Exit: a fixture plugin round-trips each.
-1. **Capture and history.** `PushMapMessage`, `DisplayChatOrGameMessage`,
+1. **Capture and history, and the paused HUD.** `PushMapMessage`, `DisplayChatOrGameMessage`,
    `BuildMapMessagesPanel`, `DrawMapMessageList`: the scrollable history works, including while
    paused, with fade and backlog settings. No channels, colours or timestamps yet.
 2. **Pause and timestamps.** Pause/resume announcements, timestamps, disk log.

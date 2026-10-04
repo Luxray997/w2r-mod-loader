@@ -1,0 +1,17 @@
+[package]
+name = "w2r-chat"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "First-party chat plugin: scrollable in-match history (port of wc2r-plus chat.cpp)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+w2r-abi.workspace = true
+
+[lints.clippy]
+# Exports and detours are called by the host and the game; the ABI header documents the contract.
+missing_safety_doc = "allow"

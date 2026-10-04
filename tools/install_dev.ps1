@@ -23,6 +23,11 @@ Also installs the hostcheck_plugin fixture (game.read and hooks.raw approved; it
 hook). Its load logs a settings round trip, a data file written and read back, and the runtime
 address of three symbols; it logs again when a match starts.
 
+.PARAMETER WithChat
+Also builds and installs the first-party chat plugin (crates/chat-plugin, id w2r-chat; game.read
+and hooks.raw approved). It hooks the game's in-match message functions, so it is a "dangerous"
+plugin and is in the simulation fingerprint.
+
 .PARAMETER Simulation
 Marks the hello_plugin fixture affects_simulation, so the session's simulation fingerprint is
 non-zero and the handshake (Phase 3) has something to compare: the log shows the fingerprint,
@@ -36,6 +41,7 @@ param(
     [switch]$Uninstall,
     [switch]$WithCrasher,
     [switch]$WithHostCheck,
+    [switch]$WithChat,
     [switch]$Simulation,
     [string]$GameDir = "D:\Games\Warcraft II Remastered\x86"
 )
@@ -77,6 +83,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "host build failed" }
     cargo build --release -p w2r-test-plugins --examples --target i686-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { throw "fixture build failed" }
+    if ($WithChat) {
+        cargo build --release -p w2r-chat --target i686-pc-windows-msvc
+        if ($LASTEXITCODE -ne 0) { throw "chat plugin build failed" }
+    }
 } finally {
     Pop-Location
 }
@@ -103,11 +113,11 @@ foreach ($sub in "plugins", "config", "cache", "logs") {
     New-Item -ItemType Directory -Force (Join-Path $root $sub) | Out-Null
 }
 
-function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities, [bool]$AffectsSimulation = $false) {
+function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities, [bool]$AffectsSimulation = $false, [string]$From = $examples) {
     $folder = Join-Path $root "plugins\$Id"
     New-Item -ItemType Directory -Force $folder | Out-Null
     $entry = "$Example.dll"
-    Copy-Item (Join-Path $examples $entry) (Join-Path $folder $entry) -Force
+    Copy-Item (Join-Path $From $entry) (Join-Path $folder $entry) -Force
     $capsJson = ($Capabilities | ForEach-Object { '"' + $_ + '"' }) -join ", "
     $simJson = if ($AffectsSimulation) { "true" } else { "false" }
     $manifest = @"
@@ -140,6 +150,10 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities,
 
 $entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write") $Simulation.IsPresent)
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
+if ($WithChat) {
+    $release = Join-Path $repo "target\i686-pc-windows-msvc\release"
+    $entries += Install-Fixture "w2r-chat" "w2r_chat" @("game.read", "hooks.raw") $false $release
+}
 if ($WithHostCheck) { $entries += Install-Fixture "host-check" "hostcheck_plugin" @("game.read", "hooks.raw") }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
 $statePath = Join-Path $root "config\state.json"
