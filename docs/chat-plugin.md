@@ -105,16 +105,44 @@ the Nuklear context offsets in wc2r-plus `struct_offsets.h` (`kCtxScrollH`, `kCt
 `target/symbols.rs` except possibly the pause handlers (ours are `HandlePauseCommand` and
 `HandleResumeCommand`); the spec step verifies each by name and signature against the table.
 
-## Data the plugin needs from elsewhere
+## Data the plugin needs from elsewhere (settled)
 
-- **Player names and colours.** wc2r-plus reads them through `team_colours` and `lobby_teams`
-  features that are not ported. The plugin reads the game's own player tables directly through
-  `symbol_address`, so chat does not wait for the lobby-policy step. Which tables (slot name
-  array `MpLobbySlotNames`, player colour index) is the first thing the implementation step
-  must settle against a running game; until then name colouring is the last slice.
-- **Teammate and allied masks** (for `[Team]`/`[Allies]`): `TeammatesAtMatchStart` in
-  wc2r-plus comes from the lobby's team options. Same rule: read the game's data; the Team
-  and Allies channels are the second-to-last slice.
+Everything slices 3 and 4 need is a plain game global that wc2r-plus reads (its `team_colours`
+and `lobby_teams` features are only thin wrappers), and every one is already in `target/symbols.rs`.
+The plugin reads them through `symbol_address`; nothing waits on the lobby-policy step. Offsets are
+wc2r-plus's (`struct_offsets.h`); the plugin logs them at every match start (`players:` lines, a
+diagnostic to remove after slice 4) so they can be checked against a real match.
+
+**Verified in the game (2026-10-04, build 1.0.2.2818, a skirmish against seven computers):** names,
+owner (0 human, 1 computer, 3 empty slot), lobby team and the diplomacy row all read as
+documented. Names and colour indices are *not* filled in yet when `MATCH_START` fires (all
+colours read 0); by the first frame they are (indices 0 to 7 in slot order, black is 5). So
+names and colours are read when a message arrives, as wc2r-plus does, and only the team mask is
+taken at match start.
+
+| Need | Symbol | Layout |
+|---|---|---|
+| Player name | `PlayerNames` | 8 slots of 0x38 bytes, NUL-terminated |
+| Name colour index | `TeamColourReorder` | `u8` per player; 8 or more means no colour |
+| Human or computer | `PlayerOwner` | `u8` per player: 0 human, 1 computer; "in the match" is owner 0 or 1 |
+| Lobby team | `MpLobbySlots` | 0x26 bytes per slot, team byte at +0x0a (slot index = player index) |
+| Alliance | `DiplomacyStance` | 0x10 bytes per player (row of the player), non-zero entry means allied |
+| Local player | `LocalPlayer` | `u8` |
+| Chat mode and recipients | `ChatTargetMode`, `ChatRecipientMask` | `u8` each; modes 2 all, 3 allies, 4 enemies, 5 private, 6 default team, 8 custom team |
+
+- **Colours** (8, RGB): (196,40,40), (48,72,200), (0,152,152), (128,48,168), (232,132,24),
+  (32,32,32), (236,236,236), (232,212,48). Index 5 is the black player and is drawn as
+  (0x20,0x20,0x20) grey in chat. wc2r-plus can recolour black (its "Black2Pink" option); that is a
+  separate cosmetic feature and not part of chat. Chat uses the stock colours until a recolour
+  plugin exists.
+- **Team mask** (for `[Team]`): computed once at match start, as `TeammatesAtMatchStart` does: the
+  bit of every other in-match player whose diplomacy entry from the local player is non-zero and
+  whose lobby team equals the local player's.
+- **Allied mask** (for `[Allies]`): computed live, the same without the lobby-team test.
+- **Name spans** for colouring: the sender's name found in the line followed by `": "` (not
+  preceded by a name byte), or every unique human player name of two or more characters in
+  system lines, longest first, with word boundaries (`FindPlayerNames`); `<name>` whisper
+  brackets become `[name]`.
 
 ## Plugin shape
 
@@ -161,6 +189,6 @@ host's guard, see the abi.md "Hook detours" note).
 
 ## Open questions
 
-1. Which player-colour and name tables to read for name colouring (settled in slice 4).
+1. (Settled, see above.) Which tables name colouring and the channels read.
 2. (Settled.) `symbol_address` returns only the address, and the host checks it is inside the
    game image; the symbol table has no sizes, so the plugin bounds its own accesses.

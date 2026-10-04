@@ -65,6 +65,11 @@ const INDICATOR_WIDTH: f32 = 4.0;
 const PLAYER_COUNT: u8 = 8;
 /// Bytes per player in the game's name table.
 const NAME_STRIDE: usize = 0x38;
+/// Bytes per lobby slot, and the offset of its team byte (wc2r-plus `struct_offsets.h`).
+const LOBBY_SLOT_STRIDE: usize = 0x26;
+const LOBBY_SLOT_TEAM: usize = 0x0a;
+/// Bytes per player in the game's diplomacy table.
+const DIPLOMACY_ROW_STRIDE: usize = 0x10;
 
 unsafe fn rd<T: Copy>(base: *const u8, offset: usize) -> T {
     unsafe { base.add(offset).cast::<T>().read_unaligned() }
@@ -179,6 +184,12 @@ struct Game {
     command_issuer: *const u8,
     pauses_remaining: *const u8,
     networked_match: *const u8,
+    // slices 3 and 4: who is who
+    colour_reorder: *const u8,
+    player_owner: *const u8,
+    diplomacy: *const u8,
+    lobby_slots: *const u8,
+    local_player: *const u8,
 }
 
 // SAFETY: plain function and data addresses of the game, fixed for the session.
@@ -267,6 +278,11 @@ fn resolve() -> Result<Game, &'static str> {
         command_issuer: lookup("CommandIssuer").ok_or("CommandIssuer")? as *const u8,
         pauses_remaining: lookup("PausesRemaining").ok_or("PausesRemaining")? as *const u8,
         networked_match: lookup("NetworkedMatch").ok_or("NetworkedMatch")? as *const u8,
+        colour_reorder: lookup("TeamColourReorder").ok_or("TeamColourReorder")? as *const u8,
+        player_owner: lookup("PlayerOwner").ok_or("PlayerOwner")? as *const u8,
+        diplomacy: lookup("DiplomacyStance").ok_or("DiplomacyStance")? as *const u8,
+        lobby_slots: lookup("MpLobbySlots").ok_or("MpLobbySlots")? as *const u8,
+        local_player: lookup("LocalPlayer").ok_or("LocalPlayer")? as *const u8,
     })
 }
 
@@ -330,6 +346,8 @@ static ORIG_RESUME: AtomicUsize = AtomicUsize::new(0);
 /// True while the game's own pause or resume handler runs: its sticky message is ours to
 /// replace with an announcement.
 static IN_PAUSE_HANDLER: AtomicBool = AtomicBool::new(false);
+/// Diagnostic: log the player tables again on the first frame of a match (slice 3/4 offsets).
+static LOG_PLAYERS_AGAIN: AtomicBool = AtomicBool::new(false);
 
 macro_rules! original {
     ($slot:expr, $t:ty) => {{
@@ -903,6 +921,10 @@ unsafe fn draw_panel(
     scroll_style: *mut u8,
 ) {
     let lh = line_height as f32;
+    if LOG_PLAYERS_AGAIN.swap(false, Ordering::Relaxed) {
+        log(W2R_LOG_INFO, "players at the first frame of the match:");
+        log_players(g);
+    }
     let now = unsafe { (g.get_clock_ms)() };
     for i in 0..15 {
         unsafe { (g.expire_slot)(g.slots.add(i * off::MESSAGE_SLOT_STRIDE).cast(), now) };
@@ -1146,6 +1168,36 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     W2R_OK
 }
 
+/// Diagnostic for slices 3 and 4: at match start, log what the game's player tables say, so the
+/// offsets taken from wc2r-plus can be checked against this build. Remove once slice 4 is done.
+fn log_players(g: &Game) {
+    let local = unsafe { *g.local_player } as usize;
+    log(W2R_LOG_INFO, &format!("players: local player {local}"));
+    for i in 0..PLAYER_COUNT as usize {
+        let (name, owner, colour, team, stance) = unsafe {
+            let slot =
+                core::slice::from_raw_parts(g.player_names.add(i * NAME_STRIDE), NAME_STRIDE);
+            (
+                model::player_name(slot).unwrap_or_default(),
+                *g.player_owner.add(i),
+                *g.colour_reorder.add(i),
+                *g.lobby_slots.add(i * LOBBY_SLOT_STRIDE + LOBBY_SLOT_TEAM),
+                if local < PLAYER_COUNT as usize {
+                    *g.diplomacy.add(local * DIPLOMACY_ROW_STRIDE + i)
+                } else {
+                    0xff
+                },
+            )
+        };
+        log(
+            W2R_LOG_INFO,
+            &format!(
+                "players: p{i} name={name:?} owner={owner} colour={colour} lobby_team={team} stance_from_local={stance}"
+            ),
+        );
+    }
+}
+
 unsafe extern "C" fn on_event(event: *const W2rEvent) {
     let id = unsafe { (*event).id };
     if id == W2R_EVT_MATCH_START {
@@ -1155,6 +1207,10 @@ unsafe extern "C" fn on_event(event: *const W2rEvent) {
             log_write(handle, model::LOG_MATCH_MARKER);
         }
         log(W2R_LOG_INFO, "match start: backlog cleared");
+        if let Some(g) = game() {
+            let _ = catch_unwind(AssertUnwindSafe(|| log_players(g)));
+        }
+        LOG_PLAYERS_AGAIN.store(true, Ordering::Relaxed);
     }
 }
 
