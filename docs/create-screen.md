@@ -1,6 +1,6 @@
 # Create Multiplayer Game screen (Phase 3, lobby policy slice 4b)
 
-Status: spec, not implemented. Port of wc2r-plus `features/ui/lobby_creation_screen.cpp` and what it
+Status: implemented and verified in the game (slices 1 to 4, 2026-10-04); on by default. Port of wc2r-plus `features/ui/lobby_creation_screen.cpp` and what it
 stands on. Same parity rule as [chat-plugin.md](chat-plugin.md): the C++ is the reference. A host
 feature (it hooks a game screen and persists in `host.json`), like the lock buttons it replaces
 ([lobby-policy.md](lobby-policy.md), slice 4a).
@@ -54,8 +54,8 @@ procedures); the slice that needs them adds them and the layout checks the way e
 
 ## Setting and fallback
 
-`host.json` gets `enhanced_create_screen` (default **false** until the whole thing has been verified in
-the game, then flipped to true), shown as a checkbox on the plugin screen. The detour takes over only
+`host.json` gets `enhanced_create_screen` (default **true** since slice 4; it was false while the
+screen was being verified, and a file that says false keeps it off), shown as a checkbox on the plugin screen. The detour takes over only
 when the setting is on, every required symbol resolved, the window rectangle is sane and no fault
 has occurred; otherwise it calls the original (and the 4a buttons draw). A fault under the screen
 draws the stock screen from then on for the session and logs once. This is the same shape as the
@@ -86,8 +86,9 @@ Each slice ends with an in-game check by the user, behind the setting.
    map from a subfolder and from search, create the game with it, the lobby shows that map.
 3. **Preview and details.** `pud.rs`, `mappreview.rs`, the details block. Exit: the preview matches
    the chosen map for each era; a malformed PUD in the folder shows no preview and no crash.
-4. **Default on.** Flip the default after a few lobbies of use, retire the 4a overlay for this
-   screen, update the docs.
+4. **Default on.** Done: the default is true. The 4a overlay (`lobbycreate.rs`) is kept as the
+   fallback: it draws the two lock buttons over the stock screen only when the replacement is off,
+   missing a symbol, or has faulted, so the locks stay reachable there too.
 
 ## Open questions
 

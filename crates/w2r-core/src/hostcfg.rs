@@ -11,7 +11,7 @@ use crate::json::{self, Number, Value};
 pub const FILE: &str = "host.json";
 pub const MAX_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostConfig {
     /// When hosting, refuse players whose simulation fingerprint differs from ours.
     pub require_matching_plugins: bool,
@@ -21,6 +21,19 @@ pub struct HostConfig {
     pub lock_slot_swaps: bool,
     /// Draw our Create Multiplayer Game screen instead of the game's (docs/create-screen.md).
     pub enhanced_create_screen: bool,
+}
+
+impl Default for HostConfig {
+    /// Everything off except the replacement Create Multiplayer Game screen, which is the
+    /// default now that it has been verified in the game (docs/create-screen.md, slice 4).
+    fn default() -> Self {
+        HostConfig {
+            require_matching_plugins: false,
+            lock_team_changes: false,
+            lock_slot_swaps: false,
+            enhanced_create_screen: true,
+        }
+    }
 }
 
 /// Exactly `schema` (1) and the known boolean fields; anything else refuses the file.
@@ -147,6 +160,15 @@ mod tests {
             parse(b"{\"schema\": 1}"),
             Ok(HostConfig::default()),
             "fields are optional"
+        );
+        assert!(
+            HostConfig::default().enhanced_create_screen,
+            "the replacement screen is on unless the file says otherwise"
+        );
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"enhanced_create_screen\": false}")
+                .map(|c| c.enhanced_create_screen),
+            Ok(false)
         );
         assert_eq!(
             parse(b"{\"require_matching_plugins\": true}"),

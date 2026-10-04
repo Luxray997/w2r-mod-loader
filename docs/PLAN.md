@@ -159,9 +159,11 @@ plugins over the public ABI (chat may well be the latter).
    in [create-screen.md](create-screen.md), four slices; slice 1 (`screenkit.rs`, `createscreen.rs`,
    the `enhanced_create_screen` setting, off by default) verified; slice 2 (`mapbrowser.rs`,
    `browserview.rs`: folders, up, reload, size filter, search, publish; no disk index cache yet)
-   written (not yet confirmed in the game); slice 3 (`pud.rs`, `mappreview.rs`, `previewdraw.rs`: bounds-checked PUD reader,
+   verified; slice 3 (`pud.rs`, `mappreview.rs`, `previewdraw.rs`: bounds-checked PUD reader,
    tileset-colour preview painted into a game texture, shown on the screen and in the browser)
-   written, awaiting the in-game check.**
+   verified, and slice 4 is done: `enhanced_create_screen` defaults to on, the 4a buttons stay as the
+   fallback when the replacement is off or faults. Lobby policy slices 1 to 3 (locks, broadcast,
+   host menus) still await a second-player check.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 
