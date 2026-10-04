@@ -74,7 +74,9 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    dependency order and cycles; `tests/load_all.rs`), `session.rs` runs it on the first frame,
    `lobby.rs` turns the lobby window into `LOBBY_ENTER`/`LEAVE`, and `chat.rs` implements
    `chat_send` (lobby chat input + send, rate-limited). The hello-world fixture says hello on
-   lobby entry. Not yet verified in the live game.
+   lobby entry. Verified in the live game on 2026-10-03: guard 197/197 at a relocated base,
+   plugins loaded on the main thread, crash-plugin disabled on its fault, hello-plugin's
+   `chat_send` returned OK.
 5. Lobby message service: size, rate and lobby-only limits for every plugin; per-plugin
    subsystem ids.
 6. Widget API on the game's Nuklear context; in-game plugin list with enable/disable toggles.
