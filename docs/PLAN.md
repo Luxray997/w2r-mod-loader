@@ -155,8 +155,8 @@ plugins over the public ABI (chat may well be the latter).
    guest adoption, disabled team/name dropdowns on guests, lock events in the log), also awaiting
    the check; slice 3 written (host "Move to Slot N" menu, Closed slots, on the same
    `LobbySlotDropdown` hook), awaiting the check; slice 4a written (`lobbycreate.rs`: Teams/Slots lock buttons over the stock Create
-   Multiplayer Game screen), awaiting the check; 4b (full replacement screen, a map-browser feature)
-   not started.**
+   Multiplayer Game screen), awaiting the check; 4a verified. 4b (full replacement screen with the map browser and preview) is specified
+   in [create-screen.md](create-screen.md), four slices, nothing implemented.**
 4. Map download.
 Exit: feature parity, with a regression test per fixed finding.
 
