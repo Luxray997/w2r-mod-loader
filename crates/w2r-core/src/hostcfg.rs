@@ -19,6 +19,8 @@ pub struct HostConfig {
     pub lock_team_changes: bool,
     /// When hosting, refuse other players' slot swaps.
     pub lock_slot_swaps: bool,
+    /// Draw our Create Multiplayer Game screen instead of the game's (docs/create-screen.md).
+    pub enhanced_create_screen: bool,
 }
 
 /// Exactly `schema` (1) and the known boolean fields; anything else refuses the file.
@@ -45,6 +47,9 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             }
             "lock_team_changes" => cfg.lock_team_changes = value.as_bool().ok_or("bad_field")?,
             "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
+            "enhanced_create_screen" => {
+                cfg.enhanced_create_screen = value.as_bool().ok_or("bad_field")?;
+            }
             _ => return Err("unknown_field"),
         }
     }
@@ -72,6 +77,10 @@ impl HostConfig {
             (
                 "lock_slot_swaps".to_owned(),
                 Value::Bool(self.lock_slot_swaps),
+            ),
+            (
+                "enhanced_create_screen".to_owned(),
+                Value::Bool(self.enhanced_create_screen),
             ),
         ])
         .to_json()
@@ -127,6 +136,7 @@ mod tests {
             require_matching_plugins: true,
             lock_team_changes: true,
             lock_slot_swaps: false,
+            enhanced_create_screen: true,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -170,6 +180,7 @@ mod tests {
             require_matching_plugins: true,
             lock_team_changes: false,
             lock_slot_swaps: true,
+            enhanced_create_screen: false,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

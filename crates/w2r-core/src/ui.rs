@@ -191,6 +191,8 @@ pub struct HostRow {
     /// `lock_team_changes` and `lock_slot_swaps` (`host.json`); take effect at once when hosting.
     pub lock_teams: bool,
     pub lock_slots: bool,
+    /// `enhanced_create_screen` (`host.json`); takes effect the next time the screen opens.
+    pub create_screen: bool,
     /// The handshake's current lobby warnings, if any.
     pub lobby: Vec<String>,
 }
@@ -198,6 +200,7 @@ pub struct HostRow {
 pub const STRICT_LABEL: &str = "When hosting, remove players whose simulation plugins differ";
 pub const LOCK_TEAMS_LABEL: &str = "When hosting, lock team changes";
 pub const LOCK_SLOTS_LABEL: &str = "When hosting, lock slot swaps";
+pub const CREATE_SCREEN_LABEL: &str = "Use the w2rpm Create Multiplayer Game screen";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -209,6 +212,8 @@ pub enum Action {
     ToggleStrict,
     /// The user flipped one of the lobby locks.
     ToggleLocks,
+    /// The user flipped `enhanced_create_screen`.
+    ToggleCreateScreen,
 }
 
 /// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
@@ -249,6 +254,12 @@ pub fn draw_plugin_screen(
     if w.checkbox(LOCK_SLOTS_LABEL, &mut lock_slots) {
         host.lock_slots = lock_slots;
         action = Action::ToggleLocks;
+    }
+    w.row(ROW_H, 1);
+    let mut create_screen = host.create_screen;
+    if w.checkbox(CREATE_SCREEN_LABEL, &mut create_screen) {
+        host.create_screen = create_screen;
+        action = Action::ToggleCreateScreen;
     }
     for line in &host.lobby {
         w.row(ROW_H, 1);
@@ -469,6 +480,7 @@ mod tests {
             strict: false,
             lock_teams: false,
             lock_slots: false,
+            create_screen: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
@@ -487,11 +499,12 @@ mod tests {
         assert_eq!(calls[5], format!("checkbox {STRICT_LABEL:?} false"));
         assert_eq!(calls[7], format!("checkbox {LOCK_TEAMS_LABEL:?} false"));
         assert_eq!(calls[9], format!("checkbox {LOCK_SLOTS_LABEL:?} false"));
+        assert_eq!(calls[11], format!("checkbox {CREATE_SCREEN_LABEL:?} false"));
         assert_eq!(
-            calls[11],
+            calls[13],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[13], "label \"Plugins (3)\"");
+        assert_eq!(calls[15], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
         assert!(
             calls
@@ -513,6 +526,7 @@ mod tests {
             strict: false,
             lock_teams: false,
             lock_slots: false,
+            create_screen: false,
             lobby: Vec::new(),
         };
         assert_eq!(
@@ -546,5 +560,14 @@ mod tests {
             Action::ToggleLocks
         );
         assert!(host.lock_slots && !host.lock_teams);
+
+        // And the create screen switch.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(CREATE_SCREEN_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleCreateScreen
+        );
+        assert!(host.create_screen);
     }
 }

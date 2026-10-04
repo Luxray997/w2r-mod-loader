@@ -71,6 +71,11 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
 }
 
 unsafe extern "C" fn detour() -> i8 {
+    // The replacement screen, when it is on and usable, is the whole screen; the stock content
+    // is not drawn and the 4a buttons are part of ours.
+    if crate::createscreen::try_draw() {
+        return 0;
+    }
     let original: ContentFn = unsafe { core::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let result = unsafe { original() };
     if let Err(fault) = guarded(|| crate::session::with_nk(draw_buttons)) {

@@ -490,6 +490,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             strict: session.config.require_matching_plugins,
             lock_teams: session.config.lock_team_changes,
             lock_slots: session.config.lock_slot_swaps,
+            create_screen: session.config.enhanced_create_screen,
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -548,6 +549,24 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             Action::ToggleLocks => {
                 save_locks(session, host.lock_teams, host.lock_slots);
             }
+            Action::ToggleCreateScreen => {
+                session.config.enhanced_create_screen = host.create_screen;
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "enhanced_create_screen {}",
+                            if host.create_screen { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
+                }
+            }
             Action::None | Action::Back => {}
         }
         action
@@ -572,6 +591,20 @@ pub fn set_lock_choice(teams: bool, slots: bool) {
             save_locks(s, teams, slots);
         }
     });
+}
+
+/// Whether the replacement Create Multiplayer Game screen is switched on (`host.json`).
+pub fn enhanced_create_screen() -> bool {
+    SESSION.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().map(|s| s.config.enhanced_create_screen))
+            .unwrap_or(false)
+    })
+}
+
+pub fn log_error(source: &str, msg: &str) {
+    StartupLog.line(W2R_LOG_ERROR, source, msg);
 }
 
 /// A log line from another host module.
@@ -678,6 +711,7 @@ fn start() -> Session {
             (Some(_), Some(image)) => {
                 options::install(image, &symbols, &*log);
                 crate::lobbycreate::install(image, &symbols, &*log);
+                crate::createscreen::install(&symbols, &*log);
             }
             _ => log.line(
                 W2R_LOG_ERROR,

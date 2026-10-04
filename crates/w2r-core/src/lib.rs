@@ -19,6 +19,7 @@ pub mod log;
 pub mod manifest;
 pub mod pe;
 pub mod peer;
+pub mod screenkit;
 pub mod semver;
 pub mod state;
 pub mod store;
@@ -28,6 +29,8 @@ pub mod ui;
 #[cfg(windows)]
 pub mod watchdog;
 
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod createscreen;
 #[cfg(windows)]
 pub mod entry;
 #[cfg(windows)]
