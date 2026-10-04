@@ -6,6 +6,8 @@
 pub mod build_guard;
 pub mod chat;
 pub mod dispatch;
+pub mod downloadclient;
+pub mod downloadhost;
 pub mod fingerprint;
 pub mod guard;
 pub mod handshake;
@@ -18,6 +20,7 @@ pub mod lobbypolicy;
 pub mod log;
 pub mod manifest;
 pub mod mapbrowser;
+pub mod maplimits;
 pub mod mapname;
 pub mod mappreview;
 pub mod mapwire;

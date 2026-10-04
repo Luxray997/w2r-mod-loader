@@ -568,8 +568,13 @@ pub fn validate(data: &[u8]) -> Option<Verdict> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A complete map that passes the validator, for the other modules' tests.
+    pub fn sample_map() -> Vec<u8> {
+        build(&good())
+    }
 
     fn section(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = tag.to_vec();

@@ -1,6 +1,6 @@
 # Map download (Phase 3, step 4)
 
-Status: slice 1 (pure core) implemented; slices 2 to 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
+Status: slices 1 and 2 (pure core and state machines) implemented; slices 3 and 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
 `src/features/map_download/` (about 3,700 lines). The wire format and the safety rules are
 specified in wc2r-plus `PROTOCOL.md` section 3; the C++ is the reference where this document is
 silent or differs. Same parity rule as [chat-plugin.md](chat-plugin.md): players with wc2r-plus,
@@ -112,3 +112,19 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
   test cuts and lengthens every kind by one byte.
 - The `'M'` arm in `peer.rs` still consumes and drops the message; the state machines in slice 2
   are what it will feed.
+
+## Slice 2 notes (2026-10-04)
+
+- `downloadhost.rs` and `downloadclient.rs` are pure: a `u64` millisecond clock and decoded
+  `mapwire::Msg` values in; `Out` messages (to a net slot or to every modded player), net slots to
+  remove and the finished file out. Every number is in `maplimits.rs`.
+- Chunk pacing is a 64-chunks-a-second token bucket capped at one second's worth, so one `tick`
+  emits at most 64 chunks; the glue still sends the outbox under its own per-frame budget so a
+  large upload can never starve the packet loop.
+- The client allocates the buffer only on accept, at exactly the offered size, takes chunks only in
+  order with the length check done by subtraction, and checks hash and validator before `Done`.
+- The `retries` row of `PROTOCOL.md` (ask again after 5.5 s, at most 12 times per map) is policy
+  across requests, so it belongs to the roles in slice 3, not to one request's machine; the
+  machine reports `retryable()`.
+- A test runs host and player against each other with a real valid map through the real
+  validator and reassembles it byte for byte.
