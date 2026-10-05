@@ -185,6 +185,8 @@ pub struct Handshake {
     lobby_slots: [Option<u8>; 8],
     hello_pending: bool,
     told_bad_message: bool,
+    /// Announced as [`CAP_MAP_SHARING`] (`map_sharing` in `host.json`).
+    map_sharing: bool,
 }
 
 const NO_PEER: Option<Peer> = None;
@@ -205,7 +207,30 @@ impl Handshake {
             lobby_slots: [None; 8],
             hello_pending: false,
             told_bad_message: false,
+            map_sharing: false,
         }
+    }
+
+    /// This player's capabilities as announced: the local ones plus map sharing when it is on.
+    fn caps(&self) -> u32 {
+        self.local.caps() | if self.map_sharing { CAP_MAP_SHARING } else { 0 }
+    }
+
+    /// Map sharing on or off. In a lobby this re-announces (the capabilities changed).
+    pub fn set_map_sharing(&mut self, on: bool) {
+        if self.map_sharing == on {
+            return;
+        }
+        self.map_sharing = on;
+        if self.in_lobby {
+            self.hello_pending = true;
+        }
+    }
+
+    /// Whether a player announced map sharing.
+    pub fn peer_shares_maps(&self, slot: u32) -> bool {
+        self.peer(slot)
+            .is_some_and(|p| p.caps & CAP_MAP_SHARING != 0)
     }
 
     pub fn local(&self) -> Local {
@@ -288,21 +313,11 @@ impl Handshake {
     }
 
     fn hello(&self) -> Vec<u8> {
-        encode(
-            KIND_HELLO,
-            self.nonce,
-            self.local.caps(),
-            self.local.fingerprint,
-        )
+        encode(KIND_HELLO, self.nonce, self.caps(), self.local.fingerprint)
     }
 
     fn reply(&self) -> Vec<u8> {
-        encode(
-            KIND_REPLY,
-            self.nonce,
-            self.local.caps(),
-            self.local.fingerprint,
-        )
+        encode(KIND_REPLY, self.nonce, self.caps(), self.local.fingerprint)
     }
 
     /// Once per frame while the lobby window is drawn. `peers` lists the net slots the

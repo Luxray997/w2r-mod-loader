@@ -90,6 +90,21 @@ fn ensure_ours(root: &Path, dir: &Path) -> bool {
     parent.is_dir() && ensure_real_dir(root) && ensure_real_dir(dir)
 }
 
+/// Whether `path` is inside `root` (not equal to it), compared case-insensitively as Windows
+/// does and by whole components, so `C:\Maps2` is not inside `C:\Maps`. Both should already be
+/// canonical (links resolved); this is the string test on top of that.
+pub fn path_under(path: &Path, root: &Path) -> bool {
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+            .trim_end_matches('\\')
+            .to_owned()
+    };
+    let (p, r) = (norm(path), norm(root));
+    !r.is_empty() && p.len() > r.len() + 1 && p.starts_with(&r) && p.as_bytes()[r.len()] == b'\\'
+}
+
 fn read_limited(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     fs::File::open(path)
@@ -277,6 +292,27 @@ mod tests {
             Err(StoreError::WriteFailed)
         );
         cleanup(&root);
+    }
+
+    #[test]
+    fn containment_is_by_component_and_ignores_case() {
+        let root = Path::new(r"C:\Games\W2\Maps");
+        let under = |p: &str, r: &Path| path_under(Path::new(p), r);
+        assert!(under(r"C:\Games\W2\Maps\a.pud", root));
+        assert!(under(r"c:\games\w2\MAPS\Sub\a.pud", root));
+        assert!(under("C:/Games/W2/Maps/a.pud", root), "either slash");
+        assert!(under(
+            r"C:\Games\W2\Maps\a.pud",
+            Path::new(r"C:\Games\W2\Maps\")
+        ));
+        assert!(
+            !under(r"C:\Games\W2\Maps2\a.pud", root),
+            "a sibling that starts the same"
+        );
+        assert!(!under(r"C:\Games\W2\Maps", root), "the root itself");
+        assert!(!under(r"C:\Games\W2\Mapsa.pud", root));
+        assert!(!under(r"C:\Other\Maps\a.pud", root));
+        assert!(!under(r"C:\x", Path::new("")));
     }
 
     #[test]

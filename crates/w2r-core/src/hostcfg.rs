@@ -21,6 +21,10 @@ pub struct HostConfig {
     pub lock_slot_swaps: bool,
     /// Draw our Create Multiplayer Game screen instead of the game's (docs/create-screen.md).
     pub enhanced_create_screen: bool,
+    /// Send and receive maps in multiplayer lobbies (docs/map-download.md).
+    pub map_sharing: bool,
+    /// Download a missing map without asking first.
+    pub auto_download: bool,
 }
 
 impl Default for HostConfig {
@@ -32,6 +36,8 @@ impl Default for HostConfig {
             lock_team_changes: false,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
+            map_sharing: true,
+            auto_download: false,
         }
     }
 }
@@ -60,6 +66,8 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             }
             "lock_team_changes" => cfg.lock_team_changes = value.as_bool().ok_or("bad_field")?,
             "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
+            "map_sharing" => cfg.map_sharing = value.as_bool().ok_or("bad_field")?,
+            "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
             "enhanced_create_screen" => {
                 cfg.enhanced_create_screen = value.as_bool().ok_or("bad_field")?;
             }
@@ -95,6 +103,8 @@ impl HostConfig {
                 "enhanced_create_screen".to_owned(),
                 Value::Bool(self.enhanced_create_screen),
             ),
+            ("map_sharing".to_owned(), Value::Bool(self.map_sharing)),
+            ("auto_download".to_owned(), Value::Bool(self.auto_download)),
         ])
         .to_json()
     }
@@ -150,6 +160,8 @@ mod tests {
             lock_team_changes: true,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
+            map_sharing: false,
+            auto_download: true,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -203,6 +215,8 @@ mod tests {
             lock_team_changes: false,
             lock_slot_swaps: true,
             enhanced_create_screen: false,
+            map_sharing: true,
+            auto_download: false,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

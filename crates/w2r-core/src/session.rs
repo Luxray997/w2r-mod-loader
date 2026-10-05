@@ -491,6 +491,8 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             lock_teams: session.config.lock_team_changes,
             lock_slots: session.config.lock_slot_swaps,
             create_screen: session.config.enhanced_create_screen,
+            map_sharing: session.config.map_sharing,
+            auto_download: session.config.auto_download,
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -548,6 +550,29 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             }
             Action::ToggleLocks => {
                 save_locks(session, host.lock_teams, host.lock_slots);
+            }
+            Action::ToggleMapSharing => {
+                session.config.map_sharing = host.map_sharing;
+                session.config.auto_download = host.auto_download;
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "map sharing {}, auto download {}",
+                            if host.map_sharing { "on" } else { "off" },
+                            if host.auto_download { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
+                }
+                if let Ok(mut h) = session.net.handshake.try_borrow_mut() {
+                    h.set_map_sharing(host.map_sharing);
+                }
             }
             Action::ToggleCreateScreen => {
                 session.config.enhanced_create_screen = host.create_screen;
@@ -689,6 +714,9 @@ fn start() -> Session {
         })),
         transport: transport.clone(),
     });
+    net.handshake
+        .borrow_mut()
+        .set_map_sharing(config.map_sharing);
     NET.with(|n| *n.borrow_mut() = Some(net.clone()));
     let services = Services {
         chat: lobby_chat(&symbols, lobby.clone(), &*log),

@@ -24,6 +24,7 @@ pub mod mapindex;
 pub mod maplimits;
 pub mod mapname;
 pub mod mappreview;
+pub mod maproles;
 pub mod mapstore;
 pub mod mapwire;
 pub mod pe;
