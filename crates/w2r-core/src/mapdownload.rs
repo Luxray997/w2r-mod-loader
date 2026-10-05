@@ -135,7 +135,45 @@ impl GameMap {
     }
 }
 
-fn mtime_of(meta: &fs::Metadata) -> u64 {
+/// Tells the game's map registry to scan `dir`: a `std::wstring` laid out by hand with a
+/// capacity of at least 8 so the game reads the pointer, not an inline buffer.
+fn scan_into_registry(game: GameMap, dir: &Path) {
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    let len = wide.len() - 1;
+    let mut obj = [0u8; 24];
+    obj[..4].copy_from_slice(&(wide.as_ptr() as usize as u32).to_le_bytes());
+    obj[16..20].copy_from_slice(&(len as u32).to_le_bytes());
+    obj[20..24].copy_from_slice(&(len.max(8) as u32).to_le_bytes());
+    let _ = guarded(|| unsafe { (game.scan_directory)(obj.as_mut_ptr().cast()) });
+}
+
+/// The create screen browser's reload button: the game rescans the whole maps folder into its
+/// registry, so a map copied in while the game runs is found. Logged; false if it could not.
+pub fn rescan_maps() -> bool {
+    let started = std::time::Instant::now();
+    let Some(game) = GAME.get().copied() else {
+        log("reload: map sharing glue is not installed -- the registry was NOT rescanned");
+        return false;
+    };
+    let Some(root) = game.maps_root() else {
+        log("reload: the maps root is not known yet -- the registry was NOT rescanned");
+        return false;
+    };
+    scan_into_registry(game, &root);
+    log(&format!(
+        "reload: registry rescanned from '{}' ({} ms)",
+        root.display(),
+        started.elapsed().as_millis()
+    ));
+    true
+}
+
+pub(crate) fn mtime_of(meta: &fs::Metadata) -> u64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -237,22 +275,8 @@ impl Env for RealEnv {
         ok.unwrap_or(false)
     }
 
-    /// Tells the game's registry about a folder: a `std::wstring` laid out by hand with a
-    /// capacity of at least 8 so the game reads the pointer, not an inline buffer.
     fn register_directory(&mut self, dir: &Path) {
-        let wide: Vec<u16> = dir
-            .as_os_str()
-            .to_string_lossy()
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect();
-        let len = wide.len() - 1;
-        let mut obj = [0u8; 24];
-        obj[..4].copy_from_slice(&(wide.as_ptr() as usize as u32).to_le_bytes());
-        obj[16..20].copy_from_slice(&(len as u32).to_le_bytes());
-        obj[20..24].copy_from_slice(&(len.max(8) as u32).to_le_bytes());
-        let g = self.game;
-        let _ = guarded(|| unsafe { (g.scan_directory)(obj.as_mut_ptr().cast()) });
+        scan_into_registry(self.game, dir);
     }
 
     fn to_game_path(&self, path: &Path) -> Option<String> {

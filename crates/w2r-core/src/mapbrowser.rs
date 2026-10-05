@@ -3,9 +3,9 @@
 //! search index and the choice. No game access: the game sits behind [`Source`], so everything
 //! here is tested on any target. Paths are the game's, with `\` separators.
 //!
-//! Not ported yet: the on-disk search-index cache and the registry rescan of "reload"
-//! (`map_search_cache.cpp`, `game_map::RegisterDirectory`), which belong with map download;
-//! reload here re-reads the current folder and drops the index.
+//! The search index is kept on disk between launches ([`crate::mapsearchcache`]) and reload also
+//! tells the game's registry to rescan the maps folder, so a map copied in while the game runs
+//! shows up.
 
 /// The index is capped so a huge maps folder cannot stall the game or eat memory.
 pub const MAX_INDEX_DEPTH: usize = 8;
@@ -58,6 +58,16 @@ pub trait Source {
     fn live_entries(&self) -> Vec<LiveEntry>;
     /// The sub-folders of the current folder, without the parent entry.
     fn folder_names(&self) -> Vec<String>;
+    /// Asks the game to rescan the whole maps folder into its registry (reload). Default: nothing.
+    fn rescan_registry(&mut self) {}
+    /// Where the search-index cache lives; `None` keeps the index in memory only.
+    fn cache_file(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    /// Size and modification time of a file or folder named by a game path, for the cache.
+    fn stat(&self, _path: &str) -> Option<crate::mapsearchcache::Stamp> {
+        None
+    }
 }
 
 /// Control characters and overlong text would reach the game's label functions; both are cut.
@@ -111,6 +121,11 @@ pub struct Browser {
     choice: Option<Choice>,
     index: Vec<IndexedMap>,
     index_built: bool,
+    /// Every folder the last walk visited, for the cache to stamp.
+    dirs: Vec<String>,
+    /// After a reload the next index is built from the game, not read from the cache.
+    skip_cache_once: bool,
+    index_from_cache: bool,
     maps_root: Option<String>,
 }
 
@@ -188,12 +203,20 @@ impl Browser {
         self.set_folder(src, &target);
     }
 
-    /// Re-reads the current folder and drops the search index.
+    /// The reload button: the game rescans the maps folder, the current folder is re-read, and
+    /// the search index is dropped (the next one is walked afresh, not read from the cache).
     pub fn reload(&mut self, src: &mut dyn Source) {
+        src.rescan_registry();
         let rel = src.rel_path();
         src.set_rel_path(&rel);
         self.index.clear();
         self.index_built = false;
+        self.skip_cache_once = true;
+    }
+
+    /// True once the search index has been filled (from the cache or by a walk).
+    pub fn index_ready(&self) -> bool {
+        self.index_built
     }
 
     pub fn index_len(&self) -> usize {
@@ -204,9 +227,9 @@ impl Browser {
         &self.index
     }
 
-    /// Walks every folder under the maps root through the game's own list (the only way to read
-    /// them) and remembers each map. The game's folder is put back afterwards. Once only, until
-    /// a reload.
+    /// Fills the search index, once, until a reload: from the cache if it is still true of the
+    /// disk, else by walking every folder under the maps root through the game's own list (the
+    /// only way to read them), which is then cached. The game's folder is put back afterwards.
     pub fn build_index(&mut self, src: &mut dyn Source) {
         if self.index_built {
             return;
@@ -214,11 +237,34 @@ impl Browser {
         let Some(root) = self.maps_root.clone() else {
             return;
         };
+        let cache = src.cache_file();
+        let skip = core::mem::take(&mut self.skip_cache_once);
+        if !skip
+            && let Some(file) = &cache
+            && let Some(maps) = crate::mapsearchcache::load(file, &root, &|p| src.stat(p))
+        {
+            self.index = maps;
+            self.index_built = true;
+            self.index_from_cache = true;
+            return;
+        }
+        self.index_from_cache = false;
         let here = src.rel_path();
         self.index.clear();
+        self.dirs.clear();
         self.walk(src, &root, 0);
         self.index_built = true;
         self.set_folder(src, &here);
+        if let Some(file) = &cache {
+            // A cache that cannot be written only costs the next launch a walk.
+            let _ =
+                crate::mapsearchcache::save(file, &root, &self.dirs, &self.index, &|p| src.stat(p));
+        }
+    }
+
+    /// True when the current index came from the cache rather than a walk.
+    pub fn index_from_cache(&self) -> bool {
+        self.index_from_cache
     }
 
     fn walk(&mut self, src: &mut dyn Source, rel: &str, depth: usize) {
@@ -226,6 +272,7 @@ impl Browser {
             return;
         }
         src.set_rel_path(rel);
+        self.dirs.push(rel.to_owned());
         for e in src.live_entries() {
             if self.index.len() >= MAX_INDEXED_MAPS {
                 break;
@@ -310,6 +357,9 @@ mod tests {
         label: String,
         tree: BTreeMap<String, (Vec<&'static str>, Vec<(&'static str, u32)>)>,
         refreshes: usize,
+        cache: Option<std::path::PathBuf>,
+        bump: BTreeMap<String, u64>,
+        rescans: usize,
     }
 
     impl Fake {
@@ -330,6 +380,9 @@ mod tests {
                 label: String::new(),
                 tree,
                 refreshes: 0,
+                cache: None,
+                bump: BTreeMap::new(),
+                rescans: 0,
             }
         }
     }
@@ -362,6 +415,24 @@ mod tests {
             self.tree.get(&self.rel).map_or(Vec::new(), |(f, _)| {
                 f.iter().map(|s| (*s).to_owned()).collect()
             })
+        }
+        fn rescan_registry(&mut self) {
+            self.rescans += 1;
+        }
+        fn cache_file(&self) -> Option<std::path::PathBuf> {
+            self.cache.clone()
+        }
+        fn stat(&self, path: &str) -> Option<crate::mapsearchcache::Stamp> {
+            let bump = self.bump.get(path).copied().unwrap_or(0);
+            if self.tree.contains_key(path) {
+                return Some((0, 10 + bump));
+            }
+            let (dir, file) = path.rsplit_once('\\')?;
+            let stem = file.strip_suffix(".pud")?;
+            let (_, maps) = self.tree.get(dir)?;
+            maps.iter()
+                .any(|(n, _)| *n == stem)
+                .then_some((100, 7 + bump))
         }
     }
 
@@ -456,6 +527,100 @@ mod tests {
         b.reload(&mut f);
         assert_eq!(b.index_len(), 0);
         b.build_index(&mut f);
+        assert_eq!(b.index_len(), 5);
+    }
+
+    fn temp_cache(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("w2r-mbcache-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("map_search_index.txt")
+    }
+
+    #[test]
+    fn a_second_browser_reads_the_index_from_the_cache_without_walking() {
+        let file = temp_cache("hit");
+        let mut f = Fake::new();
+        f.cache = Some(file.clone());
+        let mut b = browser_at_root(&f);
+        b.build_index(&mut f);
+        assert!(!b.index_from_cache(), "the first time it is walked");
+        assert_eq!(b.index_len(), 5);
+        assert!(file.exists(), "and then saved");
+
+        let mut again = Fake::new();
+        again.cache = Some(file.clone());
+        let mut b2 = browser_at_root(&again);
+        b2.build_index(&mut again);
+        assert!(b2.index_from_cache());
+        assert_eq!(b2.indexed(), b.indexed());
+        assert_eq!(again.refreshes, 0, "the game's list was never touched");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn a_changed_folder_or_map_sends_the_browser_back_to_walking() {
+        let file = temp_cache("stale");
+        let mut f = Fake::new();
+        f.cache = Some(file.clone());
+        browser_at_root(&f).build_index(&mut f);
+
+        let mut touched = Fake::new();
+        touched.cache = Some(file.clone());
+        touched.bump.insert("Maps\\Duels".to_owned(), 5);
+        let mut b = browser_at_root(&touched);
+        b.build_index(&mut touched);
+        assert!(!b.index_from_cache(), "a folder changed");
+        assert_eq!(b.index_len(), 5);
+
+        // That walk re-saved the cache against the changed disk, so now it is a hit again.
+        let mut later = Fake::new();
+        later.cache = Some(file.clone());
+        later.bump.insert("Maps\\Duels".to_owned(), 5);
+        let mut b = browser_at_root(&later);
+        b.build_index(&mut later);
+        assert!(b.index_from_cache());
+
+        let mut edited = Fake::new();
+        edited.cache = Some(file.clone());
+        edited.bump.insert("Maps\\Duels".to_owned(), 5);
+        edited.bump.insert("Maps\\Ridge.pud".to_owned(), 1);
+        let mut b = browser_at_root(&edited);
+        b.build_index(&mut edited);
+        assert!(!b.index_from_cache(), "a map file changed");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn reload_rescans_the_registry_and_skips_the_cache_for_the_next_index_only() {
+        let file = temp_cache("reload");
+        let mut f = Fake::new();
+        f.cache = Some(file.clone());
+        let mut b = browser_at_root(&f);
+        b.build_index(&mut f);
+        b.reload(&mut f);
+        assert_eq!(f.rescans, 1, "the game was told to rescan");
+        assert_eq!(b.index_len(), 0, "the index was dropped");
+        b.build_index(&mut f);
+        assert!(!b.index_from_cache(), "walked afresh after a reload");
+        assert_eq!(b.index_len(), 5);
+        b.reload(&mut f);
+        b.build_index(&mut f);
+        assert!(!b.index_from_cache());
+        // With no reload in between, a new browser may use what the last walk saved.
+        let mut g = Fake::new();
+        g.cache = Some(file.clone());
+        let mut c = browser_at_root(&g);
+        c.build_index(&mut g);
+        assert!(c.index_from_cache());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn with_no_cache_file_the_index_is_only_ever_walked() {
+        let mut f = Fake::new();
+        let mut b = browser_at_root(&f);
+        b.build_index(&mut f);
+        assert!(!b.index_from_cache());
         assert_eq!(b.index_len(), 5);
     }
 

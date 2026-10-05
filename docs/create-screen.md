@@ -98,3 +98,21 @@ Each slice ends with an in-game check by the user, behind the setting.
 2. Translations: the screen uses the game's own localized keys (`mp_lobby_name`,
    `customscenario_*`) where they exist and English literals elsewhere ("Password (Optional)",
    "Teams", "Slots", "Change map"). Keep that.
+
+## Reload and the search-index cache (2026-10-04)
+
+The two things slice 2 left out are in, written and not yet checked in the game:
+
+- **Reload** (the button left of the folder path in the browser) now makes the game rescan the whole
+  maps folder into its map registry (`ScanDirectoryIntoMapRegistry`, through
+  `mapdownload::rescan_maps`), then re-reads the current folder and drops the search index, so a map
+  copied in while the game runs shows up. The next index after a reload is always walked afresh.
+- **The search index is cached** in `<host root>\cache\map_search_index.txt` (`mapsearchcache.rs`,
+  wc2r-plus's text format). The first search of a launch reads it instead of walking every folder
+  through the game's list, but only if the maps root is the same and every folder and map file still
+  has the size and modification time it had when it was saved; anything else, or any doubt about the
+  file, rebuilds and re-saves it. Bounded (16 MiB, 4000 maps, 20,000 folders) and sanitised on
+  load. `w2r.log` says `mapbrowser: search index read from the cache` or `built by walking the
+  folders`, with the count and the time.
+- To check: search once (it is walked and saved), close the game, search again after a restart (read
+  from the cache, much faster with a big collection); copy a map in, press reload, search for it.

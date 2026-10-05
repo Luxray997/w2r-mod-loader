@@ -135,6 +135,24 @@ impl GameSource {
 }
 
 impl Source for GameSource {
+    fn rescan_registry(&mut self) {
+        crate::mapdownload::rescan_maps();
+    }
+
+    fn cache_file(&self) -> Option<std::path::PathBuf> {
+        crate::entry::startup().map(|s| s.root.join("cache").join("map_search_index.txt"))
+    }
+
+    /// Size and modification time of a game path (relative to the game's folder). Paths from
+    /// the game's own lists, but still held to the rules for any path we open.
+    fn stat(&self, path: &str) -> Option<crate::mapsearchcache::Stamp> {
+        if !crate::mappreview::safe_map_path(path) {
+            return None;
+        }
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.len(), crate::mapdownload::mtime_of(&meta)))
+    }
+
     fn rel_path(&self) -> String {
         unsafe { str_data(self.rel_path as *const u8) }
     }
@@ -391,7 +409,24 @@ impl View {
 
         let list_y = dir_y + ROW_H + GAP;
         if b.searching() {
+            let first = !b.index_ready();
+            let started = std::time::Instant::now();
             b.build_index(&mut src);
+            if first && b.index_ready() {
+                crate::session::log_info(
+                    "mapbrowser",
+                    &format!(
+                        "search index {} -- {} maps in {} ms",
+                        if b.index_from_cache() {
+                            "read from the cache"
+                        } else {
+                            "built by walking the folders"
+                        },
+                        b.index_len(),
+                        started.elapsed().as_millis()
+                    ),
+                );
+            }
         }
         unsafe { self.draw_list(k, b, Rect::new(x0, list_y, left_w, body_bottom - list_y)) };
 
