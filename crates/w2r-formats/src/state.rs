@@ -172,21 +172,7 @@ impl State {
 }
 
 fn version_text(v: &Version) -> String {
-    use crate::semver::Identifier;
-    let mut s = format!("{}.{}.{}", v.major, v.minor, v.patch);
-    if !v.pre.is_empty() {
-        s.push('-');
-        let parts: Vec<String> = v
-            .pre
-            .iter()
-            .map(|i| match i {
-                Identifier::Numeric(n) => n.to_string(),
-                Identifier::Alpha(a) => a.clone(),
-            })
-            .collect();
-        s.push_str(&parts.join("."));
-    }
-    s
+    v.to_string()
 }
 
 /// Writes `state.json` atomically: a temp file next to it, then a rename (docs/layout.md).

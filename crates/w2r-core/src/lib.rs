@@ -3,6 +3,7 @@
 //!
 //! Nothing here touches the network; only the manager downloads. See docs/PLAN.md.
 
+pub use w2r_formats::{json, manifest, semver, state};
 pub mod build_guard;
 pub mod chat;
 pub mod dispatch;
@@ -14,12 +15,10 @@ pub mod handshake;
 pub mod hooks;
 pub mod host;
 pub mod hostcfg;
-pub mod json;
 pub mod lobby;
 pub mod lobbylayout;
 pub mod lobbypolicy;
 pub mod log;
-pub mod manifest;
 pub mod mapbrowser;
 pub mod mapindex;
 pub mod maplimits;
@@ -34,8 +33,6 @@ pub mod peer;
 pub mod pud;
 pub mod pudvalidate;
 pub mod screenkit;
-pub mod semver;
-pub mod state;
 pub mod store;
 pub mod symbols;
 pub mod target;

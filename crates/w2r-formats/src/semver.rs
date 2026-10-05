@@ -75,6 +75,20 @@ impl Version {
     }
 }
 
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        for (i, id) in self.pre.iter().enumerate() {
+            f.write_str(if i == 0 { "-" } else { "." })?;
+            match id {
+                Identifier::Numeric(n) => write!(f, "{n}")?,
+                Identifier::Alpha(a) => f.write_str(a)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))

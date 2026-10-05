@@ -1,0 +1,18 @@
+[package]
+name = "w2rpm-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "w2rpm: command-line plugin manager for Warcraft II Remastered"
+
+[[bin]]
+name = "w2rpm"
+path = "src/main.rs"
+
+[dependencies]
+w2rpm-lib = { path = "../w2rpm-lib" }
+w2r-formats.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+
+[dev-dependencies]
+w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-sign"] }

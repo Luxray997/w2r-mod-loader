@@ -1,0 +1,6 @@
+[package]
+name = "w2r-formats"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Strict parsers shared by the in-game host and the manager: JSON, SemVer, plugin.json, state.json"

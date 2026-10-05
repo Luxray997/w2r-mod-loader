@@ -177,6 +177,11 @@ plugins over the public ABI (chat may well be the latter).
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI
+Status: written and tested (2026-10-04), spec [manager.md](manager.md). `w2r-formats` (json, semver,
+manifest, state) was extracted from `w2r-core` so host and manager share one parser; `w2rpm-lib`
+(minisign, index, package, install, store, fetch, catalog) and `w2rpm-cli` (`w2rpm`) sit on top.
+Not done: an embedded release key and default index URL (Phase 6), key rotation, dependency
+warnings at install, a security review pass for this phase.
 Fetch/verify index, download, hash check, atomic install, enable/disable, update, rollback,
 `verify`. Safe archive handling (no traversal, size limits, no symlinks).
 Exit: `w2rpm install|list|verify` against a test index.
