@@ -495,6 +495,11 @@ pub mod game {
             }
         }
 
+        /// A filled rounded rectangle (`round` is the corner radius; half the side makes a circle).
+        pub fn fill_round(&self, r: Rect, round: f32, colour: u32) {
+            self.fill(self.canvas(), r.x, r.y, r.w, r.h, round, colour);
+        }
+
         /// A filled rectangle on the window being built.
         pub fn fill_rect(&self, r: Rect, colour: u32) {
             self.fill(self.canvas(), r.x, r.y, r.w, r.h, 0.0, colour);

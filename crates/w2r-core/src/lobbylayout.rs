@@ -271,6 +271,138 @@ pub fn password_text(known: Option<&[u8]>) -> String {
     }
 }
 
+/// The crown picture: 50 by 50 RGBA, from wc2r-plus `crown_image.h` (MIT).
+pub const CROWN_SIZE: usize = 50;
+pub const CROWN_RGBA: &[u8; CROWN_SIZE * CROWN_SIZE * 4] = include_bytes!("../assets/crown.rgba");
+
+/// Game colours are packed `0xAABBGGRR`.
+pub const fn pack(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | ((a as u32) << 24)
+}
+
+/// The eight player colours, in slot order (wc2r-plus `team_colours.h`), for the fixed-start swatch.
+pub const TEAM_COLOURS: [u32; SLOT_COUNT] = [
+    pack(196, 40, 40, 255),
+    pack(48, 72, 200, 255),
+    pack(0, 152, 152, 255),
+    pack(128, 48, 168, 255),
+    pack(232, 132, 24, 255),
+    pack(32, 32, 32, 255),
+    pack(236, 236, 236, 255),
+    pack(232, 212, 48, 255),
+];
+pub const CROWN_COLOUR: u32 = pack(240, 206, 74, 255);
+pub const MOD_BADGE_COLOUR: u32 = pack(96, 200, 120, 255);
+pub const MOD_BADGE_RING: u32 = pack(18, 36, 22, 255);
+pub const MOD_BADGE_RING_WIDTH: f32 = 2.0;
+const MOD_BADGE_ALONE: f32 = 0.55;
+const MOD_BADGE_WITH_CROWN: f32 = 0.42;
+const CROWN_BAND_FRACTION: f32 = 0.42;
+const CROWN_PRONG_WIDTH: f32 = 0.24;
+const CROWN_MIDDLE_TOP: f32 = 0.22;
+
+/// The crown's square beside a slot, from the slot's gutter rectangle. It hangs a little left of
+/// the gutter, centred on the row.
+pub fn crown_rect(gutter: Rect, marks: MarkSizes) -> Rect {
+    Rect::new(
+        fl(gutter.x - CROWN_OVERHANG),
+        fl(gutter.y + (gutter.h - marks.crown) * 0.5),
+        marks.crown,
+        marks.crown,
+    )
+}
+
+/// The start-location swatch at the right end of the gutter.
+pub fn swatch_rect(gutter: Rect, marks: MarkSizes) -> Rect {
+    Rect::new(
+        fl(gutter.x + gutter.w - MARK_GAP - marks.swatch),
+        fl(gutter.y + (gutter.h - marks.swatch) * 0.5),
+        marks.swatch,
+        marks.swatch,
+    )
+}
+
+/// The green mod dot: in the crown's corner when the player is the host, else where the crown
+/// would be. `None` when it would be too small to show its ring.
+pub fn mod_badge_rect(crown: Rect, with_crown: bool) -> Option<Rect> {
+    let size = fl(crown.w
+        * if with_crown {
+            MOD_BADGE_WITH_CROWN
+        } else {
+            MOD_BADGE_ALONE
+        });
+    if size <= MOD_BADGE_RING_WIDTH * 2.0 {
+        return None;
+    }
+    let (x, y) = if with_crown {
+        (fl(crown.x + crown.w - size), fl(crown.y + crown.h - size))
+    } else {
+        (
+            fl(crown.x + (crown.w - size) * 0.5),
+            fl(crown.y + (crown.h - size) * 0.5),
+        )
+    };
+    Some(Rect::new(x, y, size, size))
+}
+
+/// The crown drawn from rectangles when its texture cannot be made: a band and three prongs.
+pub fn crown_fallback(r: Rect) -> [Rect; 4] {
+    let band_h = fl(r.h * CROWN_BAND_FRACTION);
+    let band_y = fl(r.y + r.h - band_h);
+    let prong_w = fl(r.w * CROWN_PRONG_WIDTH);
+    let middle_top = fl(r.y + r.h * CROWN_MIDDLE_TOP);
+    [
+        Rect::new(r.x, band_y, r.w, band_h),
+        Rect::new(r.x, r.y, prong_w, band_y - r.y),
+        Rect::new(
+            fl(r.x + (r.w - prong_w) * 0.5),
+            middle_top,
+            prong_w,
+            band_y - middle_top,
+        ),
+        Rect::new(fl(r.x + r.w - prong_w), r.y, prong_w, band_y - r.y),
+    ]
+}
+
+/// Which lobby slots hold a player running the mod: the ones whose net slot announced itself in
+/// the handshake, and ourselves. `lobby_of_net` is the game's net slot to lobby slot table.
+pub fn mod_slots(
+    lobby_of_net: &[Option<u8>; SLOT_COUNT],
+    announced: impl Fn(u32) -> bool,
+    self_net_slot: Option<u32>,
+) -> [bool; SLOT_COUNT] {
+    let mut out = [false; SLOT_COUNT];
+    for (net, lobby) in lobby_of_net.iter().enumerate() {
+        let known = announced(net as u32) || self_net_slot == Some(net as u32);
+        if let (true, Some(l)) = (known, lobby)
+            && (*l as usize) < SLOT_COUNT
+        {
+            out[*l as usize] = true;
+        }
+    }
+    out
+}
+
+/// The host's lobby slot: the seat of net slot 0 when it is present, else the present slot whose
+/// name equals the host's name (case-insensitive).
+pub fn host_slot(
+    seat_of_net0: Option<u8>,
+    present: &[bool; SLOT_COUNT],
+    names: &[String; SLOT_COUNT],
+    host_name: &str,
+) -> Option<usize> {
+    if let Some(s) = seat_of_net0
+        && (s as usize) < SLOT_COUNT
+        && present[s as usize]
+    {
+        return Some(s as usize);
+    }
+    if host_name.is_empty() {
+        return None;
+    }
+    (0..SLOT_COUNT).find(|&i| present[i] && names[i].eq_ignore_ascii_case(host_name))
+}
+
 /// Keeps the chat history at the bottom when it was there and grew, and notices when something
 /// cleared the frame mid-way (wc2r-plus `lobby_chat.cpp`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -528,6 +660,84 @@ mod tests {
             "ab",
             "control characters are dropped"
         );
+    }
+
+    #[test]
+    fn the_crown_art_is_the_size_it_says_and_not_blank() {
+        assert_eq!(CROWN_RGBA.len(), CROWN_SIZE * CROWN_SIZE * 4);
+        assert!(CROWN_RGBA.chunks(4).any(|p| p[3] > 0), "some opaque pixels");
+        assert!(
+            CROWN_RGBA.chunks(4).any(|p| p[3] == 0),
+            "some transparent pixels"
+        );
+    }
+
+    #[test]
+    fn marks_sit_inside_or_just_left_of_the_gutter_and_centre_on_the_row() {
+        let row_h = 100.0;
+        let marks = mark_sizes(row_h);
+        let gutter = Rect::new(600.0, 800.0, marks.gutter, row_h);
+        let crown = crown_rect(gutter, marks);
+        assert_eq!(crown.x, gutter.x - 12.0);
+        assert_eq!(crown.w, crown.h);
+        assert_eq!(crown.y + crown.h * 0.5, gutter.y + gutter.h * 0.5);
+        let sw = swatch_rect(gutter, marks);
+        assert_eq!(sw.x + sw.w + 6.0, gutter.x + gutter.w);
+        assert!(
+            sw.x >= crown.x + crown.w,
+            "the swatch does not sit on the crown"
+        );
+    }
+
+    #[test]
+    fn the_mod_dot_is_a_corner_badge_on_a_crown_and_centred_without_one() {
+        let crown = Rect::new(100.0, 100.0, 80.0, 80.0);
+        let with = mod_badge_rect(crown, true).unwrap();
+        assert_eq!((with.x + with.w, with.y + with.h), (180.0, 180.0));
+        let alone = mod_badge_rect(crown, false).unwrap();
+        assert_eq!(alone.x + alone.w * 0.5, crown.x + crown.w * 0.5);
+        assert!(alone.w > with.w);
+        assert_eq!(mod_badge_rect(Rect::new(0.0, 0.0, 8.0, 8.0), true), None);
+    }
+
+    #[test]
+    fn the_fallback_crown_stays_inside_its_square() {
+        let r = Rect::new(10.0, 20.0, 80.0, 80.0);
+        for p in crown_fallback(r) {
+            assert!(p.x >= r.x && p.y >= r.y && p.x + p.w <= r.x + r.w && p.y + p.h <= r.y + r.h);
+            assert!(p.w > 0.0 && p.h >= 0.0);
+        }
+    }
+
+    #[test]
+    fn mod_slots_follow_announcements_and_ourselves() {
+        // Net slots 0 to 3 sit in lobby slots 2, 0, 5 and 7; net slot 1 announced, we are net 0.
+        let table = [Some(2), Some(0), Some(5), Some(7), None, None, None, None];
+        let got = mod_slots(&table, |n| n == 1, Some(0));
+        assert_eq!(got, [true, false, true, false, false, false, false, false]);
+        assert_eq!(mod_slots(&table, |_| false, None), [false; 8]);
+        let bad = [Some(9), None, None, None, None, None, None, None];
+        assert_eq!(
+            mod_slots(&bad, |_| true, None),
+            [false; 8],
+            "an out-of-range seat is ignored"
+        );
+    }
+
+    #[test]
+    fn the_host_is_net_slot_zero_or_found_by_name() {
+        let mut present = [false; 8];
+        present[1] = true;
+        present[4] = true;
+        let mut names: [String; 8] = Default::default();
+        names[1] = "Ann".into();
+        names[4] = "Bob".into();
+        assert_eq!(host_slot(Some(4), &present, &names, "ann"), Some(4));
+        assert_eq!(host_slot(Some(3), &present, &names, "ann"), Some(1));
+        assert_eq!(host_slot(None, &present, &names, "BOB"), Some(4));
+        assert_eq!(host_slot(None, &present, &names, ""), None);
+        assert_eq!(host_slot(None, &present, &names, "Cy"), None);
+        assert_eq!(host_slot(Some(200), &present, &names, "Cy"), None);
     }
 
     #[test]

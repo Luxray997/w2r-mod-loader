@@ -210,3 +210,19 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
   password from the same message ("Unknown" before the first one arrives); the host reads its own
   password from the game's buffer.
 - Not done here (slice 4): hiding the preview while a map is missing or downloading.
+
+## Slice 3 notes (2026-10-04)
+
+- Written and installed together with slice 2, **not yet checked in the game**. Marks are drawn on the
+  window's canvas after the layout space and the preview, over the slot rows: the host's crown (the
+  50 by 50 wc2r-plus bitmap, `crates/w2r-core/assets/crown.rgba`, kept as its own game texture by
+  `previewdraw::draw_icon`; four rectangles if the texture cannot be made), a green dot in the
+  crown's corner for the host or centred for others who run the mod, and a colour swatch at the right
+  of the gutter when starting locations are fixed.
+- Who runs the mod comes from `session::lobby_roles()`: the handshake roster mapped through the
+  game's net-slot-to-lobby-slot table, plus ourselves; the host is the seat of net slot 0, or the
+  slot named like the host when that seat is empty. The pure rules (`mod_slots`, `host_slot`, the
+  mark rectangles) are in `lobbylayout.rs` with tests.
+- To check: host has a crown; a guest with the mod has a green dot (needs the second player; for one
+  player, the host's own dot appears on the crown); with Starting location set to Fixed on the create
+  screen, each present slot shows its colour swatch.

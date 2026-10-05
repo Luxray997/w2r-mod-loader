@@ -279,3 +279,60 @@ pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) {
         unsafe { (game.draw_image)(canvas, x, y, w, h, &image, WHITE) };
     });
 }
+
+#[derive(Default)]
+struct IconState {
+    texture: Option<usize>,
+    failed: bool,
+}
+
+static ICON: Mutex<IconState> = Mutex::new(IconState {
+    texture: None,
+    failed: false,
+});
+
+/// Draws a small square RGBA picture (`size` by `size`) into `area`, from a texture of its own
+/// made on first use. One picture is kept (the lobby's host crown). False when the texture
+/// cannot be made; the caller then draws something else.
+pub fn draw_icon(game: &PreviewGame, kit: &Kit, area: Rect, rgba: &[u8], size: i32) -> bool {
+    if rgba.len() != (size * size * 4) as usize {
+        return false;
+    }
+    let canvas = kit.canvas();
+    if canvas.is_null() {
+        return false;
+    }
+    let mut st = ICON.lock().unwrap_or_else(|e| e.into_inner());
+    if st.texture.is_none() && !st.failed {
+        st.failed = true;
+        let mut tex: *mut GameTexture = core::ptr::null_mut();
+        unsafe {
+            (game.create_texture)(
+                &mut tex,
+                size,
+                size,
+                rgba.as_ptr().cast(),
+                FORMAT_RGBA8,
+                FILTER_LINEAR,
+            )
+        };
+        if !tex.is_null() && unsafe { (*tex).gl_name != 0 && (*tex).w == size && (*tex).h == size }
+        {
+            st.texture = Some(tex as usize);
+            st.failed = false;
+        } else {
+            crate::session::log_error("lobbyscreen", "the game would not make the crown texture");
+        }
+    }
+    let Some(tex) = st.texture else {
+        return false;
+    };
+    let image = NkImage {
+        handle: tex as *mut c_void,
+        w: size as u16,
+        h: size as u16,
+        region: [0, 0, size as u16, size as u16],
+    };
+    unsafe { (game.draw_image)(canvas, area.x, area.y, area.w, area.h, &image, WHITE) };
+    true
+}

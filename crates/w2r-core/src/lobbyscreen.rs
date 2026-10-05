@@ -38,6 +38,13 @@ const CHAT_INSET_X: f32 = 60.0;
 const CHAT_INSET_TOP: f32 = 20.0;
 const CHAT_MAX_LINES: usize = 500;
 const KEY_ENTER: i32 = 4;
+/// The game's lobby slot table: stride, and the state byte (3 = nobody there).
+const SLOT_STRIDE: usize = 0x26;
+const SLOT_STATE: usize = 0x08;
+const SLOT_ABSENT: u8 = 3;
+/// The table of slot names: stride, and the `std::string` inside each entry.
+const NAME_STRIDE: usize = 0x20;
+const NAME_STRING: usize = 0x08;
 /// Window flags: a group with no scrollbar.
 const NO_SCROLLBAR: u32 = 0x20;
 
@@ -80,6 +87,9 @@ struct Screen {
     game_speed: *const u8,
     selected_map_path: *const u8,
     preview: PreviewGame,
+    slots: *const u8,
+    slot_names: *const *const u8,
+    host_name: *const u8,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -185,6 +195,9 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
             game_speed: at("MpLobbyGameSpeed")? as *const u8,
             selected_map_path: at("SelectedMapPath")? as *const u8,
             preview: PreviewGame::new(symbols)?,
+            slots: at("MpLobbySlots")? as *const u8,
+            slot_names: at("MpLobbySlotNames")? as *const *const u8,
+            host_name: at("MpLobbyHostName")? as *const u8,
         })
     }
 }
@@ -317,7 +330,7 @@ impl Screen {
         );
         k.panel_frame(l.frame, c"lobby_panel", Some(unsafe { *self.skin_left }));
 
-        unsafe { self.draw_slots(l.slots) };
+        let gutters = unsafe { self.draw_slots(l.slots) };
         unsafe { self.draw_chat(l.chat_history, l.chat_input) };
 
         let request = unsafe { self.draw_right(l.right) };
@@ -333,6 +346,8 @@ impl Screen {
         if let Some(r) = request {
             previewdraw::draw(&self.preview, k, &r);
         }
+
+        unsafe { self.draw_marks(&gutters) };
 
         // The game's own popups (kicked, host left, ...) belong to this window.
         let previous = k.push_skin(unsafe { *self.skin_popup });
@@ -458,11 +473,12 @@ impl Screen {
     }
 
     /// The Players panel: a header, then the game's own slot rows in our column ratios.
-    unsafe fn draw_slots(&self, panel: Rect) {
+    unsafe fn draw_slots(&self, panel: Rect) -> [Rect; SLOT_COUNT] {
         let k = &self.kit;
         let g = geo::slot_geometry(panel);
+        let mut gutters = [Rect::default(); SLOT_COUNT];
         if !k.begin_group_flags(g.rows, c"mod_lobby_slots", NO_SCROLLBAR) {
-            return;
+            return gutters;
         }
         k.row_ratios(g.header_h, &g.ratios);
         k.label(&self.players_heading(), ALIGN_LEFT);
@@ -472,11 +488,77 @@ impl Screen {
         k.label(&k.localized(c"mp_lobby_team"), ALIGN_LEFT);
 
         REWRITE_TEAMS.store(true, Ordering::Relaxed);
-        for i in 0..SLOT_COUNT {
+        for (i, gutter) in gutters.iter_mut().enumerate() {
+            let top = k.next_row_top();
+            *gutter = Rect::new(panel.x, top, g.marks.gutter, g.row_h);
             unsafe { (self.slot_row)(i as i32, g.ratios.as_ptr(), g.row_h, g.spacer) };
         }
         REWRITE_TEAMS.store(false, Ordering::Relaxed);
         k.end_list();
+        gutters
+    }
+
+    fn slot_present(&self, i: usize) -> bool {
+        unsafe { *self.slots.add(i * SLOT_STRIDE + SLOT_STATE) != SLOT_ABSENT }
+    }
+
+    /// The name the game holds for lobby slot `i`.
+    unsafe fn slot_name(&self, i: usize) -> String {
+        unsafe {
+            let base = *self.slot_names;
+            if base.is_null() {
+                String::new()
+            } else {
+                str_data(base.add(i * NAME_STRIDE + NAME_STRING))
+            }
+        }
+    }
+
+    /// The crown beside the host, a green dot beside players running the mod, and, when starting
+    /// locations are fixed, a colour swatch per slot: drawn on the window's canvas over the rows.
+    unsafe fn draw_marks(&self, gutters: &[Rect; SLOT_COUNT]) {
+        let k = &self.kit;
+        let present: [bool; SLOT_COUNT] = core::array::from_fn(|i| self.slot_present(i));
+        let names: [String; SLOT_COUNT] = core::array::from_fn(|i| unsafe { self.slot_name(i) });
+        let (seat0, mods) = crate::session::lobby_roles();
+        let host_name = unsafe { str_data_c(self.host_name) };
+        let host = geo::host_slot(seat0, &present, &names, &host_name);
+        let fixed = unsafe { *self.fixed_start } == 1;
+        for (i, g) in gutters.iter().enumerate() {
+            if g.w <= 0.0 || !present[i] {
+                continue;
+            }
+            let marks = geo::mark_sizes(g.h);
+            if marks.crown <= 0.0 || marks.swatch <= 0.0 {
+                continue;
+            }
+            let crown = geo::crown_rect(*g, marks);
+            let is_host = host == Some(i);
+            if is_host
+                && !previewdraw::draw_icon(
+                    &self.preview,
+                    k,
+                    crown,
+                    geo::CROWN_RGBA,
+                    geo::CROWN_SIZE as i32,
+                )
+            {
+                for part in geo::crown_fallback(crown) {
+                    k.fill_rect(part, geo::CROWN_COLOUR);
+                }
+            }
+            if mods[i]
+                && let Some(b) = geo::mod_badge_rect(crown, is_host)
+            {
+                k.fill_round(b, b.w * 0.5, geo::MOD_BADGE_RING);
+                let ring = geo::MOD_BADGE_RING_WIDTH;
+                let inner = Rect::new(b.x + ring, b.y + ring, b.w - ring * 2.0, b.h - ring * 2.0);
+                k.fill_round(inner, inner.w * 0.5, geo::MOD_BADGE_COLOUR);
+            }
+            if fixed {
+                k.fill_rect(geo::swatch_rect(*g, marks), geo::TEAM_COLOURS[i]);
+            }
+        }
     }
 
     fn players_heading(&self) -> String {
