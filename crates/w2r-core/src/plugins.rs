@@ -156,6 +156,25 @@ impl Loaded {
     }
 }
 
+/// The author of each listed plugin, from its `plugin.json`, for the plugin screen. Display only:
+/// a plugin whose manifest is missing or invalid has no entry (the load checks report why), and
+/// nothing here decides whether a plugin runs.
+pub fn authors(root: &Path, state: &State) -> BTreeMap<String, String> {
+    state
+        .plugins
+        .iter()
+        .filter_map(|st| {
+            let raw = read_bounded(
+                &root.join("plugins").join(&st.id).join("plugin.json"),
+                manifest::MAX_BYTES,
+            )
+            .ok()?;
+            let m = manifest::validate(&raw).ok()?;
+            Some((st.id.clone(), m.author))
+        })
+        .collect()
+}
+
 /// Loads everything `state.json` enables.
 pub fn load_all(
     root: &Path,

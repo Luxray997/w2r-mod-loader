@@ -89,6 +89,7 @@ fn full_cycle() {
     let v = View::load(&s.root, Some(&s));
     assert_eq!(v.installed.len(), 1);
     assert!(v.installed[0].enabled && v.installed[0].problem.is_none());
+    assert_eq!(v.installed[0].author.as_deref(), Some("test"));
     assert!(v.installed[0].update.is_none());
 
     // A newer version appears: the cached index is stale until refreshed, then shows the update.

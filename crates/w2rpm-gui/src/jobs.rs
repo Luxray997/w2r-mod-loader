@@ -93,6 +93,8 @@ pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
 pub struct Installed {
     pub id: String,
     pub version: Version,
+    /// From the installed `plugin.json`.
+    pub author: Option<String>,
     pub enabled: bool,
     pub capabilities: Vec<String>,
     /// The newer version the cached index offers, if any.
@@ -143,6 +145,7 @@ impl View {
             v.installed.push(Installed {
                 id: p.id.clone(),
                 version: p.version.clone(),
+                author: root.installed_author(&p.id),
                 enabled: p.enabled,
                 capabilities: p.approved_capabilities.clone(),
                 update: updates

@@ -160,6 +160,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.strong(&p.id);
                     ui.label(p.version.to_string());
+                    ui.label(format!("by {}", p.author.as_deref().unwrap_or("unknown")));
                     let mut on = p.enabled;
                     if ui.checkbox(&mut on, "enabled").changed() {
                         let job = Job::SetEnabled {

@@ -5,7 +5,7 @@
 //! elsewhere wait in a queue for the next frame.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -48,6 +48,8 @@ struct Session {
     fingerprint: [u8; 4],
     /// The plugins in the fingerprint.
     simulation: Vec<String>,
+    /// Plugin id to author, read once from the manifests for the plugin screen.
+    authors: BTreeMap<String, String>,
     net: Rc<Net>,
     #[cfg(target_arch = "x86")]
     nk: Option<options::Nk>,
@@ -489,6 +491,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 PluginRow {
                     id: p.id.clone(),
                     version: state_version(p),
+                    author: session.authors.get(&p.id).cloned(),
                     enabled: p.enabled,
                     status,
                     slow,
@@ -818,6 +821,7 @@ fn start() -> Session {
             config: HostConfig::default(),
             fingerprint: [0; 4],
             simulation: Vec::new(),
+            authors: BTreeMap::new(),
             net,
             #[cfg(target_arch = "x86")]
             nk: None,
@@ -888,6 +892,7 @@ fn start() -> Session {
     net.handshake
         .borrow_mut()
         .set_fingerprint(loaded.fingerprint);
+    let authors = plugins::authors(&startup.root, &loaded.state);
     Session {
         registry: loaded.registry,
         lobby,
@@ -896,6 +901,7 @@ fn start() -> Session {
         config,
         fingerprint: loaded.fingerprint,
         simulation: loaded.simulation,
+        authors,
         net,
         #[cfg(target_arch = "x86")]
         nk,

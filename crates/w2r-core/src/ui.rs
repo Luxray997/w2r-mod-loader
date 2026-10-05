@@ -164,6 +164,8 @@ mod cb {
 pub struct PluginRow {
     pub id: String,
     pub version: String,
+    /// The author from `plugin.json`, when it can be read (shown even for plugins not loaded).
+    pub author: Option<String>,
     /// `enabled` in state.json (takes effect at the next launch).
     pub enabled: bool,
     /// What the host did with it this session.
@@ -309,6 +311,11 @@ pub fn draw_plugin_screen(
             row.enabled = enabled;
             action = Action::Toggle(i);
         }
+        w.row(ROW_H, 1);
+        w.label(&format!(
+            "Author: {}",
+            row.author.as_deref().unwrap_or("unknown")
+        ));
         w.row(ROW_H, 1);
         let status = match &row.status {
             Status::Active if row.slow => "Status: running (slow callbacks)".to_owned(),
@@ -485,6 +492,7 @@ mod tests {
             PluginRow {
                 id: "a".into(),
                 version: "1.0.0".into(),
+                author: Some("Ann".into()),
                 enabled: true,
                 status: Status::Active,
                 slow: false,
@@ -492,6 +500,7 @@ mod tests {
             PluginRow {
                 id: "b".into(),
                 version: "2.0.0".into(),
+                author: None,
                 enabled: false,
                 status: Status::NotLoaded,
                 slow: false,
@@ -499,6 +508,7 @@ mod tests {
             PluginRow {
                 id: "c".into(),
                 version: "0.1.0".into(),
+                author: Some("Cy".into()),
                 enabled: true,
                 status: Status::Disabled("boom".into()),
                 slow: true,
@@ -541,6 +551,8 @@ mod tests {
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
         assert_eq!(calls[21], "label \"Plugins (3)\"");
+        assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
+        assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
         assert!(
             calls

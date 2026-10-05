@@ -67,6 +67,14 @@ impl Root {
         }
     }
 
+    /// The author in an installed plugin's `plugin.json`; `None` when it is missing or invalid
+    /// (display only: `verify` reports a bad manifest).
+    pub fn installed_author(&self, id: &str) -> Option<String> {
+        let dir = self.plugin_dir(Id::new(id).ok()?);
+        let raw = read_bounded(&dir.join("plugin.json"), manifest::MAX_BYTES).ok()?;
+        manifest::validate(&raw).ok().map(|m| m.author)
+    }
+
     pub fn save_state(&self, state: &State) -> Result<(), Error> {
         fs::create_dir_all(self.config_dir())?;
         state::write(&self.state_path(), state)?;

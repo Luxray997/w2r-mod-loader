@@ -325,7 +325,13 @@ fn list(cli: &Cli) -> Result<(), Error> {
             .find(|(id, _)| *id == p.id)
             .map(|(_, v)| format!("  (update available: {v})"))
             .unwrap_or_default();
-        println!("{} {} {on}  capabilities: {caps}{up}", p.id, p.version);
+        let by = root
+            .installed_author(&p.id)
+            .unwrap_or_else(|| "unknown".into());
+        println!(
+            "{} {} by {by} {on}  capabilities: {caps}{up}",
+            p.id, p.version
+        );
     }
     Ok(())
 }

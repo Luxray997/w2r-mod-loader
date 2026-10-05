@@ -104,7 +104,7 @@ fn install_list_verify_update_rollback_remove() {
     );
     let listed = ok(e.w2rpm(&["list"]));
     assert!(
-        listed.contains("example-plugin 1.0.0 enabled") && listed.contains("game.read"),
+        listed.contains("example-plugin 1.0.0 by test enabled") && listed.contains("game.read"),
         "{listed}"
     );
     assert!(ok(e.w2rpm(&["verify"])).contains("ok"));
