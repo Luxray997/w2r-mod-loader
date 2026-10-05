@@ -79,11 +79,12 @@ impl Fetcher for DirFetcher {
     }
 }
 
-/// Where the index lives and the key that must have signed it.
+/// Where the index lives and the keys, any one of which may have signed it (a manager release
+/// embeds the current key and, around a rotation, the next one).
 #[derive(Clone, Debug)]
 pub struct Source {
     pub index_url: String,
-    pub key: PublicKey,
+    pub keys: Vec<PublicKey>,
 }
 
 fn serial_path(root: &Root) -> std::path::PathBuf {
@@ -115,20 +116,22 @@ pub fn refresh(root: &Root, fetcher: &dyn Fetcher, src: &Source, now: i64) -> Re
     let raw = fetcher.get(&src.index_url, MAX_INDEX_BYTES as u64)?;
     let sig = fetcher.get(&format!("{}.sig", src.index_url), MAX_SIG_BYTES as u64)?;
     let sig_text = String::from_utf8(sig).map_err(|_| Error::new("bad_signature", "not UTF-8"))?;
-    let idx = index::verify_index(&raw, &sig_text, &src.key, cached_serial(root), now)
+    let idx = index::verify_index_any(&raw, &sig_text, &src.keys, cached_serial(root), now)
         .map_err(|r| Error::new(r, "the fetched index was refused"))?;
     fs::create_dir_all(root.cache_dir())?;
+    // The serial goes first: a crash after it can only make the next check stricter, never let
+    // an older index through.
+    write_atomic(&serial_path(root), idx.serial.to_string().as_bytes())?;
     write_atomic(&root.cache_dir().join("index.json"), &raw)?;
     write_atomic(
         &root.cache_dir().join("index.json.sig"),
         sig_text.as_bytes(),
     )?;
-    write_atomic(&serial_path(root), idx.serial.to_string().as_bytes())?;
     Ok(idx)
 }
 
 /// Loads and re-verifies the cached index (the cache is never trusted without its signature).
-pub fn load_cached(root: &Root, key: &PublicKey, now: i64) -> Result<Index, Error> {
+pub fn load_cached(root: &Root, keys: &[PublicKey], now: i64) -> Result<Index, Error> {
     let raw = read_bounded(&root.cache_dir().join("index.json"), MAX_INDEX_BYTES).map_err(|e| {
         if e.code == "not_found" {
             Error::new("no_index", "run refresh first")
@@ -138,7 +141,7 @@ pub fn load_cached(root: &Root, key: &PublicKey, now: i64) -> Result<Index, Erro
     })?;
     let sig = read_bounded(&root.cache_dir().join("index.json.sig"), MAX_SIG_BYTES)?;
     let sig_text = String::from_utf8(sig).map_err(|_| Error::new("bad_signature", "not UTF-8"))?;
-    index::verify_index(&raw, &sig_text, key, cached_serial(root), now)
+    index::verify_index_any(&raw, &sig_text, keys, cached_serial(root), now)
         .map_err(|r| Error::new(r, "the cached index was refused"))
 }
 
@@ -201,7 +204,7 @@ mod tests {
         (
             Source {
                 index_url: URL.to_owned(),
-                key,
+                keys: vec![key],
             },
             now,
         )
@@ -213,7 +216,7 @@ mod tests {
         let (src, now) = source();
         let fake = Fake::default();
         assert_eq!(
-            load_cached(&t.0, &src.key, now).unwrap_err().code,
+            load_cached(&t.0, &src.keys, now).unwrap_err().code,
             "no_index"
         );
 
@@ -222,7 +225,7 @@ mod tests {
         let got = refresh(&t.0, &fake, &src, now).unwrap();
         assert_eq!(got.serial, 7);
         assert_eq!(cached_serial(&t.0), 7);
-        assert_eq!(load_cached(&t.0, &src.key, now).unwrap().serial, 7);
+        assert_eq!(load_cached(&t.0, &src.keys, now).unwrap().serial, 7);
         let asked = fake.asked.borrow().clone();
         assert_eq!(asked[0], (URL.to_owned(), MAX_INDEX_BYTES as u64));
         assert_eq!(asked[1], (format!("{URL}.sig"), MAX_SIG_BYTES as u64));
@@ -242,7 +245,7 @@ mod tests {
             "bad_signature"
         );
         assert_eq!(cached_serial(&t.0), 7);
-        assert_eq!(load_cached(&t.0, &src.key, now).unwrap().serial, 7);
+        assert_eq!(load_cached(&t.0, &src.keys, now).unwrap().serial, 7);
     }
 
     #[test]
@@ -258,7 +261,7 @@ mod tests {
         raw[10] ^= 1;
         fs::write(&path, raw).unwrap();
         assert_eq!(
-            load_cached(&t.0, &src.key, now).unwrap_err().code,
+            load_cached(&t.0, &src.keys, now).unwrap_err().code,
             "bad_signature"
         );
     }

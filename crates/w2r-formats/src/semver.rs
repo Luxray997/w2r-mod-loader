@@ -155,6 +155,26 @@ fn split_op(part: &str) -> Option<(Op, &str)> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VersionReq(pub Vec<Comparator>);
 
+impl std::fmt::Display for VersionReq {
+    /// The manifest form: comparators joined by `,`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, c) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            let op = match c.op {
+                Op::Ge => ">=",
+                Op::Le => "<=",
+                Op::Gt => ">",
+                Op::Lt => "<",
+                Op::Eq => "=",
+            };
+            write!(f, "{op}{}", c.version)?;
+        }
+        Ok(())
+    }
+}
+
 impl VersionReq {
     pub fn parse(s: &str) -> Option<VersionReq> {
         let parts: Vec<&str> = s.split(',').collect();

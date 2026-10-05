@@ -39,6 +39,7 @@ impl From<std::io::Error> for Error {
     }
 }
 pub mod catalog;
+pub mod check;
 #[cfg(feature = "dev-sign")]
 pub mod devrepo;
 pub mod fetch;

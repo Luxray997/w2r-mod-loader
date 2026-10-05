@@ -64,6 +64,8 @@ pub struct Plugin<'a> {
     pub id: &'a str,
     pub version: &'a str,
     pub capabilities: &'a [&'a str],
+    /// `(id, version_req)` pairs.
+    pub dependencies: &'a [(&'a str, &'a str)],
     pub dll: &'a [u8],
 }
 
@@ -78,12 +80,18 @@ impl Plugin<'_> {
             .iter()
             .map(|c| format!("\"{c}\""))
             .collect();
+        let deps: Vec<String> = self
+            .dependencies
+            .iter()
+            .map(|(id, req)| format!(r#"{{"id":"{id}","version_req":"{req}"}}"#))
+            .collect();
         format!(
-            r#"{{"schema":1,"id":"{id}","name":"{id}","version":"{v}","author":"test","description":"Test plugin {id}.","entry":"{e}","abi":1,"game_builds":["1.0.2.2818"],"capabilities":[{c}],"affects_simulation":false,"dependencies":[]}}"#,
+            r#"{{"schema":1,"id":"{id}","name":"{id}","version":"{v}","author":"test","description":"Test plugin {id}.","entry":"{e}","abi":1,"game_builds":["1.0.2.2818"],"capabilities":[{c}],"affects_simulation":false,"dependencies":[{d}]}}"#,
             id = self.id,
             v = self.version,
             e = self.entry_name(),
-            c = caps.join(",")
+            c = caps.join(","),
+            d = deps.join(",")
         )
     }
 
@@ -102,6 +110,17 @@ impl Plugin<'_> {
 /// Writes `index.json`, `index.json.sig`, `test.pub` and one `<id>-<version>.zip` per plugin
 /// into `dir`. The index is valid from `now` for 30 days.
 pub fn build(dir: &Path, now: i64, serial: u64, plugins: &[Plugin]) -> Result<(), Error> {
+    build_with(dir, now, serial, plugins, None)
+}
+
+/// [`build`] with an optional `next_key` (a minisign public key body) in the index.
+pub fn build_with(
+    dir: &Path,
+    now: i64,
+    serial: u64,
+    plugins: &[Plugin],
+    next_key: Option<&str>,
+) -> Result<(), Error> {
     fs::create_dir_all(dir)?;
     let mut ids: Vec<&str> = plugins.iter().map(|p| p.id).collect();
     ids.dedup();
@@ -129,9 +148,10 @@ pub fn build(dir: &Path, now: i64, serial: u64, plugins: &[Plugin]) -> Result<()
         ));
     }
     let index = format!(
-        r#"{{"schema":1,"serial":{serial},"generated":"{}","expires":"{}","plugins":[{}]}}"#,
+        r#"{{"schema":1,"serial":{serial},"generated":"{}","expires":"{}",{}"plugins":[{}]}}"#,
         format_time(now),
         format_time(now + 30 * 86_400),
+        next_key.map_or(String::new(), |k| format!(r#""next_key":"{k}","#)),
         entries.join(",")
     );
     fs::write(dir.join("index.json"), &index)?;

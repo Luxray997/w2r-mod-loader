@@ -103,6 +103,35 @@ pub fn verify_index(
     })
 }
 
+/// Like [`verify_index`] with several trusted keys: the first one whose key id and signature
+/// match decides. A signature none of them made is `bad_signature`.
+pub fn verify_index_any(
+    raw: &[u8],
+    sig_text: &str,
+    keys: &[PublicKey],
+    cached_serial: u64,
+    now: i64,
+) -> Result<Index, Reason> {
+    for key in keys {
+        match verify_index(raw, sig_text, key, cached_serial, now) {
+            Err("bad_signature") => continue,
+            other => return other,
+        }
+    }
+    Err("bad_signature")
+}
+
+impl Index {
+    /// True when the index announces a signing key that is not among `trusted`: the publisher is
+    /// about to rotate, and this manager must be updated to a release that embeds the new key.
+    pub fn rotation_pending(&self, trusted: &[PublicKey]) -> bool {
+        self.next_key
+            .as_deref()
+            .and_then(PublicKey::parse_body)
+            .is_some_and(|next| !trusted.contains(&next))
+    }
+}
+
 /// A field `keys` already proved present.
 fn field<'a>(v: &'a Value, key: &str) -> &'a Value {
     v.get(key).unwrap_or(&Value::Null)
@@ -369,6 +398,47 @@ mod tests {
         assert!(!url_ok("https://@example.com/a.zip"));
         assert!(!url_ok("https:///a.zip"));
         assert!(!url_ok("https://example.com/a b"));
+    }
+
+    #[test]
+    fn several_keys_and_rotation() {
+        let doc = json::parse(VECTORS.as_bytes()).unwrap();
+        let signer = PublicKey::parse_file(field(&doc, "public_key").as_str().unwrap()).unwrap();
+        let now = parse_time(field(&doc, "now").as_str().unwrap()).unwrap();
+        let case = |name: &str| {
+            let cases = field(&doc, "cases").as_array().unwrap();
+            let c = cases
+                .iter()
+                .find(|c| field(c, "name").as_str() == Some(name))
+                .unwrap();
+            (
+                field(c, "index").as_str().unwrap().to_owned(),
+                field(c, "signature").as_str().unwrap().to_owned(),
+            )
+        };
+        let mut other = signer.clone();
+        other.key_id[0] ^= 1;
+
+        let (raw, sig) = case("valid_with_next_key");
+        let both = [other.clone(), signer.clone()];
+        let idx = verify_index_any(raw.as_bytes(), &sig, &both, 5, now).unwrap();
+        assert_eq!(
+            verify_index_any(raw.as_bytes(), &sig, &[other.clone()], 5, now).unwrap_err(),
+            "bad_signature"
+        );
+        assert_eq!(
+            verify_index_any(raw.as_bytes(), &sig, &[], 5, now).unwrap_err(),
+            "bad_signature"
+        );
+
+        // The announced key is not trusted yet: rotation pending. Trusting it clears that.
+        assert!(idx.rotation_pending(std::slice::from_ref(&signer)));
+        let next = PublicKey::parse_body(idx.next_key.as_deref().unwrap()).unwrap();
+        assert!(!idx.rotation_pending(&[signer, next]));
+
+        let (raw, sig) = case("valid");
+        let idx = verify_index_any(raw.as_bytes(), &sig, &both, 5, now).unwrap();
+        assert!(!idx.rotation_pending(&both), "no next_key, nothing pending");
     }
 
     /// Every vector in docs/vectors/index.json must give the reference result.

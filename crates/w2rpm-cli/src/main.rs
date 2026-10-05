@@ -11,7 +11,7 @@ use w2rpm_lib::fetch::{self, DirFetcher, Fetcher, Https, Source};
 use w2rpm_lib::index::{Index, VersionEntry};
 use w2rpm_lib::minisign::PublicKey;
 use w2rpm_lib::store::{self, Root};
-use w2rpm_lib::{Error, catalog, install};
+use w2rpm_lib::{Error, catalog, check, install};
 
 #[derive(Parser)]
 #[command(
@@ -26,9 +26,15 @@ struct Cli {
     /// Where the signed index is published (`index.json`; the signature is `index.json.sig`).
     #[arg(long, env = "W2RPM_INDEX_URL", global = true)]
     index_url: Option<String>,
-    /// The minisign public key (.pub file) the index must be signed with.
-    #[arg(long, env = "W2RPM_KEY_FILE", global = true)]
-    key: Option<PathBuf>,
+    /// A minisign public key (.pub file) the index may be signed with. Repeat it, or separate
+    /// files with `;` in W2RPM_KEY_FILE, to trust more than one (around a key rotation).
+    #[arg(
+        long = "key",
+        env = "W2RPM_KEY_FILE",
+        global = true,
+        value_delimiter = ';'
+    )]
+    keys: Vec<PathBuf>,
     /// Development: serve the index and packages from a folder instead of the network.
     #[arg(long, global = true, hide = true)]
     index_dir: Option<PathBuf>,
@@ -116,20 +122,23 @@ fn context(cli: &Cli) -> Result<Ctx, Error> {
         }
         None => default_root()?,
     };
-    let key_file = cli.key.as_ref().ok_or_else(|| {
-        Error::new(
+    if cli.keys.is_empty() {
+        return Err(Error::new(
             "no_key",
             "no release key is built in yet; pass --key FILE (a minisign .pub file)",
-        )
-    })?;
-    let key_text = std::fs::read_to_string(key_file)
-        .map_err(|e| Error::new("no_key", format!("{}: {e}", key_file.display())))?;
-    let key = PublicKey::parse_file(&key_text).ok_or_else(|| {
-        Error::new(
-            "no_key",
-            format!("{} is not a minisign public key", key_file.display()),
-        )
-    })?;
+        ));
+    }
+    let mut keys = Vec::new();
+    for key_file in &cli.keys {
+        let key_text = std::fs::read_to_string(key_file)
+            .map_err(|e| Error::new("no_key", format!("{}: {e}", key_file.display())))?;
+        keys.push(PublicKey::parse_file(&key_text).ok_or_else(|| {
+            Error::new(
+                "no_key",
+                format!("{} is not a minisign public key", key_file.display()),
+            )
+        })?);
+    }
     let (fetcher, index_url): (Box<dyn Fetcher>, String) = match (&cli.index_dir, &cli.index_url) {
         (Some(dir), url) => (
             Box::new(DirFetcher(dir.clone())),
@@ -139,14 +148,16 @@ fn context(cli: &Cli) -> Result<Ctx, Error> {
         (None, Some(url)) => (Box::new(Https::default()), url.clone()),
         (None, None) => return Err(Error::new("no_index_url", "pass --index-url URL")),
     };
+    // No clock means no expiry check: refuse rather than treat it as 1970.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+        .map_err(|_| Error::new("no_clock", "the system clock is before 1970"))?
+        .as_secs() as i64;
     let manager = Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version is SemVer");
     Ok(Ctx {
         root: Root(root),
         fetcher,
-        source: Source { index_url, key },
+        source: Source { index_url, keys },
         now,
         manager,
     })
@@ -155,14 +166,28 @@ fn context(cli: &Cli) -> Result<Ctx, Error> {
 impl Ctx {
     /// The cached index when it still verifies, else a fresh one.
     fn index(&self) -> Result<Index, Error> {
-        match fetch::load_cached(&self.root, &self.source.key, self.now) {
-            Ok(i) => Ok(i),
-            Err(_) => self.refresh(),
-        }
+        let idx = match fetch::load_cached(&self.root, &self.source.keys, self.now) {
+            Ok(i) => i,
+            Err(_) => return self.refresh(),
+        };
+        self.note_rotation(&idx);
+        Ok(idx)
     }
 
     fn refresh(&self) -> Result<Index, Error> {
-        fetch::refresh(&self.root, self.fetcher.as_ref(), &self.source, self.now)
+        let idx = fetch::refresh(&self.root, self.fetcher.as_ref(), &self.source, self.now)?;
+        self.note_rotation(&idx);
+        Ok(idx)
+    }
+
+    /// The publisher announced a new signing key this manager does not trust yet.
+    fn note_rotation(&self, idx: &Index) {
+        if idx.rotation_pending(&self.source.keys) {
+            eprintln!(
+                "warning: the index announces a new signing key; update w2rpm (or add the new \
+                 key with --key) before the publisher switches to it"
+            );
+        }
     }
 }
 
@@ -178,7 +203,12 @@ fn capability_note(c: &str) -> &'static str {
 }
 
 /// Shows what is being installed and asks. Returns the capabilities the user approved.
-fn confirm(entry: &VersionEntry, pending: &[String], a: &Approval) -> Result<Vec<String>, Error> {
+fn confirm(
+    entry: &VersionEntry,
+    pending: &[String],
+    warnings: &[String],
+    a: &Approval,
+) -> Result<Vec<String>, Error> {
     let m = &entry.manifest;
     println!("{} {} by {}", m.name, entry.version, m.author);
     println!("  {}", m.description);
@@ -187,6 +217,17 @@ fn confirm(entry: &VersionEntry, pending: &[String], a: &Approval) -> Result<Vec
         println!(
             "  NOTE: this plugin changes the simulation; players need it to match in multiplayer."
         );
+    }
+    println!(
+        "  Built for game builds: {}",
+        m.game_builds
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for w in warnings {
+        println!("  WARNING: {w}");
     }
     for c in &m.capabilities {
         let tag = if pending.contains(c) {
@@ -220,10 +261,11 @@ fn confirm(entry: &VersionEntry, pending: &[String], a: &Approval) -> Result<Vec
     }
 }
 
-fn install_entry(ctx: &Ctx, entry: &VersionEntry, a: &Approval) -> Result<(), Error> {
+fn install_entry(ctx: &Ctx, idx: &Index, entry: &VersionEntry, a: &Approval) -> Result<(), Error> {
     let state = ctx.root.load_state()?;
     let pending = install::pending_approvals(&state, entry);
-    let approved = confirm(entry, &pending, a)?;
+    let warnings = check::warnings(&state, Some(idx), entry, &ctx.manager);
+    let approved = confirm(entry, &pending, &warnings, a)?;
     let bytes = fetch::download(ctx.fetcher.as_ref(), entry)?;
     let out =
         install::install(&ctx.root, entry, &bytes, &approved, &ctx.manager).map_err(hint_io)?;
@@ -310,7 +352,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
                 None => catalog::latest(p, &ctx.manager),
             }
             .ok_or_else(|| Error::new("no_version", format!("no installable version of {id}")))?;
-            install_entry(&ctx, entry, approval)?;
+            install_entry(&ctx, &idx, entry, approval)?;
         }
         Cmd::Update { id, approval } => {
             let ctx = context(cli)?;
@@ -327,7 +369,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
                 println!("everything is up to date");
             }
             for (_, entry) in todo {
-                install_entry(&ctx, entry, approval)?;
+                install_entry(&ctx, &idx, entry, approval)?;
             }
         }
     }
@@ -353,7 +395,7 @@ fn list(cli: &Cli) -> Result<(), Error> {
     let updates = context(cli)
         .ok()
         .and_then(|c| {
-            fetch::load_cached(&c.root, &c.source.key, c.now)
+            fetch::load_cached(&c.root, &c.source.keys, c.now)
                 .ok()
                 .map(|i| (c, i))
         })

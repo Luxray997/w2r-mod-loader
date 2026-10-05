@@ -67,6 +67,16 @@ pub struct BuildRange {
     pub max: Build,
 }
 
+impl core::fmt::Display for BuildRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.min == self.max {
+            write!(f, "{}", self.min)
+        } else {
+            write!(f, "{}-{}", self.min, self.max)
+        }
+    }
+}
+
 impl BuildRange {
     pub fn parse(s: &str) -> Option<BuildRange> {
         let (min, max) = match s.split_once('-') {

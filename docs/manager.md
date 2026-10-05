@@ -43,7 +43,7 @@ are the environment forms of the other two. Commands:
   finding).
 
 There is no embedded release key or default index URL yet (Phase 6 creates them), so `--key` and
-`--index-url` are required. `--index-dir DIR` (hidden) serves the index and packages from a folder
+`--index-url` are required. `--key` may be repeated (or `;`-separated in `W2RPM_KEY_FILE`) to trust two keys around a rotation. `--index-dir DIR` (hidden) serves the index and packages from a folder
 for tests; the signature, URL rules and package hashes are still enforced.
 
 ## Decisions
@@ -81,9 +81,12 @@ expanded), `ratio` (over 100:1), `missing_file`, `manifest_mismatch`, `bad_manif
 ## Known limits
 
 - No lock between two running managers; run one at a time.
-- Dependencies, ABI and game build are not checked at install, only by the host at load
-  (`load-policy.md`). The CLI does not warn about them yet.
+- Dependencies, ABI and game build are enforced only by the host at load (`load-policy.md`). At
+  install the CLI prints `WARNING:` lines for a newer ABI than this manager speaks and for
+  dependencies that are missing, disabled or outside `version_req` (`check.rs`), and lists the
+  game builds the plugin targets (it cannot know which build is installed). Warnings never block.
 - Installing or removing while the game runs fails on Windows (the DLL is open); the error says so.
 - Minisign interoperability is still unproven against the real binary (Phase 6); the `dev-sign`
   feature signs with the committed test key and must never be enabled in a release build.
-- `next_key` is validated but key rotation is not implemented in the manager yet.
+- Key rotation never switches keys by itself: the manager trusts every `--key` it is given and
+  warns when an index announces a `next_key` it does not trust (`index.md`, "Key management").

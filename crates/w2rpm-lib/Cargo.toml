@@ -6,6 +6,7 @@ rust-version.workspace = true
 description = "Plugin manager logic for Warcraft II Remastered: index, download, verify, install"
 
 [dependencies]
+w2r-abi.workspace = true
 w2r-formats.workspace = true
 base64 = "0.22"
 blake2 = "0.10"

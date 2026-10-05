@@ -817,6 +817,7 @@ dependencies = [
  "ed25519-dalek",
  "sha2",
  "ureq",
+ "w2r-abi",
  "w2r-formats",
  "zip",
 ]

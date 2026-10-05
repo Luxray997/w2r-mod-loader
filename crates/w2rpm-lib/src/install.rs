@@ -214,6 +214,12 @@ pub fn rollback(root: &Root, id: &str) -> Result<Version, Error> {
         w2r_formats::manifest::MAX_BYTES,
     )?)
     .map_err(|r| Error::new("bad_manifest", r))?;
+    if m.id != id.as_str() || m.version != target.version {
+        return Err(Error::new(
+            "bad_manifest",
+            "the parked plugin.json is not the recorded id and version",
+        ));
+    }
     if crate::store::sha256_file(&parked_dir.join(&m.entry))? != target.sha256 {
         return Err(Error::new(
             "hash_mismatch",
@@ -421,6 +427,27 @@ mod tests {
         assert_eq!(
             rollback(&t.0, "example-plugin").unwrap_err().code,
             "hash_mismatch"
+        );
+        assert_eq!(
+            fs::read(t.0.plugin_dir(id()).join(ENTRY)).unwrap(),
+            b"dll-2"
+        );
+    }
+
+    #[test]
+    fn rollback_refuses_a_parked_manifest_for_another_version() {
+        let t = TempRoot::new("rbmanifest");
+        let (e1, z1) = package("1.0.0", &[], b"dll-1");
+        let (e2, z2) = package("2.0.0", &[], b"dll-2");
+        install(&t.0, &e1, &z1, &[], &mgr()).unwrap();
+        install(&t.0, &e2, &z2, &[], &mgr()).unwrap();
+        // A valid manifest, but not the recorded version of the parked plugin.
+        let other = crate::testutil::manifest_json("9.9.9", &[]);
+        let parked = t.0.rollback_dir(id()).join("plugin").join("plugin.json");
+        fs::write(parked, other).unwrap();
+        assert_eq!(
+            rollback(&t.0, "example-plugin").unwrap_err().code,
+            "bad_manifest"
         );
         assert_eq!(
             fs::read(t.0.plugin_dir(id()).join(ENTRY)).unwrap(),

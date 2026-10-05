@@ -85,6 +85,7 @@ fn plugin<'a>(version: &'a str, caps: &'a [&'a str], dll: &'a [u8]) -> Plugin<'a
         version,
         capabilities: caps,
         dll,
+        dependencies: &[],
     }
 }
 
@@ -192,4 +193,84 @@ fn an_index_signed_by_another_key_is_refused() {
     let out = fail(e.w2rpm_with(&["refresh"], "", &other));
     assert!(out.contains("bad_signature"), "{out}");
     assert!(!e.root.join("cache/index.json").exists());
+}
+
+#[test]
+fn install_warns_about_game_builds_and_missing_dependencies() {
+    let e = Env::new("warn");
+    let mut p = plugin("1.0.0", &[], b"dll");
+    p.dependencies = &[("some-library", ">=1.0.0")];
+    let lib = Plugin {
+        id: "some-library",
+        version: "1.2.0",
+        capabilities: &[],
+        dll: b"lib",
+        dependencies: &[],
+    };
+    e.publish(1, &[p, lib]);
+    let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    assert!(out.contains("Built for game builds: 1.0.2.2818"), "{out}");
+    assert!(
+        out.contains("WARNING: depends on some-library which is not installed")
+            && out.contains("w2rpm install some-library"),
+        "{out}"
+    );
+    // The warning does not block; once the library is in, the next install is quiet.
+    let out = ok(e.w2rpm(&["install", "some-library", "--yes"]));
+    assert!(!out.contains("WARNING"), "{out}");
+    let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    assert!(!out.contains("WARNING"), "{out}");
+}
+
+#[test]
+fn a_pending_key_rotation_is_announced_and_a_second_key_is_accepted() {
+    let e = Env::new("rotate");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // A well-formed key the manager does not trust, as the announced next key.
+    let pubfile = {
+        e.publish(1, &[]);
+        fs::read_to_string(e.repo.join("test.pub")).unwrap()
+    };
+    let body = pubfile.lines().nth(1).unwrap();
+    let mut next: Vec<u8> = body.bytes().collect();
+    next[45] = if next[45] == b'A' { b'B' } else { b'A' };
+    let next = String::from_utf8(next).unwrap();
+    devrepo::build_with(
+        &e.repo,
+        now,
+        2,
+        &[plugin("1.0.0", &[], b"dll")],
+        Some(&next),
+    )
+    .unwrap();
+    let out = e.w2rpm(&["refresh"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("announces a new signing key"),
+        "{}",
+        text(&out)
+    );
+
+    // Trusting the announced key silences it (two --key flags, either may have signed).
+    let next_file = e.repo.join("next.pub");
+    fs::write(&next_file, format!("untrusted comment: next\n{next}\n")).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_w2rpm"));
+    let out = c
+        .env_remove("W2R_ROOT")
+        .args(["--root"])
+        .arg(&e.root)
+        .arg("--index-dir")
+        .arg(&e.repo)
+        .arg("--key")
+        .arg(&next_file)
+        .arg("--key")
+        .arg(e.repo.join("test.pub"))
+        .arg("refresh")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!text(&out).contains("announces"), "{}", text(&out));
 }
