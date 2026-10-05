@@ -131,6 +131,18 @@ pub mod game {
         i8,
     ) -> i8;
     type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
+    type RowRatiosFn = unsafe extern "C" fn(*mut c_void, i32, f32, i32, *const f32);
+    type CountLinesFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32, f32) -> i32;
+    type KeyPressedFn = unsafe extern "C" fn(*mut c_void, i32) -> i32;
+    type WidgetSpaceFn = unsafe extern "C" fn(*mut f32, *mut c_void, *mut c_void, i32);
+    type ClockFn = unsafe extern "C" fn() -> i64;
+
+    // More of the Nuklear context and panel (wc2r-plus `struct_offsets.h`).
+    const CTX_SEQ: usize = 0x3d34;
+    const CTX_FONT: usize = 0x1e0;
+    const FONT_HEIGHT: usize = 0x04;
+    const PANEL_ROW_INDEX: usize = 0x68;
+    const PANEL_ROW_ITEM_OFFSET: usize = 0x84;
 
     /// NUL-terminated copy for the game's C-string widgets.
     pub fn cstr(text: &str) -> Vec<u8> {
@@ -189,6 +201,13 @@ pub mod game {
         row: RowFn,
         fill_rect: FillRectFn,
         slot_dropdown: SlotDropdownFn,
+        row_ratios: RowRatiosFn,
+        count_lines: CountLinesFn,
+        key_pressed: KeyPressedFn,
+        widget_space: WidgetSpaceFn,
+        spacing: CtxFn,
+        end_window: CtxFn,
+        clock: ClockFn,
     }
 
     // SAFETY: plain game function and data addresses, fixed for the session.
@@ -229,7 +248,162 @@ pub mod game {
                 row: sym!(symbols, "LayoutRowDynamic", RowFn),
                 fill_rect: sym!(symbols, "NkFillRect", FillRectFn),
                 slot_dropdown: sym!(symbols, "LobbySlotDropdown", SlotDropdownFn),
+                row_ratios: sym!(symbols, "LayoutRowRatios", RowRatiosFn),
+                count_lines: sym!(symbols, "CountWrappedLines", CountLinesFn),
+                key_pressed: sym!(symbols, "InputKeyPressed", KeyPressedFn),
+                widget_space: sym!(symbols, "NkLayoutWidgetSpace", WidgetSpaceFn),
+                spacing: sym!(symbols, "Spacing", CtxFn),
+                end_window: sym!(symbols, "EndCurrentWindow", CtxFn),
+                clock: sym!(symbols, "MillisecondClock", ClockFn),
             })
+        }
+
+        /// A row of `ratios.len()` columns, each a fraction of the row, `height` tall.
+        pub fn row_ratios(&self, height: f32, ratios: &[f32]) {
+            unsafe {
+                (self.row_ratios)(self.ctx(), 0, height, ratios.len() as i32, ratios.as_ptr())
+            };
+        }
+
+        /// A row of `cols` equal columns.
+        pub fn row_dynamic(&self, height: f32, cols: i32) {
+            unsafe { (self.row)(self.ctx(), height, cols) };
+        }
+
+        /// Skips one cell of the current row.
+        pub fn spacing(&self) {
+            unsafe { (self.spacing)(self.ctx()) };
+        }
+
+        /// Ends the window the game began; call after the screen's own content is done.
+        pub fn end_window(&self) {
+            unsafe { (self.end_window)(self.ctx()) };
+        }
+
+        /// How many lines the game's wrapped label would take for `text` at `wrap_width`.
+        pub fn count_lines(&self, text: &str, wrap_width: f32) -> i32 {
+            let t = cstr(text);
+            unsafe {
+                (self.count_lines)(
+                    self.ctx(),
+                    t.as_ptr().cast(),
+                    (t.len() - 1) as i32,
+                    wrap_width,
+                )
+            }
+        }
+
+        /// A wrapped label in the current layout cell, in `colour`.
+        pub fn wrapped_label(&self, text: &str, colour: u32) {
+            let t = cstr(text);
+            unsafe { (self.wrapped_label)(self.ctx(), t.as_ptr().cast(), colour) };
+        }
+
+        /// The colour the game is drawing text in right now.
+        pub fn current_text_colour(&self) -> u32 {
+            self.text_colour()
+        }
+
+        pub fn key_pressed(&self, key: i32) -> bool {
+            unsafe { (self.key_pressed)(self.ctx(), key) != 0 }
+        }
+
+        /// The game's own millisecond clock.
+        pub fn clock_ms(&self) -> i64 {
+            unsafe { (self.clock)() }
+        }
+
+        /// Greys out everything until [`Kit::disable_end`].
+        pub fn disable_begin(&self) {
+            unsafe { (self.disable_begin)(self.ctx()) };
+        }
+
+        pub fn disable_end(&self) {
+            unsafe { (self.disable_end)(self.ctx()) };
+        }
+
+        /// The context's sequence counter; it jumps by more than one when something clears the
+        /// frame's drawing mid-frame.
+        pub fn ctx_seq(&self) -> u32 {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return 0;
+            }
+            unsafe { ctx.add(CTX_SEQ).cast::<u32>().read_unaligned() }
+        }
+
+        /// The height of the font the game is drawing with.
+        pub fn font_height(&self) -> f32 {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return CAPTION_H;
+            }
+            unsafe {
+                let font = ctx.add(CTX_FONT).cast::<*const u8>().read_unaligned();
+                if font.is_null() {
+                    CAPTION_H
+                } else {
+                    font.add(FONT_HEIGHT).cast::<f32>().read_unaligned()
+                }
+            }
+        }
+
+        /// The vertical scroll of the current group.
+        pub fn scroll_offset_y(&self) -> f32 {
+            let p = self.panel();
+            if p.is_null() {
+                return 0.0;
+            }
+            unsafe {
+                let at = p.add(PANEL_OFFSET_Y).cast::<*const u32>().read_unaligned();
+                if at.is_null() { 0.0 } else { *at as f32 }
+            }
+        }
+
+        pub fn set_scroll_offset_y(&self, value: f32) {
+            let p = self.panel();
+            if p.is_null() {
+                return;
+            }
+            unsafe {
+                let at = p.add(PANEL_OFFSET_Y).cast::<*mut u32>().read_unaligned();
+                if !at.is_null() {
+                    *at = if value > 0.0 { value as u32 } else { 0 };
+                }
+            }
+        }
+
+        /// The rectangle of the first cell of the row last laid out in the current group
+        /// (wc2r-plus `LastRowFirstCell`).
+        pub fn last_row_first_cell(&self) -> Option<Rect> {
+            let p = self.panel() as *mut u8;
+            if p.is_null() {
+                return None;
+            }
+            unsafe {
+                let index = p.add(PANEL_ROW_INDEX).cast::<i32>().read_unaligned();
+                let offset = p.add(PANEL_ROW_ITEM_OFFSET).cast::<f32>().read_unaligned();
+                if index <= 0 {
+                    return None;
+                }
+                p.add(PANEL_ROW_INDEX).cast::<i32>().write_unaligned(0);
+                p.add(PANEL_ROW_ITEM_OFFSET)
+                    .cast::<f32>()
+                    .write_unaligned(0.0);
+                let mut b = [0f32; 4];
+                (self.widget_space)(b.as_mut_ptr(), self.ctx(), core::ptr::null_mut(), 0);
+                p.add(PANEL_ROW_INDEX).cast::<i32>().write_unaligned(index);
+                p.add(PANEL_ROW_ITEM_OFFSET)
+                    .cast::<f32>()
+                    .write_unaligned(offset);
+                (b[2] > 0.0 && b[3] > 0.0).then_some(Rect::new(b[0], b[1], b[2], b[3]))
+            }
+        }
+
+        /// A group at `r` with explicit window `flags` (0x20: no scrollbar).
+        pub fn begin_group_flags(&self, r: Rect, name: &CStr, flags: u32) -> bool {
+            self.set_rect(r);
+            unsafe { (self.begin_group)(self.ctx(), name.as_ptr(), flags) != 0 }
         }
 
         pub fn ctx(&self) -> *mut c_void {

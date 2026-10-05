@@ -90,6 +90,17 @@ unsafe extern "C" fn detour(
     if let Err(fault) = guarded(|| on_window(name, opened)) {
         crate::session::host_fault(SYMBOL, &fault);
     }
+    // The one exception to "the game never sees a different return value": the replacement
+    // lobby screen (docs/lobby-screen.md) draws inside the lobby window, ends it, and reports it
+    // closed so the game skips its own content.
+    #[cfg(target_arch = "x86")]
+    if opened != 0
+        && !name.is_null()
+        && unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes() == crate::lobby::WINDOW.as_bytes()
+        && crate::lobbyscreen::try_draw()
+    {
+        return 0;
+    }
     opened
 }
 

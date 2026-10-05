@@ -497,6 +497,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             lock_teams: session.config.lock_team_changes,
             lock_slots: session.config.lock_slot_swaps,
             create_screen: session.config.enhanced_create_screen,
+            lobby_screen: session.config.enhanced_lobby_screen,
             map_sharing: session.config.map_sharing,
             auto_download: session.config.auto_download,
             lobby: lobby_warnings(),
@@ -578,6 +579,24 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 }
                 if let Ok(mut h) = session.net.handshake.try_borrow_mut() {
                     h.set_map_sharing(host.map_sharing);
+                }
+            }
+            Action::ToggleLobbyScreen => {
+                session.config.enhanced_lobby_screen = host.lobby_screen;
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "enhanced_lobby_screen {}",
+                            if host.lobby_screen { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
                 }
             }
             Action::ToggleCreateScreen => {
@@ -700,6 +719,16 @@ pub fn enhanced_create_screen() -> bool {
     })
 }
 
+/// Whether the replacement multiplayer lobby screen is switched on (`host.json`).
+pub fn enhanced_lobby_screen() -> bool {
+    SESSION.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().map(|s| s.config.enhanced_lobby_screen))
+            .unwrap_or(false)
+    })
+}
+
 pub fn log_error(source: &str, msg: &str) {
     StartupLog.line(W2R_LOG_ERROR, source, msg);
 }
@@ -814,6 +843,7 @@ fn start() -> Session {
                 options::install(image, &symbols, &*log);
                 crate::lobbycreate::install(image, &symbols, &*log);
                 crate::createscreen::install(&symbols, &*log);
+                crate::lobbyscreen::install(image, &symbols, &*log);
             }
             _ => log.line(
                 W2R_LOG_ERROR,

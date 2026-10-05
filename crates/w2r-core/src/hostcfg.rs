@@ -21,6 +21,8 @@ pub struct HostConfig {
     pub lock_slot_swaps: bool,
     /// Draw our Create Multiplayer Game screen instead of the game's (docs/create-screen.md).
     pub enhanced_create_screen: bool,
+    /// Draw our multiplayer lobby screen instead of the game's (docs/lobby-screen.md).
+    pub enhanced_lobby_screen: bool,
     /// Send and receive maps in multiplayer lobbies (docs/map-download.md).
     pub map_sharing: bool,
     /// Download a missing map without asking first.
@@ -36,6 +38,7 @@ impl Default for HostConfig {
             lock_team_changes: false,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
+            enhanced_lobby_screen: false,
             map_sharing: true,
             auto_download: false,
         }
@@ -68,6 +71,9 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
             "map_sharing" => cfg.map_sharing = value.as_bool().ok_or("bad_field")?,
             "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
+            "enhanced_lobby_screen" => {
+                cfg.enhanced_lobby_screen = value.as_bool().ok_or("bad_field")?;
+            }
             "enhanced_create_screen" => {
                 cfg.enhanced_create_screen = value.as_bool().ok_or("bad_field")?;
             }
@@ -102,6 +108,10 @@ impl HostConfig {
             (
                 "enhanced_create_screen".to_owned(),
                 Value::Bool(self.enhanced_create_screen),
+            ),
+            (
+                "enhanced_lobby_screen".to_owned(),
+                Value::Bool(self.enhanced_lobby_screen),
             ),
             ("map_sharing".to_owned(), Value::Bool(self.map_sharing)),
             ("auto_download".to_owned(), Value::Bool(self.auto_download)),
@@ -160,6 +170,7 @@ mod tests {
             lock_team_changes: true,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
+            enhanced_lobby_screen: true,
             map_sharing: false,
             auto_download: true,
         };
@@ -176,6 +187,10 @@ mod tests {
         assert!(
             HostConfig::default().enhanced_create_screen,
             "the replacement screen is on unless the file says otherwise"
+        );
+        assert!(
+            !HostConfig::default().enhanced_lobby_screen,
+            "the lobby screen is off until it has been verified"
         );
         assert_eq!(
             parse(b"{\"schema\": 1, \"enhanced_create_screen\": false}")
@@ -215,6 +230,7 @@ mod tests {
             lock_team_changes: false,
             lock_slot_swaps: true,
             enhanced_create_screen: false,
+            enhanced_lobby_screen: false,
             map_sharing: true,
             auto_download: false,
         };

@@ -193,6 +193,8 @@ pub struct HostRow {
     pub lock_slots: bool,
     /// `enhanced_create_screen` (`host.json`); takes effect the next time the screen opens.
     pub create_screen: bool,
+    /// `enhanced_lobby_screen` (`host.json`); takes effect the next time a lobby opens.
+    pub lobby_screen: bool,
     /// `map_sharing` and `auto_download` (`host.json`); sharing takes effect at once.
     pub map_sharing: bool,
     pub auto_download: bool,
@@ -204,6 +206,7 @@ pub const STRICT_LABEL: &str = "When hosting, remove players whose simulation pl
 pub const LOCK_TEAMS_LABEL: &str = "When hosting, lock team changes";
 pub const LOCK_SLOTS_LABEL: &str = "When hosting, lock slot swaps";
 pub const CREATE_SCREEN_LABEL: &str = "Use the w2rpm Create Multiplayer Game screen";
+pub const LOBBY_SCREEN_LABEL: &str = "Use the w2rpm multiplayer lobby screen";
 pub const MAP_SHARING_LABEL: &str = "Share maps with other players (send and receive)";
 pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
 
@@ -219,6 +222,8 @@ pub enum Action {
     ToggleLocks,
     /// The user flipped `enhanced_create_screen`.
     ToggleCreateScreen,
+    /// The user flipped `enhanced_lobby_screen`.
+    ToggleLobbyScreen,
     /// The user flipped `map_sharing` or `auto_download`.
     ToggleMapSharing,
 }
@@ -267,6 +272,12 @@ pub fn draw_plugin_screen(
     if w.checkbox(CREATE_SCREEN_LABEL, &mut create_screen) {
         host.create_screen = create_screen;
         action = Action::ToggleCreateScreen;
+    }
+    w.row(ROW_H, 1);
+    let mut lobby_screen = host.lobby_screen;
+    if w.checkbox(LOBBY_SCREEN_LABEL, &mut lobby_screen) {
+        host.lobby_screen = lobby_screen;
+        action = Action::ToggleLobbyScreen;
     }
     w.row(ROW_H, 1);
     let mut map_sharing = host.map_sharing;
@@ -500,6 +511,7 @@ mod tests {
             lock_teams: false,
             lock_slots: false,
             create_screen: false,
+            lobby_screen: false,
             map_sharing: false,
             auto_download: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
@@ -521,13 +533,14 @@ mod tests {
         assert_eq!(calls[7], format!("checkbox {LOCK_TEAMS_LABEL:?} false"));
         assert_eq!(calls[9], format!("checkbox {LOCK_SLOTS_LABEL:?} false"));
         assert_eq!(calls[11], format!("checkbox {CREATE_SCREEN_LABEL:?} false"));
-        assert_eq!(calls[13], format!("checkbox {MAP_SHARING_LABEL:?} false"));
-        assert_eq!(calls[15], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
+        assert_eq!(calls[13], format!("checkbox {LOBBY_SCREEN_LABEL:?} false"));
+        assert_eq!(calls[15], format!("checkbox {MAP_SHARING_LABEL:?} false"));
+        assert_eq!(calls[17], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
         assert_eq!(
-            calls[17],
+            calls[19],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[19], "label \"Plugins (3)\"");
+        assert_eq!(calls[21], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
         assert!(
             calls
@@ -550,6 +563,7 @@ mod tests {
             lock_teams: false,
             lock_slots: false,
             create_screen: false,
+            lobby_screen: false,
             map_sharing: false,
             auto_download: false,
             lobby: Vec::new(),
@@ -594,6 +608,14 @@ mod tests {
             Action::ToggleCreateScreen
         );
         assert!(host.create_screen);
+
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(LOBBY_SCREEN_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleLobbyScreen
+        );
+        assert!(host.lobby_screen);
 
         // And the map sharing pair.
         let fake = FakeWidgets::default();

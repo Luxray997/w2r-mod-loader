@@ -16,6 +16,7 @@ pub mod host;
 pub mod hostcfg;
 pub mod json;
 pub mod lobby;
+pub mod lobbylayout;
 pub mod lobbypolicy;
 pub mod log;
 pub mod manifest;
@@ -53,6 +54,8 @@ pub mod frame;
 pub mod loader;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod lobbycreate;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod lobbyscreen;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod mapdownload;
 #[cfg(all(windows, target_arch = "x86"))]

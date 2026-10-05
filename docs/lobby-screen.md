@@ -171,3 +171,28 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
    (`mp_lobby_players`, `mp_lobby_race`, `mp_lobby_team`, `option_speed_game_speed`,
    `customscenario_*`, `mp_chat_send`), English literals elsewhere ("Password:", "Teams:", "Slots:",
    "Locked", "Unlocked", the notices).
+
+## Slice 1 notes (2026-10-04)
+
+- Written and installed, **not yet checked in the game**. `lobbylayout.rs` is the pure part (columns,
+  slot geometry, mark sizes reserved but not drawn, footer and chat-input cells, entry grace, text
+  cleaning, the chat scroll tracker); `lobbyscreen.rs` is the game-facing part. Both are covered by
+  unit tests where they can be.
+- **Hook shape.** `frame.rs` (the `BeginNamedWindow` detour) runs the session work as before, then for
+  the lobby window calls `lobbyscreen::try_draw()`; when that drew and ended the window the detour
+  returns 0, the one place the game sees a different return value, so it skips its own content (what
+  wc2r-plus's `named_window` Suppress does).
+- **What draws in slice 1:** banner, game name, frame, the Players panel (header with count, the
+  game's own `MpLobbySlotRow` for 8 slots, team numbers as digits through a `LookupLocalized` hook
+  that only rewrites while the panel draws), chat history and input with Send, the map name, the
+  footer (Leave, Start for the host; dead 1.5 s after entry; everything greyed during the start
+  countdown) and the game's own popup (`MpLobbyPopup`). The right column has only the map name; the
+  preview, info rows and locks are slice 2.
+- **Setting:** `enhanced_lobby_screen` in `host.json`, default **off**, checkbox "Use the w2rpm
+  multiplayer lobby screen" on the plugin screen (takes effect when the lobby next opens).
+- **Fault handling:** a fault under the draw switches to the game's lobby for the rest of the
+  session and logs once; the frame in which it happened may glitch (our layout space can be left
+  open), and nothing is drawn by us after that.
+- **To check:** tick the box, host and join a lobby. Look for `lobbyscreen: drawing the replacement
+  lobby (window WxH)` in `w2r.log`; change slot, race and team, send chat, Leave, Start (host), the
+  scroll behaviour of the chat when it grows, and untick the box for the stock lobby.
