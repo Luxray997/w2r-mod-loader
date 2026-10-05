@@ -29,7 +29,7 @@ cargo build --release -p w2r-core --target i686-pc-windows-msvc
 The result, `target/i686-pc-windows-msvc/release/w2r_core.dll`, goes into the game's `x86`
 folder as `version.dll`. The host writes `w2r.log` under `Saved Games\Warcraft2Remastered\w2r\logs`
 (or `%W2R_ROOT%\logs`). `cargo test` without `--target` also works for the pure-Rust parts.
-Parts of the host are ported from wc2r-plus; see `THIRD_PARTY_NOTICES.md`.
+Parts of the host and the whole chat plugin are ports of wc2r-plus by Luxray997 (MIT); see `THIRD_PARTY_NOTICES.md`.
 
 `tools\install_dev.ps1` does the build and install and sets up the hello-world fixture plugin
 under Saved Games (`-WithCrasher` adds the crashing one, `-Uninstall` removes the DLL). Set `PYTHON=/path/to/python.exe`
