@@ -1,6 +1,6 @@
 # Manager library and CLI (Phase 4)
 
-`w2rpm-lib` holds all manager logic; `w2rpm-cli` (`w2rpm`) and later the egui app are thin callers.
+`w2rpm-lib` holds all manager logic; `w2rpm-cli` (`w2rpm`) and the egui app (`w2rpm-gui`, Phase 5) are thin callers; what both need before any command (root, keys, fetcher, preflight, install) is `session.rs`.
 The in-game host never links it. Formats are shared with the host through `w2r-formats` (json, semver,
 `plugin.json`, `state.json`), so the two cannot disagree about what is valid.
 

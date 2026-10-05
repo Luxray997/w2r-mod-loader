@@ -188,8 +188,14 @@ Fetch/verify index, download, hash check, atomic install, enable/disable, update
 Exit: `w2rpm install|list|verify` against a test index.
 
 ### 5. egui GUI
-Browse/search, capability prompt before install, enable/disable, update indicators, game-folder
-picker. No logic of its own; it calls `w2rpm-lib`.
+Status: written and tested (2026-10-04); window not yet clicked through by a person. Browse/search,
+capability prompt before install (`hooks.raw` needs its own tick), enable/disable, update
+indicators and update button, rollback, remove (optional data purge), verify, game-folder and
+key-file pickers. No logic of its own; it calls `w2rpm-lib`. The code both front ends needed
+(root, keys, fetcher, clock, preflight, install) moved from the CLI into `w2rpm-lib::session`.
+`crates/w2rpm-gui`: `jobs.rs` (job sequencing and the `View` snapshot, UI-free), `settings.rs`
+(`%APPDATA%\w2rpm\gui.json`), `app.rs` (egui); `tests/jobs.rs` runs the whole cycle against a
+signed test repo. Still needs the Phase 6 key and index URL (entered in Settings until then).
 
 ### 6. Plugin repository and CI
 `w2r-plugins` repo: source + manifest per plugin, CI builds binaries and publishes hashes, PR

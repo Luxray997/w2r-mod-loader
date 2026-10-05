@@ -5,13 +5,11 @@ use clap::{Args, Parser, Subcommand};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 use w2r_formats::semver::Version;
-use w2rpm_lib::fetch::{self, DirFetcher, Fetcher, Https, Source};
 use w2rpm_lib::index::{Index, VersionEntry};
-use w2rpm_lib::minisign::PublicKey;
+use w2rpm_lib::session::{self, Session};
 use w2rpm_lib::store::{self, Root};
-use w2rpm_lib::{Error, catalog, check, install};
+use w2rpm_lib::{Error, catalog, install};
 
 #[derive(Parser)]
 #[command(
@@ -94,113 +92,38 @@ enum Cmd {
     Verify,
 }
 
-struct Ctx {
-    root: Root,
-    fetcher: Box<dyn Fetcher>,
-    source: Source,
-    now: i64,
-    manager: Version,
+fn context(cli: &Cli) -> Result<Session, Error> {
+    let root = session::resolve_root(cli.root.as_deref())?;
+    Session::new(
+        root,
+        cli.index_url.clone(),
+        cli.index_dir.clone(),
+        &cli.keys,
+    )
 }
 
-fn default_root() -> Result<PathBuf, Error> {
-    let home = std::env::var_os("USERPROFILE")
-        .ok_or_else(|| Error::new("no_root", "USERPROFILE is not set; pass --root"))?;
-    Ok(PathBuf::from(home)
-        .join("Saved Games")
-        .join("Warcraft2Remastered")
-        .join("w2r"))
-}
-
-fn context(cli: &Cli) -> Result<Ctx, Error> {
-    let root = match &cli.root {
-        Some(p) if p.is_absolute() => p.clone(),
-        Some(p) => {
-            return Err(Error::new(
-                "no_root",
-                format!("--root must be absolute: {}", p.display()),
-            ));
-        }
-        None => default_root()?,
-    };
-    if cli.keys.is_empty() {
-        return Err(Error::new(
-            "no_key",
-            "no release key is built in yet; pass --key FILE (a minisign .pub file)",
-        ));
-    }
-    let mut keys = Vec::new();
-    for key_file in &cli.keys {
-        let key_text = std::fs::read_to_string(key_file)
-            .map_err(|e| Error::new("no_key", format!("{}: {e}", key_file.display())))?;
-        keys.push(PublicKey::parse_file(&key_text).ok_or_else(|| {
-            Error::new(
-                "no_key",
-                format!("{} is not a minisign public key", key_file.display()),
-            )
-        })?);
-    }
-    let (fetcher, index_url): (Box<dyn Fetcher>, String) = match (&cli.index_dir, &cli.index_url) {
-        (Some(dir), url) => (
-            Box::new(DirFetcher(dir.clone())),
-            url.clone()
-                .unwrap_or_else(|| "https://dev.invalid/index.json".to_owned()),
-        ),
-        (None, Some(url)) => (Box::new(Https::default()), url.clone()),
-        (None, None) => return Err(Error::new("no_index_url", "pass --index-url URL")),
-    };
-    // No clock means no expiry check: refuse rather than treat it as 1970.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::new("no_clock", "the system clock is before 1970"))?
-        .as_secs() as i64;
-    let manager = Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version is SemVer");
-    Ok(Ctx {
-        root: Root(root),
-        fetcher,
-        source: Source { index_url, keys },
-        now,
-        manager,
-    })
-}
-
-impl Ctx {
-    /// The cached index when it still verifies, else a fresh one.
-    fn index(&self) -> Result<Index, Error> {
-        let idx = match fetch::load_cached(&self.root, &self.source.keys, self.now) {
-            Ok(i) => i,
-            Err(_) => return self.refresh(),
-        };
-        self.note_rotation(&idx);
-        Ok(idx)
-    }
-
-    fn refresh(&self) -> Result<Index, Error> {
-        let idx = fetch::refresh(&self.root, self.fetcher.as_ref(), &self.source, self.now)?;
-        self.note_rotation(&idx);
-        Ok(idx)
-    }
-
-    /// The publisher announced a new signing key this manager does not trust yet.
-    fn note_rotation(&self, idx: &Index) {
-        if idx.rotation_pending(&self.source.keys) {
-            eprintln!(
-                "warning: the index announces a new signing key; update w2rpm (or add the new \
-                 key with --key) before the publisher switches to it"
-            );
-        }
+/// The publisher announced a new signing key this manager does not trust yet.
+fn note_rotation(ctx: &Session, idx: &Index) {
+    if ctx.rotation_pending(idx) {
+        eprintln!(
+            "warning: the index announces a new signing key; update w2rpm (or add the new              key with --key) before the publisher switches to it"
+        );
     }
 }
 
-fn capability_note(c: &str) -> &'static str {
-    match c {
-        "game.read" => "read game state",
-        "chat.read" => "see chat text and player names from others",
-        "chat.write" => "send chat messages as you",
-        "net.send" => "send plugin messages to other players",
-        "hooks.raw" => "DANGEROUS: patch the game's code directly",
-        _ => "",
-    }
+fn index(ctx: &Session) -> Result<Index, Error> {
+    let idx = ctx.index()?;
+    note_rotation(ctx, &idx);
+    Ok(idx)
 }
+
+fn refresh(ctx: &Session) -> Result<Index, Error> {
+    let idx = ctx.refresh()?;
+    note_rotation(ctx, &idx);
+    Ok(idx)
+}
+
+use w2rpm_lib::session::capability_note;
 
 /// Shows what is being installed and asks. Returns the capabilities the user approved.
 fn confirm(
@@ -261,14 +184,15 @@ fn confirm(
     }
 }
 
-fn install_entry(ctx: &Ctx, idx: &Index, entry: &VersionEntry, a: &Approval) -> Result<(), Error> {
-    let state = ctx.root.load_state()?;
-    let pending = install::pending_approvals(&state, entry);
-    let warnings = check::warnings(&state, Some(idx), entry, &ctx.manager);
-    let approved = confirm(entry, &pending, &warnings, a)?;
-    let bytes = fetch::download(ctx.fetcher.as_ref(), entry)?;
-    let out =
-        install::install(&ctx.root, entry, &bytes, &approved, &ctx.manager).map_err(hint_io)?;
+fn install_entry(
+    ctx: &Session,
+    idx: &Index,
+    entry: &VersionEntry,
+    a: &Approval,
+) -> Result<(), Error> {
+    let pre = ctx.preflight(idx, entry)?;
+    let approved = confirm(entry, &pre.pending, &pre.warnings, a)?;
+    let out = ctx.install(entry, &approved)?;
     let id = &entry.manifest.id;
     match out {
         install::Outcome::Installed => println!("installed {id} {}", entry.version),
@@ -276,18 +200,6 @@ fn install_entry(ctx: &Ctx, idx: &Index, entry: &VersionEntry, a: &Approval) -> 
         install::Outcome::Reinstalled => println!("reinstalled {id} {}", entry.version),
     }
     Ok(())
-}
-
-/// Folder moves fail while the game holds a plugin DLL open.
-fn hint_io(e: Error) -> Error {
-    if e.code == "io" {
-        Error::new(
-            "io",
-            format!("{} (is the game running? close it and try again)", e.detail),
-        )
-    } else {
-        e
-    }
 }
 
 fn parse_spec(spec: &str) -> Result<(&str, Option<Version>), Error> {
@@ -305,7 +217,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
     match &cli.cmd {
         Cmd::Remove { id, purge } => {
             let root = context_root(cli)?;
-            install::remove(&root, id, *purge).map_err(hint_io)?;
+            install::remove(&root, id, *purge).map_err(session::hint_io)?;
             println!("removed {id}");
         }
         Cmd::Enable { id } | Cmd::Disable { id } => {
@@ -314,7 +226,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
             println!("{} {id}", if on { "enabled" } else { "disabled" });
         }
         Cmd::Rollback { id } => {
-            let v = install::rollback(&context_root(cli)?, id).map_err(hint_io)?;
+            let v = install::rollback(&context_root(cli)?, id).map_err(session::hint_io)?;
             println!("{id} is now {v}");
         }
         Cmd::Verify => {
@@ -330,12 +242,12 @@ fn run(cli: &Cli) -> Result<bool, Error> {
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
             let ctx = context(cli)?;
-            let idx = ctx.refresh()?;
+            let idx = refresh(&ctx)?;
             println!("index serial {}: {} plugins", idx.serial, idx.plugins.len());
         }
         Cmd::Search { term } => {
             let ctx = context(cli)?;
-            let idx = ctx.index()?;
+            let idx = index(&ctx)?;
             for (p, v) in catalog::search(&idx, term.as_deref().unwrap_or("")) {
                 println!("{} {} - {}", p.id, v.version, v.manifest.description);
             }
@@ -343,7 +255,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
         Cmd::Install { spec, approval } => {
             let ctx = context(cli)?;
             let (id, want) = parse_spec(spec)?;
-            let idx = ctx.index()?;
+            let idx = index(&ctx)?;
             let p = idx
                 .plugin(id)
                 .ok_or_else(|| Error::new("unknown_plugin", id.to_owned()))?;
@@ -356,7 +268,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
         }
         Cmd::Update { id, approval } => {
             let ctx = context(cli)?;
-            let idx = ctx.index()?;
+            let idx = index(&ctx)?;
             let state = ctx.root.load_state()?;
             let mut todo = catalog::updates(&state, &idx, &ctx.manager);
             if let Some(id) = id {
@@ -378,14 +290,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
 
 /// Commands that never touch the network need only the root.
 fn context_root(cli: &Cli) -> Result<Root, Error> {
-    match &cli.root {
-        Some(p) if p.is_absolute() => Ok(Root(p.clone())),
-        Some(p) => Err(Error::new(
-            "no_root",
-            format!("--root must be absolute: {}", p.display()),
-        )),
-        None => Ok(Root(default_root()?)),
-    }
+    session::resolve_root(cli.root.as_deref())
 }
 
 fn list(cli: &Cli) -> Result<(), Error> {
@@ -395,15 +300,14 @@ fn list(cli: &Cli) -> Result<(), Error> {
     let updates = context(cli)
         .ok()
         .and_then(|c| {
-            fetch::load_cached(&c.root, &c.source.keys, c.now)
-                .ok()
-                .map(|i| (c, i))
-        })
-        .map(|(c, i)| {
-            catalog::updates(&state, &i, &c.manager)
-                .into_iter()
-                .map(|(s, v)| (s.id.clone(), v.version.to_string()))
-                .collect::<Vec<_>>()
+            let idx = c.cached_index().ok()?;
+            Some(
+                c.updates(&idx)
+                    .ok()?
+                    .into_iter()
+                    .map(|(id, v)| (id, v.version.to_string()))
+                    .collect::<Vec<_>>(),
+            )
         })
         .unwrap_or_default();
     if state.plugins.is_empty() {

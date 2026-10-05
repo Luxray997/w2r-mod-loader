@@ -44,6 +44,7 @@ pub mod check;
 pub mod devrepo;
 pub mod fetch;
 pub mod install;
+pub mod session;
 pub mod store;
 #[cfg(test)]
 mod testutil;
