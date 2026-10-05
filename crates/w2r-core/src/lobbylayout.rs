@@ -403,6 +403,251 @@ pub fn host_slot(
     (0..SLOT_COUNT).find(|&i| present[i] && names[i].eq_ignore_ascii_case(host_name))
 }
 
+// ---- download visuals (slice 4) -------------------------------------------------------------
+
+/// How long a finished download's full bar stays on screen.
+pub const DONE_SHOWN_MS: u64 = 1000;
+const BAR_THICKNESS: f32 = 0.07;
+const BAR_MIN_THICKNESS: f32 = 4.0;
+const BAR_SIDE_INSET: f32 = 0.14;
+const BAR_BOTTOM_INSET: f32 = 0.10;
+const BAR_SWEEP_SHARE: f32 = 0.25;
+pub const BAR_SWEEP_MS: u64 = 1400;
+pub const BAR_TRACK: u32 = pack(0, 0, 0, 160);
+pub const BAR_FILL: u32 = pack(240, 206, 74, 255);
+pub const BAR_DONE: u32 = pack(96, 200, 120, 255);
+pub const BAR_NO_MAP: u32 = pack(200, 64, 52, 255);
+pub const PANEL_BACK: u32 = pack(0, 0, 0, 170);
+pub const PANEL_ROUNDING: f32 = 12.0;
+const PANEL_PAD: f32 = 0.06;
+pub const PANEL_BAR_H: f32 = 24.0;
+pub const WAIT_DOT_MS: u64 = 400;
+/// Notices in the chat history are this colour.
+pub const NOTICE_COLOUR: u32 = pack(232, 196, 96, 255);
+/// Most notices kept; the oldest go first.
+pub const MAX_NOTICES: usize = 32;
+/// The lobby window has to go undrawn this long before notices are forgotten.
+pub const NOTICE_GAP_MS: u64 = 2000;
+
+/// What a slot's bar shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarKind {
+    None,
+    /// The player has been asked and has not answered: a sweeping segment.
+    Deciding,
+    Downloading(u8),
+    Done,
+    NoMap,
+}
+
+/// Maps the host's per-slot state onto a bar. `done_for_ms` is how long the slot has been `Done`.
+pub fn bar_kind(state: crate::mapwire::SlotState, percent: u8, done_for_ms: u64) -> BarKind {
+    use crate::mapwire::SlotState as S;
+    match state {
+        S::Offered => BarKind::Deciding,
+        S::Uploading => BarKind::Downloading(percent.min(100)),
+        S::Done if done_for_ms < DONE_SHOWN_MS => BarKind::Done,
+        S::NoMap => BarKind::NoMap,
+        _ => BarKind::None,
+    }
+}
+
+/// The bar's track along the bottom of a slot's name cell; `None` when the cell is too small.
+pub fn bar_track(cell: Rect) -> Option<Rect> {
+    if cell.w <= 0.0 || cell.h <= 0.0 {
+        return None;
+    }
+    let thick = fl((cell.h * BAR_THICKNESS).max(BAR_MIN_THICKNESS));
+    let side = fl(cell.h * BAR_SIDE_INSET);
+    let w = fl(cell.w - side * 2.0);
+    if w <= thick * 2.0 {
+        return None;
+    }
+    Some(Rect::new(
+        fl(cell.x + side),
+        fl(cell.y + cell.h - cell.h * BAR_BOTTOM_INSET - thick),
+        w,
+        thick,
+    ))
+}
+
+/// The coloured part of a bar inside its track, and its colour. `None` when nothing shows.
+pub fn bar_fill(track: Rect, kind: BarKind, clock_ms: u64) -> Option<(Rect, u32)> {
+    let thick = track.h;
+    match kind {
+        BarKind::None => None,
+        BarKind::Deciding => {
+            let seg = fl(track.w * BAR_SWEEP_SHARE);
+            let t = (clock_ms % BAR_SWEEP_MS) as f32 / BAR_SWEEP_MS as f32;
+            Some((
+                Rect::new(fl(track.x + (track.w - seg) * t), track.y, seg, thick),
+                BAR_FILL,
+            ))
+        }
+        BarKind::Downloading(percent) => {
+            let fw = fl(track.w * f32::from(percent.min(100)) / 100.0);
+            (fw > 0.0).then(|| (Rect::new(track.x, track.y, fw.max(thick), thick), BAR_FILL))
+        }
+        BarKind::Done => Some((track, BAR_DONE)),
+        BarKind::NoMap => Some((track, BAR_NO_MAP)),
+    }
+}
+
+/// Inside of the panel that covers the preview.
+pub fn panel_inner(panel: Rect) -> Rect {
+    let pad = fl(panel.w * PANEL_PAD);
+    Rect::new(fl(panel.x + pad), panel.y, fl(panel.w - pad * 2.0), panel.h)
+}
+
+/// "Looking for map" with one to three dots that cycle.
+pub fn waiting_text(clock_ms: u64) -> String {
+    const DOTS: [&str; 4] = ["", ".", "..", "..."];
+    format!(
+        "Looking for map{}",
+        DOTS[((clock_ms / WAIT_DOT_MS) % 4) as usize]
+    )
+}
+
+/// The parts of the "download this map?" panel: map name, size, seconds left and the button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AskPanel {
+    pub name: Rect,
+    pub size: Rect,
+    pub remaining: Rect,
+    pub button: Rect,
+}
+
+pub fn ask_panel(panel: Rect) -> AskPanel {
+    let inner = panel_inner(panel);
+    let total = CAPTION_H * 3.0 + ROW_H + GAP * 2.0;
+    let top = fl(panel.y + ((panel.h - total) * 0.5).max(0.0));
+    AskPanel {
+        name: Rect::new(inner.x, top, inner.w, CAPTION_H),
+        size: Rect::new(inner.x, top + CAPTION_H, inner.w, CAPTION_H),
+        remaining: Rect::new(inner.x, top + CAPTION_H * 2.0, inner.w, CAPTION_H),
+        button: Rect::new(inner.x, top + CAPTION_H * 3.0 + GAP * 2.0, inner.w, ROW_H),
+    }
+}
+
+pub fn ask_texts(map_name: &str, size_bytes: u32, ms_left: u64) -> (String, String, String) {
+    (
+        format!("Download {}?", clean_text(map_name)),
+        format!("{} KB", size_bytes.div_ceil(1024)),
+        format!("{} seconds remaining", ms_left.div_ceil(1000)),
+    )
+}
+
+/// The tooltip over the Start button while players are still downloading.
+pub fn pending_text(names: &[String]) -> String {
+    let mut list = String::new();
+    for n in names {
+        let who = if n.is_empty() { "a player" } else { n };
+        if !list.is_empty() {
+            list.push_str(", ");
+        }
+        list.push_str(who);
+        if list.len() >= 220 {
+            break;
+        }
+    }
+    format!("Pending map download from: {list}")
+}
+
+/// Where a tooltip of `size` goes for a mouse at `(mx, my)` inside `window`: up and to the right
+/// of the cursor, pulled back inside the window.
+pub fn tooltip_origin(mouse: (f32, f32), size: (f32, f32), window: Rect) -> (f32, f32) {
+    const OFFSET: f32 = 44.0;
+    let mut x = mouse.0 + OFFSET;
+    let mut y = mouse.1 - OFFSET - size.1;
+    if x + size.0 > window.w {
+        x = window.w - size.0;
+    }
+    x = x.max(0.0);
+    y = y.max(0.0);
+    (x, y)
+}
+
+pub fn contains(r: Rect, p: (f32, f32)) -> bool {
+    r.w > 0.0 && p.0 >= r.x && p.0 < r.x + r.w && p.1 >= r.y && p.1 < r.y + r.h
+}
+
+/// A line the lobby shows in the chat history that the game did not put there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    /// The number of chat lines the game had when it arrived: it shows before the next one.
+    pub anchor: usize,
+}
+
+/// Keeps the notices, newest last, at most [`MAX_NOTICES`].
+#[derive(Debug, Default)]
+pub struct Notices(Vec<Notice>);
+
+impl Notices {
+    pub const fn new() -> Notices {
+        Notices(Vec::new())
+    }
+
+    pub fn push(&mut self, text: String, anchor: usize) {
+        self.0.push(Notice { text, anchor });
+        if self.0.len() > MAX_NOTICES {
+            self.0.remove(0);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn all(&self) -> &[Notice] {
+        &self.0
+    }
+}
+
+/// One line of the history as drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub text: String,
+    pub notice: bool,
+}
+
+/// Interleaves notices into the game's chat lines (each with its index in the game's list): a
+/// notice appears before the first line whose index is at least its anchor, the rest at the end.
+pub fn merge_notices(lines: &[(usize, String)], notices: &[Notice]) -> Vec<Row> {
+    let mut out = Vec::with_capacity(lines.len() + notices.len());
+    let mut next = 0;
+    for (index, text) in lines {
+        while next < notices.len() && notices[next].anchor <= *index {
+            out.push(Row {
+                text: notices[next].text.clone(),
+                notice: true,
+            });
+            next += 1;
+        }
+        out.push(Row {
+            text: text.clone(),
+            notice: false,
+        });
+    }
+    for n in &notices[next..] {
+        out.push(Row {
+            text: n.text.clone(),
+            notice: true,
+        });
+    }
+    out
+}
+
+/// The notice for a lock change the host made.
+pub fn lock_notice(teams: bool, locked: bool) -> &'static str {
+    match (teams, locked) {
+        (true, true) => "Teams locked by host",
+        (true, false) => "Teams unlocked by host",
+        (false, true) => "Slots locked by host",
+        (false, false) => "Slots unlocked by host",
+    }
+}
+
 /// Keeps the chat history at the bottom when it was there and grew, and notices when something
 /// cleared the frame mid-way (wc2r-plus `lobby_chat.cpp`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -738,6 +983,175 @@ mod tests {
         assert_eq!(host_slot(None, &present, &names, ""), None);
         assert_eq!(host_slot(None, &present, &names, "Cy"), None);
         assert_eq!(host_slot(Some(200), &present, &names, "Cy"), None);
+    }
+
+    #[test]
+    fn slot_states_map_onto_bars_as_in_wc2r_plus() {
+        use crate::mapwire::SlotState as S;
+        assert_eq!(bar_kind(S::None, 0, 0), BarKind::None);
+        assert_eq!(bar_kind(S::Offered, 0, 0), BarKind::Deciding);
+        assert_eq!(bar_kind(S::Uploading, 40, 0), BarKind::Downloading(40));
+        assert_eq!(bar_kind(S::Uploading, 250, 0), BarKind::Downloading(100));
+        assert_eq!(bar_kind(S::Done, 100, 999), BarKind::Done);
+        assert_eq!(bar_kind(S::Done, 100, 1000), BarKind::None, "done fades");
+        assert_eq!(bar_kind(S::NoMap, 0, 0), BarKind::NoMap);
+        for s in [S::Stalled, S::LeftNoMap, S::NoAnswer] {
+            assert_eq!(bar_kind(s, 0, 0), BarKind::None);
+        }
+    }
+
+    #[test]
+    fn the_bar_track_sits_at_the_bottom_of_the_cell_and_never_overflows_it() {
+        let cell = Rect::new(100.0, 200.0, 900.0, 100.0);
+        let t = bar_track(cell).unwrap();
+        assert!(t.x >= cell.x && t.x + t.w <= cell.x + cell.w);
+        assert!(t.y >= cell.y && t.y + t.h <= cell.y + cell.h);
+        assert!(t.h >= 4.0);
+        assert_eq!(
+            bar_track(Rect::new(0.0, 0.0, 20.0, 100.0)),
+            None,
+            "too narrow"
+        );
+        assert_eq!(bar_track(Rect::default()), None);
+    }
+
+    #[test]
+    fn bar_fills_follow_progress_and_stay_inside_the_track() {
+        let track = Rect::new(0.0, 0.0, 400.0, 8.0);
+        assert_eq!(bar_fill(track, BarKind::None, 0), None);
+        assert_eq!(bar_fill(track, BarKind::Downloading(0), 0), None);
+        let (half, c) = bar_fill(track, BarKind::Downloading(50), 0).unwrap();
+        assert_eq!((half.w, c), (200.0, BAR_FILL));
+        let (tiny, _) = bar_fill(track, BarKind::Downloading(1), 0).unwrap();
+        assert_eq!(tiny.w, 8.0, "never thinner than the bar is tall");
+        assert_eq!(bar_fill(track, BarKind::Done, 0), Some((track, BAR_DONE)));
+        assert_eq!(
+            bar_fill(track, BarKind::NoMap, 0),
+            Some((track, BAR_NO_MAP))
+        );
+        for ms in [0, 350, 700, 1399, 99_999] {
+            let (seg, _) = bar_fill(track, BarKind::Deciding, ms).unwrap();
+            assert!(
+                seg.x >= track.x && seg.x + seg.w <= track.x + track.w,
+                "{ms}"
+            );
+        }
+        let (a, _) = bar_fill(track, BarKind::Deciding, 0).unwrap();
+        let (b, _) = bar_fill(track, BarKind::Deciding, 700).unwrap();
+        assert!(b.x > a.x, "the segment sweeps");
+    }
+
+    #[test]
+    fn the_waiting_text_cycles_its_dots() {
+        assert_eq!(waiting_text(0), "Looking for map");
+        assert_eq!(waiting_text(400), "Looking for map.");
+        assert_eq!(waiting_text(1200), "Looking for map...");
+        assert_eq!(waiting_text(1600), "Looking for map");
+    }
+
+    #[test]
+    fn the_ask_panel_stacks_four_parts_inside_the_preview_square() {
+        let panel = Rect::new(2000.0, 500.0, 900.0, 900.0);
+        let a = ask_panel(panel);
+        for r in [a.name, a.size, a.remaining, a.button] {
+            assert!(r.x >= panel.x && r.x + r.w <= panel.x + panel.w);
+            assert!(r.y >= panel.y && r.y + r.h <= panel.y + panel.h);
+        }
+        assert!(a.name.y + a.name.h <= a.size.y);
+        assert!(a.size.y + a.size.h <= a.remaining.y);
+        assert!(a.remaining.y + a.remaining.h <= a.button.y);
+    }
+
+    #[test]
+    fn the_ask_texts_round_up_and_clean_the_name() {
+        let (name, size, left) = ask_texts("Ridge\u{7}", 1025, 14_001);
+        assert_eq!(name, "Download Ridge?");
+        assert_eq!(size, "2 KB");
+        assert_eq!(left, "15 seconds remaining");
+        assert_eq!(ask_texts("m", 0, 0).1, "0 KB");
+    }
+
+    #[test]
+    fn the_start_tooltip_lists_who_is_downloading() {
+        assert_eq!(
+            pending_text(&["Ann".into(), String::new(), "Bob".into()]),
+            "Pending map download from: Ann, a player, Bob"
+        );
+        let many: Vec<String> = (0..50).map(|i| format!("Player{i}")).collect();
+        assert!(pending_text(&many).len() < 260, "bounded");
+    }
+
+    #[test]
+    fn a_tooltip_goes_above_right_of_the_cursor_and_stays_on_screen() {
+        let w = Rect::new(0.0, 0.0, 3840.0, 2160.0);
+        assert_eq!(
+            tooltip_origin((1000.0, 1000.0), (500.0, 100.0), w),
+            (1044.0, 856.0)
+        );
+        let (x, _) = tooltip_origin((3800.0, 1000.0), (500.0, 100.0), w);
+        assert_eq!(x, 3340.0, "pulled back inside");
+        let (_, y) = tooltip_origin((10.0, 20.0), (500.0, 100.0), w);
+        assert_eq!(y, 0.0, "never above the window");
+    }
+
+    #[test]
+    fn contains_is_half_open_and_ignores_empty_rects() {
+        let r = Rect::new(10.0, 10.0, 20.0, 20.0);
+        assert!(contains(r, (10.0, 10.0)));
+        assert!(!contains(r, (30.0, 15.0)));
+        assert!(!contains(Rect::default(), (0.0, 0.0)));
+    }
+
+    #[test]
+    fn notices_appear_before_the_chat_line_they_precede_and_the_rest_at_the_end() {
+        let lines: Vec<(usize, String)> = vec![(0, "a".into()), (1, "b".into()), (3, "d".into())];
+        let notices = vec![
+            Notice {
+                text: "n1".into(),
+                anchor: 1,
+            },
+            Notice {
+                text: "n2".into(),
+                anchor: 2,
+            },
+            Notice {
+                text: "n3".into(),
+                anchor: 9,
+            },
+        ];
+        let rows: Vec<String> = merge_notices(&lines, &notices)
+            .into_iter()
+            .map(|r| {
+                if r.notice {
+                    format!("[{}]", r.text)
+                } else {
+                    r.text
+                }
+            })
+            .collect();
+        assert_eq!(rows, ["a", "[n1]", "b", "[n2]", "d", "[n3]"]);
+        assert_eq!(merge_notices(&[], &notices).len(), 3);
+        assert!(merge_notices(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn only_the_newest_notices_are_kept() {
+        let mut n = Notices::default();
+        for i in 0..40 {
+            n.push(format!("n{i}"), i);
+        }
+        assert_eq!(n.all().len(), MAX_NOTICES);
+        assert_eq!(n.all()[0].text, "n8");
+        n.clear();
+        assert!(n.all().is_empty());
+    }
+
+    #[test]
+    fn lock_notices_name_what_changed() {
+        assert_eq!(lock_notice(true, true), "Teams locked by host");
+        assert_eq!(lock_notice(true, false), "Teams unlocked by host");
+        assert_eq!(lock_notice(false, true), "Slots locked by host");
+        assert_eq!(lock_notice(false, false), "Slots unlocked by host");
     }
 
     #[test]

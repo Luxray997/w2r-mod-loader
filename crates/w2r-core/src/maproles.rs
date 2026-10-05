@@ -631,7 +631,7 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    fn none() -> Prompt {
+    pub fn none() -> Prompt {
         Prompt {
             kind: PromptKind::None,
             map_name: String::new(),

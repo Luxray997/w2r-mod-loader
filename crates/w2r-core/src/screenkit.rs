@@ -141,6 +141,8 @@ pub mod game {
     // More of the Nuklear context and panel (wc2r-plus `struct_offsets.h`).
     const CTX_SEQ: usize = 0x3d34;
     const CTX_FONT: usize = 0x1e0;
+    const CTX_MOUSE_X: usize = 0x1bc;
+    const CTX_MOUSE_Y: usize = 0x1c0;
     const FONT_HEIGHT: usize = 0x04;
     const PANEL_ROW_INDEX: usize = 0x68;
     const PANEL_ROW_ITEM_OFFSET: usize = 0x84;
@@ -321,6 +323,20 @@ pub mod game {
 
         pub fn disable_end(&self) {
             unsafe { (self.disable_end)(self.ctx()) };
+        }
+
+        /// The mouse position in window coordinates.
+        pub fn mouse(&self) -> (f32, f32) {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return (-1.0, -1.0);
+            }
+            unsafe {
+                (
+                    ctx.add(CTX_MOUSE_X).cast::<f32>().read_unaligned(),
+                    ctx.add(CTX_MOUSE_Y).cast::<f32>().read_unaligned(),
+                )
+            }
         }
 
         /// The context's sequence counter; it jumps by more than one when something clears the

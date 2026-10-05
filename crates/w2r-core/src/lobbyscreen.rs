@@ -8,8 +8,9 @@
 //! Never begins a Nuklear window of its own: that froze the lobby once (PLAN.md, the banner).
 
 use core::ffi::{CStr, c_char, c_void};
+use std::collections::VecDeque;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
@@ -17,8 +18,10 @@ use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
 use crate::guard::guarded;
 use crate::hooks::{self, Owner};
 use crate::host::Log;
-use crate::lobbylayout::{self as geo, SLOT_COUNT, ScrollTracker};
+use crate::lobbylayout::{self as geo, Notices, SLOT_COUNT, ScrollTracker};
+use crate::mapdownload::LobbyDownloads;
 use crate::mappreview::tileset_for_key;
+use crate::maproles::{Prompt, PromptKind};
 use crate::pe::Image;
 use crate::previewdraw::{self, PreviewGame, Request};
 use crate::screenkit::game::{Kit, str_data};
@@ -110,6 +113,9 @@ static CHAT: Mutex<ChatState> = Mutex::new(ChatState {
     wrap_w: 0.0,
     wipe_logged: false,
 });
+static NOTICE_QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static NOTICES: Mutex<Notices> = Mutex::new(Notices::new());
+static LAST_DRAW_MS: AtomicU64 = AtomicU64::new(0);
 /// A fault under the replacement draw: the game's lobby from here on.
 static FAILED: AtomicBool = AtomicBool::new(false);
 static ANNOUNCED: AtomicBool = AtomicBool::new(false);
@@ -266,6 +272,28 @@ unsafe fn str_buffer(s: *mut u8) -> *mut u8 {
     }
 }
 
+/// Lines for the chat history that the game did not write (a download that ended badly, a lock
+/// the host changed). Queued from anywhere on the main thread, picked up by the next draw.
+pub fn push_notice(text: String) {
+    let mut q = NOTICE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    q.push_back(geo::clean_text(&text));
+    while q.len() > geo::MAX_NOTICES {
+        q.pop_front();
+    }
+}
+
+/// Forgets the notices of an earlier lobby: the window has not been drawn for a while.
+fn forget_stale_notices(now: u64) {
+    let last = LAST_DRAW_MS.swap(now.max(1), Ordering::Relaxed);
+    if last == 0 || now.saturating_sub(last) > geo::NOTICE_GAP_MS {
+        NOTICE_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
 /// Draws the replacement lobby if it is on and usable, inside the window the game just began.
 /// True when it drew and ended the window (the caller must report the window closed so the game
 /// skips its own content); false leaves the frame to the game.
@@ -279,7 +307,11 @@ pub fn try_draw() -> bool {
     let Some(window) = screen.kit.window_rect() else {
         return false;
     };
-    match guarded(|| unsafe { screen.draw(window) }) {
+    // We show the download prompt ourselves: the footer button after Leave stays away.
+    crate::mapdownload::set_own_prompt(true);
+    let drawn = guarded(|| unsafe { screen.draw(window) });
+    crate::mapdownload::set_own_prompt(false);
+    match drawn {
         Ok(()) => {
             if !ANNOUNCED.swap(true, Ordering::Relaxed) {
                 crate::session::log_info(
@@ -316,6 +348,7 @@ impl Screen {
     unsafe fn draw(&self, window: Rect) {
         let k = &self.kit;
         let l = geo::layout(window);
+        forget_stale_notices(crate::chat::now_ms());
         k.space_begin();
 
         let countdown = unsafe { *self.countdown } != 0;
@@ -330,12 +363,14 @@ impl Screen {
         );
         k.panel_frame(l.frame, c"lobby_panel", Some(unsafe { *self.skin_left }));
 
-        let gutters = unsafe { self.draw_slots(l.slots) };
+        let downloads = crate::mapdownload::lobby_downloads();
+        let slots = unsafe { self.draw_slots(l.slots) };
         unsafe { self.draw_chat(l.chat_history, l.chat_input) };
 
-        let request = unsafe { self.draw_right(l.right) };
+        let request = unsafe { self.draw_right(l.right, &downloads) };
 
-        unsafe { self.draw_footer(window, l.footer_y) };
+        let start = unsafe { self.draw_footer(window, l.footer_y) };
+        unsafe { self.draw_start_tooltip(window, start, &downloads) };
 
         if countdown {
             k.disable_end();
@@ -347,7 +382,7 @@ impl Screen {
             previewdraw::draw(&self.preview, k, &r);
         }
 
-        unsafe { self.draw_marks(&gutters) };
+        unsafe { self.draw_marks(&slots, &downloads) };
 
         // The game's own popups (kicked, host left, ...) belong to this window.
         let previous = k.push_skin(unsafe { *self.skin_popup });
@@ -374,7 +409,7 @@ impl Screen {
     }
 
     /// The map name, its preview's square and the info rows. Returns what to paint.
-    unsafe fn draw_right(&self, column: Rect) -> Option<Request> {
+    unsafe fn draw_right(&self, column: Rect, dl: &LobbyDownloads) -> Option<Request> {
         let k = &self.kit;
         let c = geo::right_column(column);
         let map = geo::clean_text(&unsafe { str_data_c(self.map_name) });
@@ -385,6 +420,16 @@ impl Screen {
             Some(unsafe { *self.font_heading }),
         );
         unsafe { self.draw_info(&c) };
+
+        // While this player waits for, is asked about or receives the map, a panel replaces the
+        // preview; with the map missing for any other reason there is nothing to show.
+        if dl.prompt.kind != PromptKind::None && c.preview.w > 0.0 {
+            self.draw_download_panel(c.preview, &dl.prompt);
+            return None;
+        }
+        if dl.map_missing {
+            return None;
+        }
 
         let path = unsafe { str_data_c(self.selected_map_path) };
         let flags = unsafe { *self.match_flags };
@@ -473,12 +518,12 @@ impl Screen {
     }
 
     /// The Players panel: a header, then the game's own slot rows in our column ratios.
-    unsafe fn draw_slots(&self, panel: Rect) -> [Rect; SLOT_COUNT] {
+    unsafe fn draw_slots(&self, panel: Rect) -> SlotRects {
         let k = &self.kit;
         let g = geo::slot_geometry(panel);
-        let mut gutters = [Rect::default(); SLOT_COUNT];
+        let mut rects = SlotRects::default();
         if !k.begin_group_flags(g.rows, c"mod_lobby_slots", NO_SCROLLBAR) {
-            return gutters;
+            return rects;
         }
         k.row_ratios(g.header_h, &g.ratios);
         k.label(&self.players_heading(), ALIGN_LEFT);
@@ -486,16 +531,21 @@ impl Screen {
         k.label(&k.localized(c"mp_lobby_race"), ALIGN_LEFT);
         k.spacing();
         k.label(&k.localized(c"mp_lobby_team"), ALIGN_LEFT);
+        // The header's first cell is as wide as every slot's name cell.
+        let name_column = k.last_row_first_cell();
 
         REWRITE_TEAMS.store(true, Ordering::Relaxed);
-        for (i, gutter) in gutters.iter_mut().enumerate() {
+        for i in 0..SLOT_COUNT {
             let top = k.next_row_top();
-            *gutter = Rect::new(panel.x, top, g.marks.gutter, g.row_h);
+            rects.gutter[i] = Rect::new(panel.x, top, g.marks.gutter, g.row_h);
+            if let Some(c) = name_column {
+                rects.name[i] = Rect::new(c.x, top, c.w, g.row_h);
+            }
             unsafe { (self.slot_row)(i as i32, g.ratios.as_ptr(), g.row_h, g.spacer) };
         }
         REWRITE_TEAMS.store(false, Ordering::Relaxed);
         k.end_list();
-        gutters
+        rects
     }
 
     fn slot_present(&self, i: usize) -> bool {
@@ -516,8 +566,10 @@ impl Screen {
 
     /// The crown beside the host, a green dot beside players running the mod, and, when starting
     /// locations are fixed, a colour swatch per slot: drawn on the window's canvas over the rows.
-    unsafe fn draw_marks(&self, gutters: &[Rect; SLOT_COUNT]) {
+    unsafe fn draw_marks(&self, rects: &SlotRects, dl: &LobbyDownloads) {
         let k = &self.kit;
+        let gutters = &rects.gutter;
+        let clock = k.clock_ms().max(0) as u64;
         let present: [bool; SLOT_COUNT] = core::array::from_fn(|i| self.slot_present(i));
         let names: [String; SLOT_COUNT] = core::array::from_fn(|i| unsafe { self.slot_name(i) });
         let (seat0, mods) = crate::session::lobby_roles();
@@ -555,10 +607,100 @@ impl Screen {
                 let inner = Rect::new(b.x + ring, b.y + ring, b.w - ring * 2.0, b.h - ring * 2.0);
                 k.fill_round(inner, inner.w * 0.5, geo::MOD_BADGE_COLOUR);
             }
+            if dl.bars[i] != geo::BarKind::None
+                && let Some(track) = geo::bar_track(rects.name[i])
+            {
+                k.fill_round(track, track.h * 0.5, geo::BAR_TRACK);
+                if let Some((fill, colour)) = geo::bar_fill(track, dl.bars[i], clock) {
+                    k.fill_round(fill, fill.h * 0.5, colour);
+                }
+            }
             if fixed {
                 k.fill_rect(geo::swatch_rect(*g, marks), geo::TEAM_COLOURS[i]);
             }
         }
+    }
+
+    /// The panel that replaces the preview while this player waits for, is asked about or
+    /// receives the host's map. The stock Leave button is the "no".
+    fn draw_download_panel(&self, panel: Rect, p: &Prompt) {
+        let k = &self.kit;
+        k.fill_round(panel, geo::PANEL_ROUNDING, geo::PANEL_BACK);
+        let inner = geo::panel_inner(panel);
+        let mid = fl(panel.y + (panel.h - CAPTION_H) * 0.5);
+        match p.kind {
+            PromptKind::Waiting => {
+                let text = geo::waiting_text(k.clock_ms().max(0) as u64);
+                k.label_at(
+                    Rect::new(inner.x, mid, inner.w, CAPTION_H),
+                    &text,
+                    ALIGN_CENTRE,
+                );
+            }
+            PromptKind::Downloading => {
+                k.label_at(
+                    Rect::new(inner.x, fl(mid - CAPTION_H * 0.5), inner.w, CAPTION_H),
+                    "Downloading",
+                    ALIGN_CENTRE,
+                );
+                let bar = Rect::new(
+                    inner.x,
+                    fl(mid + CAPTION_H * 0.75),
+                    inner.w,
+                    geo::PANEL_BAR_H,
+                );
+                k.fill_round(bar, bar.h * 0.5, geo::BAR_TRACK);
+                if let Some((fill, colour)) =
+                    geo::bar_fill(bar, geo::BarKind::Downloading(p.percent), 0)
+                {
+                    k.fill_round(fill, fill.h * 0.5, colour);
+                }
+            }
+            PromptKind::Asking => {
+                let a = geo::ask_panel(panel);
+                let (name, size, left) = geo::ask_texts(&p.map_name, p.size_bytes, p.ms_left);
+                k.label_at(a.name, &name, ALIGN_CENTRE);
+                k.label_at(a.size, &size, ALIGN_CENTRE);
+                k.label_at(a.remaining, &left, ALIGN_CENTRE);
+                if k.button_at(a.button, "Download", !p.clickable) {
+                    crate::mapdownload::answer_download(p.generation);
+                }
+            }
+            PromptKind::None => {}
+        }
+    }
+
+    /// While the pointer is over the host's Start button and players are still downloading, a
+    /// tooltip says who.
+    unsafe fn draw_start_tooltip(&self, window: Rect, start: Option<Rect>, dl: &LobbyDownloads) {
+        let (Some(start), k) = (start, &self.kit) else {
+            return;
+        };
+        let mouse = k.mouse();
+        if !geo::contains(start, mouse) {
+            return;
+        }
+        let names: Vec<String> = (0..SLOT_COUNT)
+            .filter(|&i| dl.pending[i])
+            .map(|i| geo::clean_text(&unsafe { self.slot_name(i) }))
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let text = geo::pending_text(&names);
+        let (pad, border) = (26.0, 4.0);
+        let w = 1100.0f32.min(window.w);
+        let lines = k.count_lines(&text, w - pad * 2.0).max(1);
+        let h = lines as f32 * k.font_height() + pad * 2.0;
+        let (x, y) = geo::tooltip_origin(mouse, (w, h), window);
+        k.fill_round(Rect::new(x, y, w, h), 6.0, geo::pack(120, 96, 48, 255));
+        k.fill_round(
+            Rect::new(x + border, y + border, w - border * 2.0, h - border * 2.0),
+            6.0,
+            geo::pack(12, 10, 8, 244),
+        );
+        k.set_rect(Rect::new(x + pad, y + pad, w - pad * 2.0, h - pad * 2.0));
+        k.wrapped_label(&text, geo::pack(255, 255, 255, 255));
     }
 
     fn players_heading(&self) -> String {
@@ -579,6 +721,16 @@ impl Screen {
             fl(history.w - CHAT_INSET_X * 2.0),
             fl(history.h),
         );
+        // Notices that arrived since the last frame are anchored after the lines the game has now.
+        let (lines, total) = unsafe { self.chat_lines() };
+        let rows = {
+            let mut queue = NOTICE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut notices = NOTICES.lock().unwrap_or_else(|e| e.into_inner());
+            while let Some(text) = queue.pop_front() {
+                notices.push(text, total);
+            }
+            geo::merge_notices(&lines, notices.all())
+        };
         let mut state = CHAT.lock().unwrap_or_else(|e| e.into_inner());
         let wiped = state.scroll.wiped(k.ctx_seq());
         if k.begin_list(inner, c"chat_history") {
@@ -597,10 +749,18 @@ impl Screen {
             };
             let colour = k.current_text_colour();
             let mut measured = false;
-            for text in unsafe { self.chat_lines() } {
-                let lines = k.count_lines(&text, wrap_w).max(1);
+            for row in &rows {
+                let text = &row.text;
+                let lines = k.count_lines(text, wrap_w).max(1);
                 k.row_dynamic(lines as f32 * line_h, 1);
-                k.wrapped_label(&text, colour);
+                k.wrapped_label(
+                    text,
+                    if row.notice {
+                        geo::NOTICE_COLOUR
+                    } else {
+                        colour
+                    },
+                );
                 if !measured {
                     measured = true;
                     if let Some(cell) = k.last_row_first_cell() {
@@ -632,11 +792,12 @@ impl Screen {
         unsafe { self.draw_chat_input(input) };
     }
 
-    /// The newest chat lines the game holds, oldest first, as text.
-    unsafe fn chat_lines(&self) -> Vec<String> {
+    /// The newest chat lines the game holds, oldest first, each with its index in the game's
+    /// list, and how many lines the list holds.
+    unsafe fn chat_lines(&self) -> (Vec<(usize, String)>, usize) {
         let (begin, end) = unsafe { (*self.chat_begin, *self.chat_end) };
         if begin.is_null() || end <= begin {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let total = (end as usize - begin as usize) / STR_STRIDE;
         let first = total.saturating_sub(CHAT_MAX_LINES);
@@ -646,10 +807,10 @@ impl Screen {
             let len = unsafe { s.add(STR_SIZE).cast::<i32>().read_unaligned() };
             let text = unsafe { str_data(s) };
             if !text.is_empty() && len > 0 {
-                out.push(text);
+                out.push((i, text));
             }
         }
-        out
+        (out, total)
     }
 
     unsafe fn draw_chat_input(&self, r: Rect) {
@@ -671,7 +832,7 @@ impl Screen {
     }
 
     /// Leave, and Start for the host: the game's own buttons, dead for a moment after entering.
-    unsafe fn draw_footer(&self, window: Rect, footer_y: f32) {
+    unsafe fn draw_footer(&self, window: Rect, footer_y: f32) -> Option<Rect> {
         let k = &self.kit;
         let (leave, start) = geo::footer_buttons(window, footer_y, self.is_host());
         let dead = geo::entry_dead(k.clock_ms(), unsafe { *self.enter_ms });
@@ -687,6 +848,7 @@ impl Screen {
         if dead {
             k.disable_end();
         }
+        start
     }
 }
 
@@ -696,4 +858,11 @@ unsafe fn str_data_c(p: *const u8) -> String {
         return String::new();
     }
     unsafe { CStr::from_ptr(p.cast()).to_string_lossy().into_owned() }
+}
+
+/// Where each slot's gutter (for the marks) and name cell (for the download bar) landed.
+#[derive(Default)]
+struct SlotRects {
+    gutter: [Rect; SLOT_COUNT],
+    name: [Rect; SLOT_COUNT],
 }

@@ -173,7 +173,7 @@ plugins over the public ABI (chat may well be the latter).
    `host.json` with plugin-screen checkboxes, capability bit 2 in the handshake. Slice 4 written: the
    "Download <map> (N KB)? Ns" button after the stock Leave button (the stock button is the "no"),
    per-slot status lines in `w2r.log`. **Slices 3 and 4 await a two-player in-game check.**
-5. Multiplayer lobby screen: a host feature, spec in [lobby-screen.md](lobby-screen.md) (four slices: static screen, right column, marks, download visuals and notices). **Spec written 2026-10-04; slice 1 committed (a4ed70f), awaiting the in-game check; slices 2 and 3 written and installed, awaiting the in-game check.**
+5. Multiplayer lobby screen: a host feature, spec in [lobby-screen.md](lobby-screen.md) (four slices: static screen, right column, marks, download visuals and notices). **Spec written 2026-10-04; slice 1 committed (a4ed70f), awaiting the in-game check; slices 1 and 2 and 3 committed (a4ed70f, ac23d2c, df9fd0d), slice 4 written not installed; none checked in game yet.**
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI

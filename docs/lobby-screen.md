@@ -226,3 +226,33 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
 - To check: host has a crown; a guest with the mod has a green dot (needs the second player; for one
   player, the host's own dot appears on the crown); with Starting location set to Fixed on the create
   screen, each present slot shows its colour swatch.
+
+## Slice 4 notes (2026-10-04)
+
+- Written, **not installed** (the game was running) and **not checked**; all four slices are now
+  written. Needs the second player to see most of it.
+- **Download state** comes from one call per frame, `mapdownload::lobby_downloads()`: a bar kind per
+  lobby slot (from the host's per-slot progress, mapped through the net-slot table; `Done` stays one
+  second), which slots are pending, whether the map is missing, and this player's prompt. Calling it
+  every frame is also how the client role knows a screen is showing the prompt.
+- **Bars** are drawn in `draw_marks` along the bottom of each present slot's name cell (the header
+  row's first cell gives the column): sweeping segment while the player decides, a filling bar while
+  they download, full green for done, full red for declined (`bar_kind`, `bar_track`, `bar_fill`).
+- **Panel instead of popup** (spec open question 1): the preview square is replaced by a dark panel:
+  "Looking for map..." (animated dots), "Downloading" and a bar, or, when the host's offer is waiting
+  for an answer, the map name, size, "N seconds remaining" and a Download button (greyed for the
+  first second). The stock Leave button is the "no", and the footer button from map download slice 4
+  is no longer drawn while this screen is (`mapdownload::set_own_prompt`). The preview is also hidden
+  when the map is missing for any other reason.
+- **Start tooltip**: hovering the host's Start button while anyone is offered or receiving the map
+  lists who ("Pending map download from: ...").
+- **Notices in the chat history**, in the gold colour, interleaved after the game's lines they
+  followed: the download sentences (`maproles::event_text`) and "Teams/Slots locked/unlocked by host"
+  (`lobbylayout::lock_notice`, queued from `session::on_window` where the lock events are drained).
+  `lobbyscreen::push_notice` queues, the next draw anchors them, 32 at most, forgotten when the
+  lobby window has not drawn for 2 s. Pure parts (`merge_notices`, `Notices`, tooltip placement,
+  panel layout) are tested in `lobbylayout.rs`.
+- **To check (two players):** a guest without the map sees the Asking panel; Download fills the
+  panel's bar while the host's slot row for that guest fills; the host's Start is held with the
+  tooltip; a guest who leaves instead shows the notice in the host's chat. With one player: host
+  flips Teams/Slots and the notice "Teams locked by host" appears in the chat.

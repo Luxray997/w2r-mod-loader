@@ -248,6 +248,10 @@ pub fn on_window(name: Option<&str>) {
                         if e.locked { "LOCKED" } else { "unlocked" }
                     ),
                 );
+                #[cfg(target_arch = "x86")]
+                crate::lobbyscreen::push_notice(
+                    lobbylayout::lock_notice(e.teams, e.locked).to_owned(),
+                );
             }
             #[cfg(target_arch = "x86")]
             crate::mapdownload::frame(

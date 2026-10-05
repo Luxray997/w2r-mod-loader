@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -19,13 +19,14 @@ use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
 use crate::guard::guarded;
 use crate::hooks::{self, Owner};
 use crate::host::Log;
+use crate::lobbylayout::{BarKind, bar_kind};
 use crate::mapindex::{self, MapIndex};
 use crate::maplimits::MAX_MAP_BYTES;
 use crate::maproles::{
     ClientRole, Env, EventTracker, HostRole, PromptKind, ServeRead, event_text, route,
 };
 use crate::mapstore::path_under;
-use crate::mapwire::ReqId;
+use crate::mapwire::{ReqId, SlotState};
 use crate::pe::Image;
 use crate::symbols::Symbols;
 
@@ -91,6 +92,7 @@ struct State {
     was_host: bool,
     start_logged: bool,
     events: EventTracker,
+    done_since: [u64; crate::mapwire::SLOTS],
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -109,6 +111,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
             was_host: false,
             start_logged: false,
             events: EventTracker::default(),
+            done_since: [0; crate::mapwire::SLOTS],
         }
     });
     f(st)
@@ -376,6 +379,7 @@ pub fn frame(now: u64, enabled: bool, ask: bool) {
             st.inbox.clear();
             st.start_logged = false;
             st.events.reset();
+            st.done_since = [0; crate::mapwire::SLOTS];
         }
         if !env.net.connected() {
             return;
@@ -414,9 +418,100 @@ pub fn frame(now: u64, enabled: bool, ask: bool) {
             let who = env
                 .player_name(e.slot as u32)
                 .unwrap_or_else(|| format!("The player in net slot {}", e.slot));
-            log(&event_text(&e, &who));
+            let text = event_text(&e, &who);
+            log(&text);
+            crate::lobbyscreen::push_notice(text);
         }
     });
+}
+
+/// Set while the replacement lobby screen draws the lobby: it shows the download prompt itself,
+/// so the footer button after the stock Leave button stays away.
+static OWN_PROMPT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_own_prompt(on: bool) {
+    OWN_PROMPT.store(on, Ordering::Relaxed);
+}
+
+/// What the replacement lobby screen draws about map downloads (docs/lobby-screen.md, slice 4).
+pub struct LobbyDownloads {
+    /// The question or progress for this player (guests only).
+    pub prompt: crate::maproles::Prompt,
+    /// The host's map is not here (guests only).
+    pub map_missing: bool,
+    /// A bar per lobby slot.
+    pub bars: [BarKind; 8],
+    /// Lobby slots whose player has been offered the map or is receiving it.
+    pub pending: [bool; 8],
+}
+
+/// Reads the state for the lobby screen; calling it every frame is also how the role knows a
+/// screen is showing the prompt, so it does not decline for lack of one.
+pub fn lobby_downloads() -> LobbyDownloads {
+    let mut out = LobbyDownloads {
+        prompt: crate::maproles::Prompt::none(),
+        map_missing: false,
+        bars: [BarKind::None; 8],
+        pending: [false; 8],
+    };
+    let (Some(game), Some(net), Some(slots)) = (
+        GAME.get().copied(),
+        crate::session::net_view(),
+        crate::session::net_view(),
+    ) else {
+        return out;
+    };
+    if !net.connected() {
+        return out;
+    }
+    let (enabled, ask) = crate::session::map_sharing_settings();
+    let is_host = net.is_host();
+    let now = crate::chat::now_ms();
+    let env = RealEnv { game, net };
+    with_state(|st| {
+        for net_slot in 1..crate::mapwire::SLOTS {
+            let Some(lobby) = slots.lobby_slot_of(net_slot as u32).map(usize::from) else {
+                continue;
+            };
+            if lobby >= 8 {
+                continue;
+            }
+            let p = if is_host {
+                st.host.slot_progress(net_slot)
+            } else {
+                st.client.slot_progress(net_slot)
+            };
+            if p.state != SlotState::Done {
+                st.done_since[net_slot] = 0;
+            } else if st.done_since[net_slot] == 0 {
+                st.done_since[net_slot] = now.max(1);
+            }
+            let done_for = if p.state == SlotState::Done {
+                now.saturating_sub(st.done_since[net_slot])
+            } else {
+                0
+            };
+            out.bars[lobby] = bar_kind(p.state, p.percent, done_for);
+            out.pending[lobby] = matches!(p.state, SlotState::Offered | SlotState::Uploading);
+        }
+        if !is_host {
+            out.map_missing = st.client.map_missing(&env.lobby_map_name());
+            if enabled {
+                out.prompt = st.client.prompt(&env, now, enabled, ask);
+            }
+        }
+    });
+    out
+}
+
+/// The player pressed Download on the screen's panel (the stock Leave button is the "no").
+pub fn answer_download(generation: u32) {
+    let (Some(game), Some(net)) = (GAME.get().copied(), crate::session::net_view()) else {
+        return;
+    };
+    let now = crate::chat::now_ms();
+    let mut env = RealEnv { game, net };
+    with_state(|st| st.client.answer_prompt(&mut env, generation, true, now));
 }
 
 /// The stock Leave button, then, while the host's map is on offer, a "Download" button right
@@ -425,7 +520,9 @@ unsafe extern "C" fn leave_button() {
     let original: LeaveButtonFn =
         unsafe { core::mem::transmute(ORIGINAL_LEAVE.load(Ordering::Acquire)) };
     unsafe { original() };
-    let _ = guarded(draw_download_button);
+    if !OWN_PROMPT.load(Ordering::Relaxed) {
+        let _ = guarded(draw_download_button);
+    }
 }
 
 fn draw_download_button() {
