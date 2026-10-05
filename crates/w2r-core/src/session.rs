@@ -248,6 +248,12 @@ pub fn on_window(name: Option<&str>) {
                     ),
                 );
             }
+            #[cfg(target_arch = "x86")]
+            crate::mapdownload::frame(
+                now,
+                session.config.map_sharing,
+                !session.config.auto_download,
+            );
             if net.transport.is_host() && net.transport.connected() {
                 lobbypolicy::frame_work();
             }
@@ -598,6 +604,50 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
     })
 }
 
+/// What the map-sharing code needs from the handshake and the game's network, without the
+/// session itself (which may be borrowed).
+#[cfg(target_arch = "x86")]
+pub(crate) struct NetView(Rc<Net>);
+
+#[cfg(target_arch = "x86")]
+pub(crate) fn net_view() -> Option<NetView> {
+    NET.with(|n| n.borrow().clone().map(NetView))
+}
+
+#[cfg(target_arch = "x86")]
+impl NetView {
+    pub(crate) fn is_host(&self) -> bool {
+        self.0.transport.is_host()
+    }
+
+    pub(crate) fn connected(&self) -> bool {
+        self.0.transport.connected()
+    }
+
+    /// The player announced the handshake: they run the mod.
+    pub(crate) fn peer_runs_mod(&self, slot: u32) -> bool {
+        self.0
+            .handshake
+            .try_borrow()
+            .is_ok_and(|h| h.announced(slot))
+    }
+
+    pub(crate) fn peer_shares_maps(&self, slot: u32) -> bool {
+        self.0
+            .handshake
+            .try_borrow()
+            .is_ok_and(|h| h.peer_shares_maps(slot))
+    }
+
+    pub(crate) fn send_to(&self, slot: u32, bytes: &[u8]) -> bool {
+        self.0.transport.send_to(slot, bytes)
+    }
+
+    pub(crate) fn kick(&self, slot: u32) -> bool {
+        self.0.transport.kick(slot)
+    }
+}
+
 /// The host's current lock choice, `(teams, slots)`, for the create screen's buttons.
 pub fn lock_choice() -> Option<(bool, bool)> {
     SESSION.with(|cell| {
@@ -729,6 +779,8 @@ fn start() -> Session {
         peer::hook::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         lobbypolicy::hook::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::mapdownload::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::matchstart::install(image, &symbols, &*log);
     }

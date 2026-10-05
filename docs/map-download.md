@@ -1,6 +1,6 @@
 # Map download (Phase 3, step 4)
 
-Status: slices 1 and 2 (pure core and state machines) implemented; slices 3 and 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
+Status: slices 1 to 3 implemented (slice 3 awaiting a two-player in-game check); slice 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
 `src/features/map_download/` (about 3,700 lines). The wire format and the safety rules are
 specified in wc2r-plus `PROTOCOL.md` section 3; the C++ is the reference where this document is
 silent or differs. Same parity rule as [chat-plugin.md](chat-plugin.md): players with wc2r-plus,
@@ -128,3 +128,19 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
   machine reports `retryable()`.
 - A test runs host and player against each other with a real valid map through the real
   validator and reassembles it byte for byte.
+
+## Slice 3 notes (2026-10-04)
+
+- The player-side `ask` setting has no prompt until slice 4. With `auto_download` off (the
+  default) a guest who lacks the map declines after 1.5 s ("no screen can show the prompt") and
+  the game's own missing-map message takes over. To exercise the download now, set
+  `"auto_download": true` in `config\host.json` or tick "Download missing maps without asking" on
+  the plugin screen.
+- Reload and the on-disk search-index cache for the create screen's browser are not done here;
+  `mapindex.rs` is the hash index for sharing, with its own cache (`cache\map_hashes.txt`).
+- Paths between the game and us are UTF-8; a map path in a legacy code page that is not valid UTF-8
+  is not served or hashed. (wc2r-plus falls back to the ANSI code page.)
+- Messages for `'M'` wait in a 256-entry inbox and are handled on the next lobby frame, so the
+  packet hook never runs map code.
+- Not ported: the per-slot status events and the prompt (slice 4), and the leave-the-lobby path
+  for an unobtainable map (the game's own missing-map message is used instead).

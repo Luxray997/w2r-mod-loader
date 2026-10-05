@@ -550,7 +550,15 @@ pub mod hook {
                 }
                 true
             }
-            // 'M' has no handler yet; still ours, still consumed.
+            // Map sharing: queued for the next lobby frame (x86 only; elsewhere consumed).
+            #[cfg(target_arch = "x86")]
+            Packet::Ours {
+                subsystem: crate::mapwire::SUBSYSTEM,
+                body,
+            } => {
+                let _ = guarded(|| crate::mapdownload::deliver(sender, body));
+                true
+            }
             Packet::Ours { .. } => true,
         }
     }

@@ -999,4 +999,33 @@ mod tests {
         assert!(!h.announced(5));
         assert_eq!(h.self_slot(), Some(5));
     }
+
+    #[test]
+    fn map_sharing_is_announced_as_capability_bit_two_and_re_announced_when_it_changes() {
+        let mut h = Handshake::new(Local {
+            strict: false,
+            fingerprint: [0; 4],
+        });
+        h.enter(1);
+        let caps_of = |h: &Handshake| decode(&h.hello()[5..]).unwrap().caps;
+        assert_eq!(caps_of(&h), CAP_HANDSHAKE);
+        h.hello_pending = false;
+        h.set_map_sharing(true);
+        assert_eq!(caps_of(&h), CAP_HANDSHAKE | CAP_MAP_SHARING);
+        assert!(h.hello_pending, "a change inside a lobby re-announces");
+        h.hello_pending = false;
+        h.set_map_sharing(true);
+        assert!(!h.hello_pending, "no change, no announcement");
+        let mut s = Handshake::new(Local {
+            strict: true,
+            fingerprint: [0; 4],
+        });
+        s.set_map_sharing(true);
+        assert_eq!(
+            s.caps(),
+            CAP_HANDSHAKE | CAP_STRICT | CAP_MAP_SHARING,
+            "it adds to strict, not replaces it"
+        );
+        assert!(!s.peer_shares_maps(1), "nobody announced yet");
+    }
 }
