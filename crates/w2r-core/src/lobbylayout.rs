@@ -4,7 +4,9 @@
 
 use core::ffi::CStr;
 
-use crate::screenkit::{CAPTION_H, FOOTER_BOTTOM_GAP, FOOTER_H, FRAME_PAD, GAP, ROW_H, Rect};
+use crate::screenkit::{
+    CAPTION_H, FOOTER_BOTTOM_GAP, FOOTER_H, FRAME_PAD, GAP, NAME_H, ROW_H, Rect,
+};
 use crate::screenkit::{fl, footer_button_width, lobby_frame};
 
 pub const SLOT_COUNT: usize = 8;
@@ -179,6 +181,94 @@ pub fn clean_text(s: &str) -> String {
 pub fn team_digit(index: usize) -> Option<&'static CStr> {
     const DIGITS: [&CStr; 9] = [c"1", c"2", c"3", c"4", c"5", c"6", c"7", c"8", c"9"];
     DIGITS.get(index).copied()
+}
+
+pub const INFO_ROW_COUNT: usize = 7;
+const LOCK_BUTTON_SHARE: f32 = 0.34;
+const RESOURCE_MASK: u32 = 0x2_3000;
+const TILESET_MASK: u32 = 0x1_c000;
+/// The "peasants only" bit in the match flags.
+pub const ONE_PEON_BIT: u32 = 0x200;
+
+/// The right column: the map name, the square preview and the info rows at the bottom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RightColumn {
+    pub name: Rect,
+    pub preview: Rect,
+    pub info: Rect,
+    pub row_h: f32,
+}
+
+pub fn right_column(column: Rect) -> RightColumn {
+    let info_h = CAPTION_H * INFO_ROW_COUNT as f32;
+    let available = column.h - NAME_H - GAP - info_h - GAP;
+    let side = fl(available.min(column.w).max(0.0));
+    let info = Rect::new(column.x, fl(column.y + column.h - info_h), column.w, info_h);
+    RightColumn {
+        name: Rect::new(column.x, column.y, column.w, NAME_H),
+        preview: Rect::new(
+            fl(column.x + (column.w - side) * 0.5),
+            fl(column.y + NAME_H + GAP),
+            side,
+            side,
+        ),
+        info,
+        row_h: fl(info.h / INFO_ROW_COUNT as f32),
+    }
+}
+
+/// Row `i` of the info column.
+pub fn info_row(info: Rect, row_h: f32, i: usize) -> Rect {
+    Rect::new(info.x, info.y + row_h * i as f32, info.w, row_h)
+}
+
+/// The host's flip button at the right end of a lock row.
+pub fn lock_button(row: Rect) -> Rect {
+    let w = fl(row.w * LOCK_BUTTON_SHARE);
+    Rect::new(fl(row.x + row.w - w), row.y, w, row.h)
+}
+
+/// Which entry of the game's resources option list the match flags select.
+pub fn resources_index(flags: u32) -> usize {
+    match flags & RESOURCE_MASK {
+        0x1000 => 2,
+        0x2000 => 3,
+        0x3000 => 4,
+        0x2_0000 => 1,
+        _ => 0,
+    }
+}
+
+/// Which entry of the game's tileset option list the match flags select.
+pub fn tileset_index(flags: u32) -> usize {
+    match flags & TILESET_MASK {
+        0x4000 => 1,
+        0x8000 => 2,
+        0xc000 => 3,
+        0x1_c000 => 4,
+        _ => 0,
+    }
+}
+
+/// A caption with exactly one trailing colon and no trailing blanks; empty stays empty.
+pub fn with_colon(text: &str) -> String {
+    let t = text.trim_end_matches([' ', '\t']);
+    if t.is_empty() {
+        String::new()
+    } else if t.ends_with(':') {
+        t.to_owned()
+    } else {
+        format!("{t}:")
+    }
+}
+
+/// What the password row says: unknown until the host's message arrived, none when empty.
+pub fn password_text(known: Option<&[u8]>) -> String {
+    match known {
+        None => "Unknown".to_owned(),
+        Some([]) => "None".to_owned(),
+        Some(p) => clean_text(&String::from_utf8_lossy(p)),
+    }
 }
 
 /// Keeps the chat history at the bottom when it was there and grew, and notices when something
@@ -369,6 +459,75 @@ mod tests {
         let mut w = ScrollTracker::default();
         assert!(!w.wiped(u32::MAX));
         assert!(!w.wiped(0), "wrapping by one is normal");
+    }
+
+    #[test]
+    fn the_right_column_stacks_name_preview_and_seven_rows() {
+        let l = layout(WINDOW);
+        let c = right_column(l.right);
+        assert_eq!(c.name.y, l.right.y);
+        assert!(c.preview.y >= c.name.y + c.name.h);
+        assert_eq!(c.preview.w, c.preview.h);
+        assert!(
+            c.preview.y + c.preview.h + GAP <= c.info.y,
+            "the preview clears the info rows"
+        );
+        assert_eq!(c.info.y + c.info.h, l.right.y + l.right.h);
+        let last = info_row(c.info, c.row_h, INFO_ROW_COUNT - 1);
+        assert!(last.y + last.h <= c.info.y + c.info.h);
+        assert!(c.preview.x >= l.right.x && c.preview.x + c.preview.w <= l.right.x + l.right.w);
+        let tiny = right_column(Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(tiny.preview.w, 0.0, "never negative");
+    }
+
+    #[test]
+    fn the_lock_button_sits_at_the_right_end_of_its_row() {
+        let row = Rect::new(100.0, 500.0, 1000.0, 90.0);
+        let b = lock_button(row);
+        assert_eq!(b.x + b.w, row.x + row.w);
+        assert_eq!((b.y, b.h), (row.y, row.h));
+        assert_eq!(b.w, 340.0);
+    }
+
+    #[test]
+    fn the_match_flags_pick_the_resources_and_tileset_entries() {
+        assert_eq!(resources_index(0), 0);
+        assert_eq!(resources_index(0x1000), 2);
+        assert_eq!(resources_index(0x2000), 3);
+        assert_eq!(resources_index(0x3000), 4);
+        assert_eq!(resources_index(0x2_0000), 1);
+        assert_eq!(
+            resources_index(0x1000 | 0x200 | 0x4000),
+            2,
+            "other bits are ignored"
+        );
+        assert_eq!(tileset_index(0), 0);
+        assert_eq!(tileset_index(0x4000), 1);
+        assert_eq!(tileset_index(0x8000), 2);
+        assert_eq!(tileset_index(0xc000), 3);
+        assert_eq!(tileset_index(0x1_c000), 4);
+        assert_eq!(tileset_index(0x1000), 0);
+    }
+
+    #[test]
+    fn captions_end_in_exactly_one_colon() {
+        assert_eq!(with_colon("Game speed"), "Game speed:");
+        assert_eq!(with_colon("Resources: "), "Resources:");
+        assert_eq!(with_colon("Units:"), "Units:");
+        assert_eq!(with_colon("  "), "");
+        assert_eq!(with_colon(""), "");
+    }
+
+    #[test]
+    fn the_password_row_distinguishes_unknown_none_and_a_password() {
+        assert_eq!(password_text(None), "Unknown");
+        assert_eq!(password_text(Some(b"")), "None");
+        assert_eq!(password_text(Some(b"hunter2")), "hunter2");
+        assert_eq!(
+            password_text(Some(b"a\x07b")),
+            "ab",
+            "control characters are dropped"
+        );
     }
 
     #[test]

@@ -196,3 +196,17 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
 - **To check:** tick the box, host and join a lobby. Look for `lobbyscreen: drawing the replacement
   lobby (window WxH)` in `w2r.log`; change slot, race and team, send chat, Leave, Start (host), the
   scroll behaviour of the chat when it grows, and untick the box for the stock lobby.
+
+## Slice 2 notes (2026-10-04)
+
+- Written, **not yet installed or checked**. The right column now has the map name, the square
+  preview (the create screen's `previewdraw`, fed the game's `SelectedMapPath` and the tileset the
+  match flags select) and seven info rows: Password, Game speed, Resources, Peasants only, Starting
+  location, Teams lock, Slots lock. The pure parts (`right_column`, `info_row`, `lock_button`,
+  `resources_index`, `tileset_index`, `with_colon`, `password_text`) are in `lobbylayout.rs` with tests.
+- The host's lock buttons call `session::set_lock_choice`, the same path as the create screen: it
+  writes `host.json` and the next lobby frame applies and broadcasts it (`lobbypolicy::Policy::frame`),
+  so the row shows the change a frame later. Guests see the locks the host last broadcast and the
+  password from the same message ("Unknown" before the first one arrives); the host reads its own
+  password from the game's buffer.
+- Not done here (slice 4): hiding the preview while a map is missing or downloading.

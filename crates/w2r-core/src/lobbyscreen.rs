@@ -8,6 +8,7 @@
 //! Never begins a Nuklear window of its own: that froze the lobby once (PLAN.md, the banner).
 
 use core::ffi::{CStr, c_char, c_void};
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -17,7 +18,9 @@ use crate::guard::guarded;
 use crate::hooks::{self, Owner};
 use crate::host::Log;
 use crate::lobbylayout::{self as geo, SLOT_COUNT, ScrollTracker};
+use crate::mappreview::tileset_for_key;
 use crate::pe::Image;
+use crate::previewdraw::{self, PreviewGame, Request};
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
 use crate::symbols::Symbols;
@@ -70,6 +73,13 @@ struct Screen {
     chat_scroll_request: *mut u8,
     net_session: *const *const u8,
     team_options: *const *const *const c_char,
+    resource_keys: *const *const *const c_char,
+    tileset_keys: *const *const *const c_char,
+    match_flags: *const u32,
+    fixed_start: *const u8,
+    game_speed: *const u8,
+    selected_map_path: *const u8,
+    preview: PreviewGame,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -168,6 +178,13 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
                 .map_or(core::ptr::null_mut(), |a| a as *mut u8),
             net_session: at("NetSession")? as *const *const u8,
             team_options: at("MpLobbyTeamOptions")? as *const *const *const c_char,
+            resource_keys: at("MpLobbyResourceKeys")? as *const *const *const c_char,
+            tileset_keys: at("MpLobbyTilesetKeys")? as *const *const *const c_char,
+            match_flags: at("MpLobbyMatchFlags")? as *const u32,
+            fixed_start: at("MpLobbyFixedStartLocation")? as *const u8,
+            game_speed: at("MpLobbyGameSpeed")? as *const u8,
+            selected_map_path: at("SelectedMapPath")? as *const u8,
+            preview: PreviewGame::new(symbols)?,
         })
     }
 }
@@ -303,13 +320,7 @@ impl Screen {
         unsafe { self.draw_slots(l.slots) };
         unsafe { self.draw_chat(l.chat_history, l.chat_input) };
 
-        let map = geo::clean_text(&unsafe { str_data_c(self.map_name) });
-        k.heading_at(
-            Rect::new(l.right.x, l.right.y, l.right.w, NAME_H),
-            if map.is_empty() { "No map" } else { &map },
-            ALIGN_CENTRE,
-            Some(unsafe { *self.font_heading }),
-        );
+        let request = unsafe { self.draw_right(l.right) };
 
         unsafe { self.draw_footer(window, l.footer_y) };
 
@@ -318,12 +329,132 @@ impl Screen {
         }
         k.space_end();
 
+        // The picture goes straight onto the window's canvas, after the layout space has ended.
+        if let Some(r) = request {
+            previewdraw::draw(&self.preview, k, &r);
+        }
+
         // The game's own popups (kicked, host left, ...) belong to this window.
         let previous = k.push_skin(unsafe { *self.skin_popup });
         unsafe { (self.draw_popup)(self.popup) };
         k.pop_skin(previous);
 
         k.end_window();
+    }
+
+    /// The entry `index` of one of the game's option lists (a vector of C strings), or "".
+    unsafe fn key_by_index(&self, list: *const *const *const c_char, index: usize) -> String {
+        unsafe {
+            let (begin, end) = (*list, *list.add(1));
+            if begin.is_null() || end <= begin || index >= end.offset_from(begin) as usize {
+                return String::new();
+            }
+            let key = *begin.add(index);
+            if key.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(key).to_string_lossy().into_owned()
+            }
+        }
+    }
+
+    /// The map name, its preview's square and the info rows. Returns what to paint.
+    unsafe fn draw_right(&self, column: Rect) -> Option<Request> {
+        let k = &self.kit;
+        let c = geo::right_column(column);
+        let map = geo::clean_text(&unsafe { str_data_c(self.map_name) });
+        k.heading_at(
+            c.name,
+            if map.is_empty() { "No map" } else { &map },
+            ALIGN_CENTRE,
+            Some(unsafe { *self.font_heading }),
+        );
+        unsafe { self.draw_info(&c) };
+
+        let path = unsafe { str_data_c(self.selected_map_path) };
+        let flags = unsafe { *self.match_flags };
+        let tileset_key =
+            unsafe { self.key_by_index(self.tileset_keys, geo::tileset_index(flags)) };
+        (!path.is_empty() && c.preview.w > 0.0).then(|| Request {
+            area: c.preview,
+            path,
+            tileset: tileset_for_key(&tileset_key),
+        })
+    }
+
+    /// Password, speed, resources, peasants, starting location, and the two lock rows (a flip
+    /// button each for the host, plain text for everyone else).
+    unsafe fn draw_info(&self, c: &geo::RightColumn) {
+        let k = &self.kit;
+        let flags = unsafe { *self.match_flags };
+        let host = self.is_host();
+        let row = |i: usize| geo::info_row(c.info, c.row_h, i);
+        let line = |i: usize, caption: &str, value: &str| {
+            k.label_at(row(i), caption, ALIGN_LEFT);
+            k.label_at(row(i), value, ALIGN_RIGHT);
+        };
+        let caption = |key: &CStr| geo::with_colon(&k.localized(key));
+
+        let password = if host {
+            Some(crate::lobbypolicy::host_password())
+        } else {
+            crate::lobbypolicy::with(|p| p.password().map(<[u8]>::to_vec))
+        };
+        line(0, "Password:", &geo::password_text(password.as_deref()));
+        line(
+            1,
+            &caption(c"option_speed_game_speed"),
+            &unsafe { *self.game_speed }.to_string(),
+        );
+        let resources =
+            unsafe { self.key_by_index(self.resource_keys, geo::resources_index(flags)) };
+        let resources = CString::new(resources).unwrap_or_default();
+        line(
+            2,
+            &caption(c"customscenario_resources"),
+            &k.localized(&resources),
+        );
+        line(
+            3,
+            &caption(c"customscenario_units_peasant"),
+            &k.localized(if flags & geo::ONE_PEON_BIT != 0 {
+                c"option_common_on"
+            } else {
+                c"option_common_off"
+            }),
+        );
+        let fixed = unsafe { *self.fixed_start } == 1;
+        line(
+            4,
+            &caption(c"customscenario_starting_location"),
+            &k.localized(if fixed {
+                c"customscenario_fixed_location"
+            } else {
+                c"customscenario_random_location"
+            }),
+        );
+
+        let locks = crate::lobbypolicy::with(|p| p.locks());
+        let mut flip = (false, false);
+        for (i, (name, locked, flipped)) in [
+            ("Teams:", locks.teams, &mut flip.0),
+            ("Slots:", locks.slots, &mut flip.1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let r = row(5 + i);
+            let value = if locked { "Locked" } else { "Unlocked" };
+            k.label_at(r, name, ALIGN_LEFT);
+            if host {
+                *flipped = k.button_at(geo::lock_button(r), value, false);
+            } else {
+                k.label_at(r, value, ALIGN_RIGHT);
+            }
+        }
+        if flip.0 || flip.1 {
+            crate::session::set_lock_choice(locks.teams ^ flip.0, locks.slots ^ flip.1);
+        }
     }
 
     /// The Players panel: a header, then the game's own slot rows in our column ratios.

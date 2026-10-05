@@ -16,6 +16,7 @@ pub const FRAME_BORDER_ABOVE_BOTTOM: f32 = 50.0;
 
 pub const ALIGN_CENTRE: i32 = 0x12;
 pub const ALIGN_LEFT: i32 = 0x11;
+pub const ALIGN_RIGHT: i32 = 0x14;
 pub const ALIGN_CAPTION: i32 = 0x21;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
