@@ -113,7 +113,7 @@ foreach ($sub in "plugins", "config", "cache", "logs") {
     New-Item -ItemType Directory -Force (Join-Path $root $sub) | Out-Null
 }
 
-function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities, [bool]$AffectsSimulation = $false, [string]$From = $examples) {
+function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities, [bool]$AffectsSimulation = $false, [string]$From = $examples, [string]$Author = "Beau Hastings", [string]$Description = "Development fixture installed by tools/install_dev.ps1.") {
     $folder = Join-Path $root "plugins\$Id"
     New-Item -ItemType Directory -Force $folder | Out-Null
     $entry = "$Example.dll"
@@ -126,8 +126,8 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities,
   "id": "$Id",
   "name": "$Example (fixture)",
   "version": "1.0.0",
-  "author": "w2rpm tests",
-  "description": "Development fixture installed by tools/install_dev.ps1.",
+  "author": "$Author",
+  "description": "$Description",
   "entry": "$entry",
   "abi": 1,
   "game_builds": ["1.0.2.2818"],
@@ -152,7 +152,7 @@ $entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write") $Simu
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
 if ($WithChat) {
     $release = Join-Path $repo "target\i686-pc-windows-msvc\release"
-    $entries += Install-Fixture "w2r-chat" "w2r_chat" @("game.read", "hooks.raw") $false $release
+    $entries += Install-Fixture "w2r-chat" "w2r_chat" @("game.read", "hooks.raw") $false $release "Luxray997 (ported by Beau Hastings)" "In-match chat history with channels and player colours (port of wc2r-plus chat.cpp by Luxray997)."
 }
 if ($WithHostCheck) { $entries += Install-Fixture "host-check" "hostcheck_plugin" @("game.read", "hooks.raw") }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
