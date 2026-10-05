@@ -113,7 +113,7 @@ static CHAT: Mutex<ChatState> = Mutex::new(ChatState {
     wrap_w: 0.0,
     wipe_logged: false,
 });
-static NOTICE_QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static NOTICE_QUEUE: Mutex<VecDeque<(u64, String)>> = Mutex::new(VecDeque::new());
 static NOTICES: Mutex<Notices> = Mutex::new(Notices::new());
 static LAST_DRAW_MS: AtomicU64 = AtomicU64::new(0);
 /// A fault under the replacement draw: the game's lobby from here on.
@@ -276,7 +276,7 @@ unsafe fn str_buffer(s: *mut u8) -> *mut u8 {
 /// the host changed). Queued from anywhere on the main thread, picked up by the next draw.
 pub fn push_notice(text: String) {
     let mut q = NOTICE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-    q.push_back(geo::clean_text(&text));
+    q.push_back((crate::chat::now_ms(), geo::clean_text(&text)));
     while q.len() > geo::MAX_NOTICES {
         q.pop_front();
     }
@@ -286,10 +286,12 @@ pub fn push_notice(text: String) {
 fn forget_stale_notices(now: u64) {
     let last = LAST_DRAW_MS.swap(now.max(1), Ordering::Relaxed);
     if last == 0 || now.saturating_sub(last) > geo::NOTICE_GAP_MS {
+        // Only what was raised in the last moment survives: a lock that was already set when the
+        // lobby opened is reported on the same frame, just before the first draw.
         NOTICE_QUEUE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clear();
+            .retain(|(at, _)| now.saturating_sub(*at) <= geo::NOTICE_GAP_MS);
         NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
@@ -726,7 +728,7 @@ impl Screen {
         let rows = {
             let mut queue = NOTICE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
             let mut notices = NOTICES.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some(text) = queue.pop_front() {
+            while let Some((_, text)) = queue.pop_front() {
                 notices.push(text, total);
             }
             geo::merge_notices(&lines, notices.all())
