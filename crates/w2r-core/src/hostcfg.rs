@@ -30,15 +30,16 @@ pub struct HostConfig {
 }
 
 impl Default for HostConfig {
-    /// Everything off except the replacement Create Multiplayer Game screen, which is the
-    /// default now that it has been verified in the game (docs/create-screen.md, slice 4).
+    /// Everything off except the replacement Create Multiplayer Game and lobby screens, which are
+    /// on by default now that they have been verified in the game (docs/create-screen.md,
+    /// docs/lobby-screen.md).
     fn default() -> Self {
         HostConfig {
             require_matching_plugins: false,
             lock_team_changes: false,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
-            enhanced_lobby_screen: false,
+            enhanced_lobby_screen: true,
             map_sharing: true,
             auto_download: false,
         }
@@ -189,8 +190,8 @@ mod tests {
             "the replacement screen is on unless the file says otherwise"
         );
         assert!(
-            !HostConfig::default().enhanced_lobby_screen,
-            "the lobby screen is off until it has been verified"
+            HostConfig::default().enhanced_lobby_screen,
+            "the lobby screen is on unless the file says otherwise"
         );
         assert_eq!(
             parse(b"{\"schema\": 1, \"enhanced_create_screen\": false}")

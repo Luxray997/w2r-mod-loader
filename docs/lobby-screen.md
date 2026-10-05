@@ -188,7 +188,7 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
   footer (Leave, Start for the host; dead 1.5 s after entry; everything greyed during the start
   countdown) and the game's own popup (`MpLobbyPopup`). The right column has only the map name; the
   preview, info rows and locks are slice 2.
-- **Setting:** `enhanced_lobby_screen` in `host.json`, default **off**, checkbox "Use the w2rpm
+- **Setting:** `enhanced_lobby_screen` in `host.json`, default off at first (on since 2026-10-04, see the end of this document), checkbox "Use the w2rpm
   multiplayer lobby screen" on the plugin screen (takes effect when the lobby next opens).
 - **Fault handling:** a fault under the draw switches to the game's lobby for the rest of the
   session and logs once; the frame in which it happened may glitch (our layout space can be left
@@ -256,3 +256,10 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
   panel's bar while the host's slot row for that guest fills; the host's Start is held with the
   tooltip; a guest who leaves instead shows the notice in the host's chat. With one player: host
   flips Teams/Slots and the notice "Teams locked by host" appears in the chat.
+
+## Default on (2026-10-04)
+
+`enhanced_lobby_screen` now defaults to **true**, as the create screen does. A `host.json` that says
+false keeps it off. Verified in the game with one player (slices 1 to 3 and the notices); the
+two-player parts of slice 4 (bars, the download panel, the Start tooltip, a guest's marks, locks and
+password) are still unchecked, and the fallback to the game's lobby on a fault stays in place.
