@@ -949,6 +949,20 @@ mod tests {
         base
     }
 
+    /// The index builds on a background thread while the tests run on a fake clock, so wait for
+    /// the build in real time; otherwise whether the offer is decided inside the fake window
+    /// depends on thread scheduling.
+    fn built_index(base: &Path) -> MapIndex {
+        let index = MapIndex::new();
+        index.start_build(base.join("Maps"), None);
+        let start = std::time::Instant::now();
+        while !index.ready() && start.elapsed().as_secs() < 10 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(index.ready(), "the map index did not build");
+        index
+    }
+
     // ---- host ----
 
     fn serving_env() -> Fake {
@@ -1160,8 +1174,7 @@ mod tests {
         let map = sample_map();
         let base = temp("dl");
         let root = base.join("Maps").join("Download");
-        let index = MapIndex::new();
-        index.start_build(base.join("Maps"), None);
+        let index = built_index(&base);
         let mut guest = ClientRole::new(index, root.clone());
         let mut genv = guest_env(&map);
         let mut host = HostRole::new();
@@ -1198,12 +1211,7 @@ mod tests {
         let map = sample_map();
         let base = temp("have");
         std::fs::write(base.join("Maps").join("other-name.pud"), &map).unwrap();
-        let index = MapIndex::new();
-        index.start_build(base.join("Maps"), None);
-        let start = std::time::Instant::now();
-        while !index.ready() && start.elapsed().as_secs() < 10 {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let index = built_index(&base);
         let local = base.join("Maps").join("other-name.pud");
         let mut guest = ClientRole::new(index, base.join("Maps").join("Download"));
         let mut genv = guest_env(&map);
@@ -1229,8 +1237,7 @@ mod tests {
     fn asked_to_ask_and_with_no_prompt_to_show_the_guest_declines_after_a_moment() {
         let map = sample_map();
         let base = temp("ask");
-        let index = MapIndex::new();
-        index.start_build(base.join("Maps"), None);
+        let index = built_index(&base);
         let mut guest = ClientRole::new(index, base.join("Maps").join("Download"));
         let mut genv = guest_env(&map);
         let mut host = HostRole::new();
@@ -1368,8 +1375,7 @@ mod tests {
 
     fn offered_guest(base: &Path) -> (ClientRole, Fake, HostRole, Fake) {
         let map = sample_map();
-        let index = MapIndex::new();
-        index.start_build(base.join("Maps"), None);
+        let index = built_index(base);
         let guest = ClientRole::new(index, base.join("Maps").join("Download"));
         (guest, guest_env(&map), HostRole::new(), serving_env())
     }
