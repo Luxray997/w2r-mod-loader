@@ -97,7 +97,7 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
 1. wc2r-plus draws per-slot **download bars** in its replacement multiplayer lobby screen
    (`ui/multiplayer_lobby_screen.cpp`, a large screen port in its own right). Slice 4 above gives
    the same information through the popup, the log and chat lines, without porting that screen.
-   Port the lobby screen too (as a separate spec, after this), or leave it at slice 4?
+   Port the lobby screen too (as a separate spec, after this), or leave it at slice 4? (Spec written: [lobby-screen.md](lobby-screen.md).)
 2. A second modded player is needed to check slices 3 and 4 end to end; so far the lobby policy
    slices are waiting on the same thing.
 
