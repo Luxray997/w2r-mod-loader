@@ -21,7 +21,9 @@ use crate::hooks::{self, Owner};
 use crate::host::Log;
 use crate::mapindex::{self, MapIndex};
 use crate::maplimits::MAX_MAP_BYTES;
-use crate::maproles::{ClientRole, Env, HostRole, ServeRead, route};
+use crate::maproles::{
+    ClientRole, Env, EventTracker, HostRole, PromptKind, ServeRead, event_text, route,
+};
 use crate::mapstore::path_under;
 use crate::mapwire::ReqId;
 use crate::pe::Image;
@@ -42,6 +44,7 @@ type SelectMapAndReadHeaderFn = unsafe extern "C" fn(*const c_char, *mut c_void,
 type ScanDirectoryFn = unsafe extern "C" fn(*mut c_void);
 type SelectByNameFn = unsafe extern "C" fn(*const c_char) -> u8;
 type StartButtonFn = unsafe extern "C" fn();
+type LeaveButtonFn = unsafe extern "C" fn();
 type NetCtorFn = unsafe extern "thiscall" fn(*mut c_void) -> *mut c_void;
 type LocalizeFn = unsafe extern "C" fn(*const c_char) -> *const c_char;
 type MenuButtonFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i8;
@@ -55,6 +58,8 @@ struct GameMap {
     maps_base_dir: *const u8,
     missing_map_flag: *mut u8,
     countdown: *const u8,
+    popup: *const u8,
+    lobby_slots: *const u8,
     scan_pud: ScanPudMetadataFn,
     select_header: SelectMapAndReadHeaderFn,
     scan_directory: ScanDirectoryFn,
@@ -73,6 +78,7 @@ unsafe impl Sync for GameMap {}
 static GAME: OnceLock<GameMap> = OnceLock::new();
 static ORIGINAL_SELECT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_START: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_LEAVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_CTOR: AtomicUsize = AtomicUsize::new(0);
 
 struct State {
@@ -84,6 +90,7 @@ struct State {
     last_seen: u64,
     was_host: bool,
     start_logged: bool,
+    events: EventTracker,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -101,6 +108,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
             last_seen: 0,
             was_host: false,
             start_logged: false,
+            events: EventTracker::default(),
         }
     });
     f(st)
@@ -296,6 +304,21 @@ impl Env for RealEnv {
     fn log(&mut self, msg: &str) {
         log(msg);
     }
+
+    fn popup_open(&self) -> bool {
+        unsafe { *self.game.popup != 0 }
+    }
+
+    /// The name in the lobby slot the net slot sits in (25 bytes at +0x0d of a 0x26 record).
+    fn player_name(&self, net_slot: u32) -> Option<String> {
+        let lobby = self.net.lobby_slot_of(net_slot)? as usize;
+        if lobby >= 8 {
+            return None;
+        }
+        let rec = unsafe { self.game.lobby_slots.add(lobby * 0x26 + 0x0d) };
+        let name = read_cstr(rec, 25)?;
+        (!name.is_empty()).then_some(name)
+    }
 }
 
 /// An `'M'` message taken off the wire; it waits for the next lobby frame.
@@ -352,6 +375,7 @@ pub fn frame(now: u64, enabled: bool, ask: bool) {
             st.client.reset();
             st.inbox.clear();
             st.start_logged = false;
+            st.events.reset();
         }
         if !env.net.connected() {
             return;
@@ -377,7 +401,79 @@ pub fn frame(now: u64, enabled: bool, ask: bool) {
                 log("the map cannot be had -- showing the game's own missing-map message");
             }
         }
+        // What happened to other players' downloads: the host knows, a guest is told.
+        let mut progress = [crate::mapwire::SlotProgress::default(); crate::mapwire::SLOTS];
+        for (slot, p) in progress.iter_mut().enumerate() {
+            *p = if is_host {
+                st.host.slot_progress(slot)
+            } else {
+                st.client.slot_progress(slot)
+            };
+        }
+        for e in st.events.observe(&progress) {
+            let who = env
+                .player_name(e.slot as u32)
+                .unwrap_or_else(|| format!("The player in net slot {}", e.slot));
+            log(&event_text(&e, &who));
+        }
     });
+}
+
+/// The stock Leave button, then, while the host's map is on offer, a "Download" button right
+/// after it in the same layout. The stock button doubles as "no": leaving declines.
+unsafe extern "C" fn leave_button() {
+    let original: LeaveButtonFn =
+        unsafe { core::mem::transmute(ORIGINAL_LEAVE.load(Ordering::Acquire)) };
+    unsafe { original() };
+    let _ = guarded(draw_download_button);
+}
+
+fn draw_download_button() {
+    let Some(g) = GAME.get().copied() else {
+        return;
+    };
+    let (enabled, ask) = crate::session::map_sharing_settings();
+    let Some(net) = crate::session::net_view() else {
+        return;
+    };
+    if !enabled || net.is_host() {
+        return;
+    }
+    let now = crate::chat::now_ms();
+    let mut env = RealEnv { game: g, net };
+    let prompt = with_state(|st| st.client.prompt(&env, now, enabled, ask));
+    if prompt.kind != PromptKind::Asking {
+        return;
+    }
+    let name: String = prompt.map_name.chars().take(24).collect();
+    let label = format!(
+        "Download {name} ({} KB)? {}s",
+        prompt.size_bytes.div_ceil(1024),
+        prompt.ms_left.div_ceil(1000)
+    );
+    let Ok(c_label) = std::ffi::CString::new(label) else {
+        return;
+    };
+    let clicked = unsafe {
+        let ctx = *g.ctx_slot;
+        if ctx.is_null() {
+            return;
+        }
+        if !prompt.clickable {
+            (g.disable_begin)(ctx);
+        }
+        let hit = (g.menu_button)(ctx, c_label.as_ptr()) != 0;
+        if !prompt.clickable {
+            (g.disable_end)(ctx);
+        }
+        hit && prompt.clickable
+    };
+    if clicked {
+        with_state(|st| {
+            st.client
+                .answer_prompt(&mut env, prompt.generation, true, now)
+        });
+    }
 }
 
 unsafe extern "C" fn select_by_name(name: *const c_char) -> u8 {
@@ -520,6 +616,8 @@ pub fn install(image: &Image, symbols: &Symbols, log_: &dyn Log) -> bool {
                 maps_base_dir: at("MapsBaseDir")? as *const u8,
                 missing_map_flag: at("MissingMapFlag")? as *mut u8,
                 countdown: at("MpLobbyCountdownActive")? as *const u8,
+                popup: at("MpLobbyPopup")? as *const u8,
+                lobby_slots: at("MpLobbySlots")? as *const u8,
                 scan_pud: core::mem::transmute::<usize, ScanPudMetadataFn>(at(
                     "ScanPudMetadataFromBuffer",
                 )?),
@@ -565,6 +663,14 @@ pub fn install(image: &Image, symbols: &Symbols, log_: &dyn Log) -> bool {
         start_button as *mut c_void,
         &ORIGINAL_START,
     );
+    let d = hook_one(
+        image,
+        symbols,
+        log_,
+        "MpLobbyLeaveButton",
+        leave_button as *mut c_void,
+        &ORIGINAL_LEAVE,
+    );
     let c = hook_one(
         image,
         symbols,
@@ -573,5 +679,5 @@ pub fn install(image: &Image, symbols: &Symbols, log_: &dyn Log) -> bool {
         net_ctor as *mut c_void,
         &ORIGINAL_CTOR,
     );
-    a && b && c
+    a && b && c && d
 }

@@ -170,8 +170,9 @@ plugins over the public ABI (chat may well be the latter).
    `downloadclient.rs`: pure, 50 tests including a host-to-player run end to end). Slice 3 written:
    `mapstore.rs`, `mapindex.rs`, `maproles.rs` (tested with a fake game), `mapdownload.rs` (the
    three hooks, the `'M'` inbox, the lobby-frame work), `map_sharing` and `auto_download` in
-   `host.json` with plugin-screen checkboxes, capability bit 2 in the handshake. **Awaiting a
-   two-player in-game check**; slice 4 (prompt and status) not started.**
+   `host.json` with plugin-screen checkboxes, capability bit 2 in the handshake. Slice 4 written: the
+   "Download <map> (N KB)? Ns" button after the stock Leave button (the stock button is the "no"),
+   per-slot status lines in `w2r.log`. **Slices 3 and 4 await a two-player in-game check.**
 Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI

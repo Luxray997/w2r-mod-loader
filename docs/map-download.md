@@ -1,6 +1,6 @@
 # Map download (Phase 3, step 4)
 
-Status: slices 1 to 3 implemented (slice 3 awaiting a two-player in-game check); slice 4 not started. Port of wc2r-plus `src/features/map_download.cpp` and
+Status: slices 1 to 4 implemented; slices 3 and 4 await a two-player in-game check. Port of wc2r-plus `src/features/map_download.cpp` and
 `src/features/map_download/` (about 3,700 lines). The wire format and the safety rules are
 specified in wc2r-plus `PROTOCOL.md` section 3; the C++ is the reference where this document is
 silent or differs. Same parity rule as [chat-plugin.md](chat-plugin.md): players with wc2r-plus,
@@ -144,3 +144,21 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
   packet hook never runs map code.
 - Not ported: the per-slot status events and the prompt (slice 4), and the leave-the-lobby path
   for an unobtainable map (the game's own missing-map message is used instead).
+
+## Slice 4 notes (2026-10-04)
+
+- **The prompt is a footer button, not a popup.** The stock lobby has no way to show a custom popup
+  or add a chat line without a custom lobby screen, and a Nuklear window begun from a hook froze
+  the lobby once. A real popup would need its buttons as hand-built MSVC `std::function` objects.
+  Instead `MpLobbyLeaveButton` is hooked: after the stock Leave button draws, a second button reads
+  `Download <map> (N KB)? <s>s` (greyed for the first second, then live; the seconds count down the
+  host's 15 s). Clicking it answers yes. The stock Leave button is the "no": leaving the lobby is
+  what declines (the host sees the player go). The same menu-button widget the Start hold already
+  draws, so no new window; where it lands in the footer layout is the thing to look at.
+- **Status** goes to `w2r.log` as sentences (`Ann declined map download and was disconnected`,
+  `... did not respond ...`, `... disconnected while downloading map`, and the "does not have the
+  map" variants with the reason). The host reports what it saw; a guest reports what the host
+  broadcast. wc2r-plus draws these as local lobby chat lines in its own lobby screen, which this
+  port does not have; porting that screen is the open question in this document.
+- The Start hold from slice 3 stays: the host's Start button is drawn disabled while any download
+  is pending.

@@ -646,6 +646,14 @@ impl NetView {
     pub(crate) fn kick(&self, slot: u32) -> bool {
         self.0.transport.kick(slot)
     }
+
+    /// The lobby slot (0 to 7) a net slot sits in, when the game says.
+    pub(crate) fn lobby_slot_of(&self, net_slot: u32) -> Option<u8> {
+        self.0
+            .transport
+            .lobby_slots()
+            .and_then(|s| s.get(net_slot as usize).copied().flatten())
+    }
 }
 
 /// The host's current lock choice, `(teams, slots)`, for the create screen's buttons.
@@ -666,6 +674,20 @@ pub fn set_lock_choice(teams: bool, slots: bool) {
             save_locks(s, teams, slots);
         }
     });
+}
+
+/// `(map_sharing, ask)` from `host.json`: whether map sharing is on, and whether a missing map
+/// asks first (`auto_download` off).
+pub fn map_sharing_settings() -> (bool, bool) {
+    SESSION.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|s| {
+                s.as_ref()
+                    .map(|s| (s.config.map_sharing, !s.config.auto_download))
+            })
+            .unwrap_or((false, true))
+    })
 }
 
 /// Whether the replacement Create Multiplayer Game screen is switched on (`host.json`).

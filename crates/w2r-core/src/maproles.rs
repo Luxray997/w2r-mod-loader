@@ -16,7 +16,7 @@ use crate::downloadhost::DownloadHost;
 use crate::mapindex::MapIndex;
 use crate::maplimits::*;
 use crate::mapstore::{self, Stored};
-use crate::mapwire::{Msg, Reason, ReqId, SLOTS, SlotProgress, decode};
+use crate::mapwire::{LeaveWhy, Msg, Reason, ReqId, SLOTS, SlotProgress, SlotState, decode};
 use crate::pudvalidate;
 
 /// How often the host re-checks the selected file on disk while the lobby map is unchanged.
@@ -58,6 +58,14 @@ pub trait Env {
     fn send_to(&mut self, slot: u8, bytes: &[u8]);
     fn send_all_modded(&mut self, bytes: &[u8]);
     fn kick(&mut self, slot: u8);
+    /// A game popup is open over the lobby (the prompt is not shown then).
+    fn popup_open(&self) -> bool {
+        false
+    }
+    /// The name of the player at a net slot, for messages.
+    fn player_name(&self, _net_slot: u32) -> Option<String> {
+        None
+    }
     fn make_req_id(&mut self) -> Option<ReqId>;
     fn log(&mut self, msg: &str);
 }
@@ -253,8 +261,7 @@ struct Run {
     selected_checked: bool,
     stored: bool,
     fail_logged: bool,
-    /// Which run a prompt answer belongs to (used by the prompt in slice 4).
-    #[allow(dead_code)]
+    /// Which run a prompt answer belongs to.
     generation: u32,
     retry_at: u64,
     retries: i32,
@@ -265,7 +272,7 @@ pub struct ClientRole {
     client: DownloadClient,
     run: Run,
     generation: u32,
-    /// 0 none, 1 download, 2 leave: the user's answer to the prompt (slice 4).
+    /// 0 none, 1 download, 2 leave: the user's answer to the prompt.
     answer: i32,
     prompt_seen_ms: u64,
     held_miss_name: String,
@@ -598,6 +605,225 @@ impl ClientRole {
     }
 }
 
+// ---- the prompt ----------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    None,
+    /// Something is going on and nothing needs the user.
+    Waiting,
+    /// The host offered a map the player lacks: ask.
+    Asking,
+    Downloading,
+}
+
+/// What the lobby should show about the map download right now (wc2r-plus `DownloadPrompt`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub map_name: String,
+    pub size_bytes: u32,
+    pub percent: u8,
+    pub ms_left: u64,
+    /// The Download button works only after a moment, so a stray click cannot answer.
+    pub clickable: bool,
+    pub generation: u32,
+}
+
+impl Prompt {
+    fn none() -> Prompt {
+        Prompt {
+            kind: PromptKind::None,
+            map_name: String::new(),
+            size_bytes: 0,
+            percent: 0,
+            ms_left: 0,
+            clickable: false,
+            generation: 0,
+        }
+    }
+}
+
+/// The Download button is greyed for this long after the offer arrives.
+pub const PROMPT_CLICK_DELAY_MS: u64 = 1_000;
+
+impl ClientRole {
+    /// Called by whatever draws the prompt, every frame it is drawn: that is also how the role
+    /// knows a screen is showing it (so it does not decline for lack of one).
+    pub fn prompt(&mut self, env: &dyn Env, now: u64, enabled: bool, ask: bool) -> Prompt {
+        self.prompt_seen_ms = now.max(1);
+        let lobby = env.lobby_map_name();
+        if !self.map_missing(&lobby) || env.popup_open() {
+            return Prompt::none();
+        }
+        let mut p = Prompt {
+            map_name: lobby.clone(),
+            generation: self.run.generation,
+            ..Prompt::none()
+        };
+        if !enabled {
+            return p;
+        }
+        let this_run = self.run.map == lobby && self.run.started;
+        if !this_run || self.client.state() == ClientState::Requested {
+            p.kind = PromptKind::Waiting;
+            return p;
+        }
+        match self.client.state() {
+            ClientState::Offered => {
+                p.size_bytes = self.client.offered_size();
+                let shown = now.saturating_sub(self.client.offered_at_ms());
+                p.ms_left = CONSENT_WAIT_MS.saturating_sub(shown);
+                if self.run.decided || !ask || !self.run.mismatch {
+                    p.kind = PromptKind::Waiting;
+                } else {
+                    p.kind = PromptKind::Asking;
+                    p.clickable = shown >= PROMPT_CLICK_DELAY_MS;
+                }
+            }
+            ClientState::Receiving => {
+                p.kind = PromptKind::Downloading;
+                p.size_bytes = self.client.offered_size();
+                p.percent = self.client.percent();
+            }
+            ClientState::Done => {
+                p.kind = PromptKind::Downloading;
+                p.percent = 100;
+            }
+            // A decline is final and quiet; anything else is waiting for a retry or the stock
+            // message.
+            ClientState::Failed if self.client.reason() == Reason::Declined => {}
+            _ => p.kind = PromptKind::Waiting,
+        }
+        p
+    }
+
+    /// The user's click: `download` true answers yes (after the click delay), false answers no
+    /// and declines the offer. Only for the offer the prompt was drawn for.
+    pub fn answer_prompt(&mut self, env: &mut dyn Env, generation: u32, download: bool, now: u64) {
+        if generation != self.run.generation
+            || self.run.decided
+            || self.answer != 0
+            || self.client.state() != ClientState::Offered
+        {
+            return;
+        }
+        if download {
+            if now.saturating_sub(self.client.offered_at_ms()) >= PROMPT_CLICK_DELAY_MS {
+                self.answer = 1;
+            }
+            return;
+        }
+        self.answer = 2;
+        self.run.decided = true;
+        self.client.on_consent(now, false);
+        self.flush(env);
+    }
+}
+
+// ---- what happened to other players' downloads ---------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadEventKind {
+    Declined,
+    Stalled,
+    NoAnswer,
+    LeftNoMap,
+}
+
+/// A download that ended badly for the player at `slot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownloadEvent {
+    pub slot: usize,
+    pub kind: DownloadEventKind,
+    /// For `LeftNoMap`: why they left, when the host said.
+    pub why: Option<LeaveWhy>,
+}
+
+fn leave_why(code: u8) -> Option<LeaveWhy> {
+    match code {
+        1 => Some(LeaveWhy::HostCannotSend),
+        2 => Some(LeaveWhy::DownloadsOff),
+        3 => Some(LeaveWhy::BadName),
+        4 => Some(LeaveWhy::DownloadFailed),
+        _ => None,
+    }
+}
+
+/// The sentence for an event (wc2r-plus `CollectDownloadNotices`).
+pub fn event_text(e: &DownloadEvent, who: &str) -> String {
+    match e.kind {
+        DownloadEventKind::Declined => format!("{who} declined map download and was disconnected"),
+        DownloadEventKind::Stalled => format!("{who} disconnected while downloading map"),
+        DownloadEventKind::NoAnswer => {
+            format!("{who} did not respond to map download and was disconnected")
+        }
+        DownloadEventKind::LeftNoMap => match e.why {
+            Some(LeaveWhy::HostCannotSend) => {
+                format!("{who} does not have the map, and map sharing is disabled")
+            }
+            Some(LeaveWhy::DownloadsOff) => {
+                format!("{who} does not have the map, and has map downloading disabled")
+            }
+            Some(LeaveWhy::BadName) => {
+                format!("{who} could not download the map: its name cannot be requested")
+            }
+            Some(LeaveWhy::DownloadFailed) => {
+                format!("{who} could not download the map: the download failed")
+            }
+            None => format!("{who} does not have the map"),
+        },
+    }
+}
+
+/// Watches the per-slot download states (the host's own, or what the host broadcast) and reports
+/// the transitions that mean a player's download ended badly.
+#[derive(Default)]
+pub struct EventTracker {
+    last: [SlotState; SLOTS],
+}
+
+impl EventTracker {
+    pub fn reset(&mut self) {
+        self.last = [SlotState::None; SLOTS];
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    pub fn observe(&mut self, progress: &[SlotProgress; SLOTS]) -> Vec<DownloadEvent> {
+        let mut out = Vec::new();
+        for slot in 1..SLOTS {
+            let (was, now) = (self.last[slot], progress[slot].state);
+            self.last[slot] = now;
+            if now == was {
+                continue;
+            }
+            if now == SlotState::LeftNoMap {
+                out.push(DownloadEvent {
+                    slot,
+                    kind: DownloadEventKind::LeftNoMap,
+                    why: leave_why(progress[slot].percent),
+                });
+                continue;
+            }
+            if !matches!(was, SlotState::Offered | SlotState::Uploading) {
+                continue;
+            }
+            let kind = match now {
+                SlotState::NoMap => DownloadEventKind::Declined,
+                SlotState::NoAnswer => DownloadEventKind::NoAnswer,
+                SlotState::Stalled => DownloadEventKind::Stalled,
+                _ => continue,
+            };
+            out.push(DownloadEvent {
+                slot,
+                kind,
+                why: None,
+            });
+        }
+        out
+    }
+}
+
 /// Decodes a message body from the wire and routes it: a host to its role, a guest to its.
 pub fn route(
     is_host: bool,
@@ -642,6 +868,7 @@ mod tests {
         logs: Vec<String>,
         next_req: u8,
         mtime: u64,
+        popup: bool,
     }
 
     impl Env for Fake {
@@ -700,6 +927,9 @@ mod tests {
         }
         fn log(&mut self, m: &str) {
             self.logs.push(m.to_owned());
+        }
+        fn popup_open(&self) -> bool {
+            self.popup
         }
     }
 
@@ -1132,5 +1362,212 @@ mod tests {
         assert_eq!(guest.slot_progress(3).percent, 0);
         assert_eq!(guest.state(), ClientState::Idle);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ---- prompt and events ----
+
+    fn offered_guest(base: &Path) -> (ClientRole, Fake, HostRole, Fake) {
+        let map = sample_map();
+        let index = MapIndex::new();
+        index.start_build(base.join("Maps"), None);
+        let guest = ClientRole::new(index, base.join("Maps").join("Download"));
+        (guest, guest_env(&map), HostRole::new(), serving_env())
+    }
+
+    #[test]
+    fn the_prompt_asks_after_an_offer_for_a_map_that_is_missing_here() {
+        let base = temp("prompt");
+        let (mut guest, mut genv, mut host, mut henv) = offered_guest(&base);
+        genv.popup = false;
+        // No lookup miss yet: nothing to show.
+        guest.tick(&mut genv, 0, true);
+        assert_eq!(guest.prompt(&genv, 10, true, true).kind, PromptKind::None);
+        guest.note_lookup("ridge.pud", false, 20);
+        assert_eq!(
+            guest.prompt(&genv, 30, true, true).kind,
+            PromptKind::Waiting,
+            "requested"
+        );
+        assert_eq!(
+            guest.prompt(&genv, 30, false, true).kind,
+            PromptKind::None,
+            "sharing off, nothing"
+        );
+        // Run until the offer arrives and is waiting on the user.
+        let mut t = 0;
+        let mut asked = None;
+        while t < 8000 && asked.is_none() {
+            guest.tick(&mut genv, t, true);
+            deliver_host_replies(&mut host, &mut henv, &mut guest, &mut genv, t);
+            let p = guest.prompt(&genv, t, true, true);
+            if p.kind == PromptKind::Asking {
+                asked = Some((t, p));
+            }
+            t += 50;
+        }
+        let (t0, p) = asked.expect("an Asking prompt appeared");
+        assert_eq!(p.map_name, "ridge.pud");
+        assert_eq!(p.size_bytes as usize, sample_map().len());
+        assert!(!p.clickable, "greyed for the first second");
+        assert!(p.ms_left > 0 && p.ms_left <= CONSENT_WAIT_MS);
+        // A click too early does nothing; after the delay it answers.
+        guest.answer_prompt(&mut genv, p.generation, true, t0);
+        guest.tick(&mut genv, t0, true);
+        assert_eq!(guest.state(), ClientState::Offered);
+        let later = t0 + PROMPT_CLICK_DELAY_MS;
+        let p = guest.prompt(&genv, later, true, true);
+        assert!(p.clickable);
+        guest.answer_prompt(&mut genv, p.generation, true, later);
+        guest.tick(&mut genv, later, true);
+        assert_eq!(guest.state(), ClientState::Receiving, "the download began");
+        assert_eq!(
+            guest.prompt(&genv, later + 10, true, true).kind,
+            PromptKind::Downloading
+        );
+        assert!(logged(&genv, "player chose DOWNLOAD"), "{:?}", genv.logs);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn declining_tells_the_host_and_a_stale_or_repeated_answer_is_ignored() {
+        let base = temp("decline");
+        let (mut guest, mut genv, mut host, mut henv) = offered_guest(&base);
+        guest.note_lookup("ridge.pud", false, 0);
+        let mut t = 0;
+        let mut answer_gen = None;
+        while t < 8000 && answer_gen.is_none() {
+            guest.tick(&mut genv, t, true);
+            deliver_host_replies(&mut host, &mut henv, &mut guest, &mut genv, t);
+            let p = guest.prompt(&genv, t, true, true);
+            if p.kind == PromptKind::Asking {
+                answer_gen = Some(p.generation);
+            }
+            t += 50;
+        }
+        let answer_gen = answer_gen.expect("asked");
+        guest.answer_prompt(&mut genv, answer_gen + 1, false, t);
+        assert_eq!(guest.state(), ClientState::Offered, "another run's prompt");
+        guest.answer_prompt(&mut genv, answer_gen, false, t);
+        assert_eq!(
+            (guest.state(), guest.prompt(&genv, t, true, true).kind),
+            (ClientState::Failed, PromptKind::None)
+        );
+        genv.sent.clear();
+        guest.answer_prompt(&mut genv, answer_gen, true, t + 5000);
+        assert!(genv.sent.is_empty(), "answered once");
+        // The host removed the declined player.
+        for (_, bytes) in guest_outgoing(&mut genv) {
+            route(true, t, 1, &bytes[5..], &mut host, &mut guest);
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn guest_outgoing(env: &mut Fake) -> Vec<(u8, Vec<u8>)> {
+        std::mem::take(&mut env.sent)
+    }
+
+    #[test]
+    fn a_popup_over_the_lobby_hides_the_prompt() {
+        let base = temp("popup");
+        let mut guest = ClientRole::new(MapIndex::new(), base.join("d"));
+        let mut genv = guest_env(&[]);
+        guest.note_lookup("ridge.pud", false, 0);
+        guest.tick(&mut genv, 0, true);
+        genv.popup = true;
+        assert_eq!(guest.prompt(&genv, 10, true, true).kind, PromptKind::None);
+        genv.popup = false;
+        assert_eq!(
+            guest.prompt(&genv, 20, true, true).kind,
+            PromptKind::Waiting
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn download_events_name_what_happened_to_whom() {
+        let mut tracker = EventTracker::default();
+        let mut p = [SlotProgress::default(); SLOTS];
+        p[2].state = SlotState::Offered;
+        p[3].state = SlotState::Uploading;
+        p[4].state = SlotState::Offered;
+        p[5].state = SlotState::Uploading;
+        assert!(tracker.observe(&p).is_empty(), "starting is not an ending");
+        p[2].state = SlotState::NoMap;
+        p[3].state = SlotState::Stalled;
+        p[4].state = SlotState::NoAnswer;
+        p[5].state = SlotState::Done;
+        p[6].state = SlotState::LeftNoMap;
+        p[6].percent = 3;
+        let events = tracker.observe(&p);
+        let kinds: Vec<_> = events.iter().map(|e| (e.slot, e.kind)).collect();
+        assert_eq!(
+            kinds,
+            [
+                (2, DownloadEventKind::Declined),
+                (3, DownloadEventKind::Stalled),
+                (4, DownloadEventKind::NoAnswer),
+                (6, DownloadEventKind::LeftNoMap),
+            ]
+        );
+        assert_eq!(events[3].why, Some(LeaveWhy::BadName));
+        assert!(
+            tracker.observe(&p).is_empty(),
+            "each ending is reported once"
+        );
+        // A state that was never open cannot be "declined".
+        let mut q = [SlotProgress::default(); SLOTS];
+        q[1].state = SlotState::NoMap;
+        assert!(EventTracker::default().observe(&q).is_empty());
+        // Slot 0 is the host and never reported.
+        let mut r = [SlotProgress::default(); SLOTS];
+        r[0].state = SlotState::LeftNoMap;
+        assert!(EventTracker::default().observe(&r).is_empty());
+        tracker.reset();
+        assert_eq!(
+            tracker.observe(&p).len(),
+            1,
+            "after a reset the leave is new again"
+        );
+    }
+
+    #[test]
+    fn event_sentences() {
+        let e = |kind, why| DownloadEvent { slot: 2, kind, why };
+        assert_eq!(
+            event_text(&e(DownloadEventKind::Declined, None), "Ann"),
+            "Ann declined map download and was disconnected"
+        );
+        assert_eq!(
+            event_text(&e(DownloadEventKind::Stalled, None), "Ann"),
+            "Ann disconnected while downloading map"
+        );
+        assert_eq!(
+            event_text(&e(DownloadEventKind::NoAnswer, None), "Ann"),
+            "Ann did not respond to map download and was disconnected"
+        );
+        for (why, text) in [
+            (
+                Some(LeaveWhy::HostCannotSend),
+                "Ann does not have the map, and map sharing is disabled",
+            ),
+            (
+                Some(LeaveWhy::DownloadsOff),
+                "Ann does not have the map, and has map downloading disabled",
+            ),
+            (
+                Some(LeaveWhy::BadName),
+                "Ann could not download the map: its name cannot be requested",
+            ),
+            (
+                Some(LeaveWhy::DownloadFailed),
+                "Ann could not download the map: the download failed",
+            ),
+            (None, "Ann does not have the map"),
+        ] {
+            assert_eq!(
+                event_text(&e(DownloadEventKind::LeftNoMap, why), "Ann"),
+                text
+            );
+        }
     }
 }
