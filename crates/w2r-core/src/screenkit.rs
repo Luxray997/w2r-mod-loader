@@ -172,7 +172,7 @@ pub mod game {
             if data.is_null() {
                 String::new()
             } else {
-                CStr::from_ptr(data).to_string_lossy().into_owned()
+                crate::gamepath::decode(CStr::from_ptr(data).to_bytes())
             }
         }
     }

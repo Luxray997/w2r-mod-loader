@@ -124,7 +124,7 @@ fn log(msg: &str) {
 fn read_cstr(p: *const u8, max: usize) -> Option<String> {
     let bytes = unsafe { core::slice::from_raw_parts(p, max) };
     let n = bytes.iter().position(|&b| b == 0)?;
-    Some(String::from_utf8_lossy(&bytes[..n]).into_owned())
+    Some(crate::gamepath::decode(&bytes[..n]))
 }
 
 impl GameMap {
@@ -194,7 +194,7 @@ impl Env for RealEnv {
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(LOBBY_MAP_NAME_MAX);
-        String::from_utf8_lossy(&bytes[..n]).into_owned()
+        crate::gamepath::decode(&bytes[..n])
     }
 
     fn selected_map_path(&self) -> Option<String> {

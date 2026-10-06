@@ -162,3 +162,17 @@ Each ends with unit tests; the game-facing ones end with a two-player in-game ch
   port does not have; porting that screen is the open question in this document.
 - The Start hold from slice 3 stays: the host's Start button is drawn disabled while any download
   is pending.
+
+## Non-ASCII paths (wc2r-plus 1.1.0)
+
+The game gives us map paths, the install folder and the selected map as narrow strings in the
+system's ANSI code page, not UTF-8. `gamepath::decode` turns them into text: valid UTF-8 first (what
+we pass the game ourselves, and every ASCII path), otherwise the ANSI code page, and only then a
+lossy fallback. It is used for the maps root, the selected map path and every string read through
+`screenkit::str_data` (so also the browser's entry paths). Reading these lossily made a map in a
+folder with an accented character "missing", so it was downloaded again, and an install folder with
+such a character made every download fail. What we hand back to the game (`select_by_path`) stays
+UTF-8, as in wc2r-plus. Unit tests cover the decision with a stand-in code page; a real check needs a
+map or install folder with a non-ASCII name (not done yet). wc2r-plus also calls the game's own
+`StdFsCodePage` (`0x007e7aca`) when it gives a folder to the game's browser; we do not hand folders to
+the game's browser, so that symbol is not ported.

@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod downloadclient;
 pub mod downloadhost;
 pub mod fingerprint;
+pub mod gamepath;
 pub mod guard;
 pub mod handshake;
 pub mod hooks;
