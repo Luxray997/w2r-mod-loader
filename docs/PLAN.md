@@ -195,7 +195,7 @@ key-file pickers. No logic of its own; it calls `w2rpm-lib`. The code both front
 (root, keys, fetcher, clock, preflight, install) moved from the CLI into `w2rpm-lib::session`.
 `crates/w2rpm-gui`: `jobs.rs` (job sequencing and the `View` snapshot, UI-free), `settings.rs`
 (`%APPDATA%\w2rpm\gui.json`), `app.rs` (egui); `tests/jobs.rs` runs the whole cycle against a
-signed test repo. Still needs the Phase 6 key and index URL (entered in Settings until then).
+signed test repo. The Phase 6 key and index URL are embedded; until the signers' keys are in `keys.txt` a key file is entered in Settings.
 
 ### 6. Plugin repository and CI
 `w2r-plugins` repo: source + manifest per plugin, CI builds binaries and publishes hashes, PR
@@ -203,6 +203,15 @@ review before listing, offline release-signing key with a documented rotation pr
 Exit: one third-party-style plugin goes through the whole pipeline, and the index signature is
 verified against the real `minisign` binary (the Phase 1 reference implementation was written from
 the format description).
+Status (2026-10-04), repo at `D:\Tools\w2r-plugins`: scaffold written. `plugins/w2r-chat` (moved from
+`crates/chat-plugin`) and `plugins/hello-example`; `tools/w2r-publish` (`check`, `package`, `index`,
+`verify`; never signs); CI and an unsigned-index release workflow; SIGNING, ROTATION, PIPELINE,
+CONTRIBUTING docs. Policy: one offline minisign key per maintainer (1-3), any one may sign, CI holds no
+key, index `expires` 90 days. **Done:** interop with real minisign 0.12 (positive and tamper cases), local
+package + index run, manager embeds `keys.txt` and the default URL. **Left:** push w2rpm and pin the
+`rev` in the plugin repo's `Cargo.toml` (it uses path dependencies now), maintainers generate keys and
+`keys.txt` gets them, first CI run on GitHub, first real signed index on Pages, then delete
+`crates/chat-plugin` here and point `tools/install_dev.ps1` at the plugin repo.
 
 ## Cross-cutting
 - Tests: unit tests for parsers/validators on Linux; `cargo-fuzz` targets for manifest, index,

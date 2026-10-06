@@ -19,9 +19,9 @@ test vectors.
   anything larger is refused before it is parsed or decoded.
 - Order of work: check the size limit, verify the signature over the exact received bytes, and only
   then parse the JSON. Nothing in an unsigned index is ever interpreted.
-- **Interoperability is not yet verified.** The reference implementation was written from the
-  minisign format description and no `minisign` binary was available. The index signature must be
-  checked against the real tool before the first release (tracked in Phase 6).
+- **Interoperability is verified** (Phase 6, 2026-10-04): an index signed by the real `minisign` 0.12
+  (`minisign -S -H`, which writes the `ED` form) verifies in `w2rpm-lib`, and `minisign -V` accepts the
+  same pair; a changed byte gives `bad_signature`. Sign with `-H`; the legacy form is refused.
 
 ## Document
 

@@ -1,0 +1,4 @@
+# Release public keys this manager trusts: one minisign public key body (the base64 second line of a
+# .pub file) per line, comments start with #. Keep in step with keys/ in the w2r-plugins repo.
+# Any one of them may sign the index. Removing a line retires a signer (docs/PLAN.md Phase 6).
+# No keys yet: the first release needs them (see w2r-plugins docs/SIGNING.md).

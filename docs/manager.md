@@ -42,8 +42,10 @@ are the environment forms of the other two. Commands:
 - `remove id [--purge]`, `enable id`, `disable id`, `rollback id`, `verify` (exit code 1 on any
   finding).
 
-There is no embedded release key or default index URL yet (Phase 6 creates them), so `--key` and
-`--index-url` are required. `--key` may be repeated (or `;`-separated in `W2RPM_KEY_FILE`) to trust two keys around a rotation. `--index-dir DIR` (hidden) serves the index and packages from a folder
+The release keys are embedded from `crates/w2rpm-lib/release/keys.txt` (one key body per line, empty until
+the signers have generated theirs) and the default index URL is `session::DEFAULT_INDEX_URL`
+(GitHub Pages of `w2r-plugins`). `--key` and `--index-url` override them; while `keys.txt` is empty `--key`
+is still required. `--key` may be repeated (or `;`-separated in `W2RPM_KEY_FILE`) to trust two keys around a rotation. `--index-dir DIR` (hidden) serves the index and packages from a folder
 for tests; the signature, URL rules and package hashes are still enforced.
 
 ## Decisions
@@ -86,7 +88,7 @@ expanded), `ratio` (over 100:1), `missing_file`, `manifest_mismatch`, `bad_manif
   dependencies that are missing, disabled or outside `version_req` (`check.rs`), and lists the
   game builds the plugin targets (it cannot know which build is installed). Warnings never block.
 - Installing or removing while the game runs fails on Windows (the DLL is open); the error says so.
-- Minisign interoperability is still unproven against the real binary (Phase 6); the `dev-sign`
-  feature signs with the committed test key and must never be enabled in a release build.
+- Minisign interoperability was checked against the real binary in Phase 6 ([index.md](index.md)). The
+  `dev-sign` feature signs with the committed test key and must never be enabled in a release build.
 - Key rotation never switches keys by itself: the manager trusts every `--key` it is given and
   warns when an index announces a `next_key` it does not trust (`index.md`, "Key management").

@@ -61,6 +61,16 @@ pub fn verify_index(
     if !minisign::verify(raw, sig_text, key) {
         return Err("bad_signature");
     }
+    parse_index(raw, cached_serial, now)
+}
+
+/// The checks of the spec table after the signature: strict parse, fields, freshness, entries.
+/// [`verify_index`] calls it once the signature holds; the publishing tool calls it on an index it
+/// has just assembled, before anyone signs it. Never call it on bytes of unknown origin.
+pub fn parse_index(raw: &[u8], cached_serial: u64, now: i64) -> Result<Index, Reason> {
+    if raw.len() > MAX_INDEX_BYTES {
+        return Err("too_large");
+    }
     let doc = json::parse(raw).map_err(|r| r.code())?;
     if !matches!(doc, Value::Object(_)) {
         return Err("bad_type");
