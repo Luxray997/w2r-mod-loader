@@ -5,6 +5,13 @@ Plugin host and plugin manager for Warcraft II Remastered.
 Status: planning. See [docs/PLAN.md](docs/PLAN.md), [docs/threat-model.md](docs/threat-model.md)
 and [docs/layout.md](docs/layout.md).
 
+## Warning
+
+This is not an official Blizzard mod. It replaces the game's `version.dll` and loads native plugin
+DLLs into the game, so it may be flagged by Blizzard's anti-cheat. No bans have been reported for
+wc2r-plus, which it is based on, but that is no guarantee. Proceed at your own risk, and only install
+plugins you trust: native plugins are not sandboxed (see [docs/threat-model.md](docs/threat-model.md)).
+
 ## Specs (Phase 1)
 
 - [docs/abi.md](docs/abi.md) and [crates/w2r-abi/include/w2r_abi.h](crates/w2r-abi/include/w2r_abi.h): plugin ABI
