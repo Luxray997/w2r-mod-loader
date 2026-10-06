@@ -2,7 +2,7 @@
 
 ## wc2r-plus
 
-wc2r-plus is by Luxray997 (MIT, license below). Substantial parts of this project are ports of
+wc2r-plus (https://github.com/Luxray997/wc2r-plus) is by Luxray997 (MIT, license below). Substantial parts of this project are ports of
 its C++ to Rust, keeping its constants, offsets, wire formats and behaviour. The ports follow
 wc2r-plus 1.1.0 (commit `95ed7f1`, 2026-10-02), including its chat channel colour settings and its
 fix for non-ASCII map paths:

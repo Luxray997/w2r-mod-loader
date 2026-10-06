@@ -3,7 +3,7 @@
 Plugin host and plugin manager for Warcraft II Remastered (game build 1.0.2.2818, 32-bit).
 
 - **Host** (`w2r-core`): a `version.dll` proxy that loads signed-off native plugins into the game,
-  and carries the features ported from wc2r-plus (by Luxray997): the
+  and carries the features ported from [wc2r-plus](https://github.com/Luxray997/wc2r-plus) (by Luxray997): the
   lobby handshake, chat history, lobby policy, map download and sharing, and the enhanced Create
   Multiplayer Game and lobby screens. Plugins get a small C ABI ([docs/abi.md](docs/abi.md)).
 - **Manager** (`w2rpm-lib`, the `w2rpm` CLI and the `w2rpm-gui` egui app): reads a signed plugin index,
