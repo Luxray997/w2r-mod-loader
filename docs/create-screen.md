@@ -116,3 +116,23 @@ The two things slice 2 left out are in, written and not yet checked in the game:
   folders`, with the count and the time.
 - To check: search once (it is walked and saved), close the game, search again after a restart (read
   from the cache, much faster with a big collection); copy a map in, press reload, search for it.
+
+## Search index without a freeze (wc2r-plus 1.1.0)
+
+wc2r-plus 1.1.0 fixed "game freezing when searching for maps" by building its map index on a
+background thread from the file system. Our search index has to be read through the game's own folder
+list (the game's registry is not safe to use from another thread), and every folder costs a list
+refresh, about 0.6 ms: 705 maps in 117 folders took 70 to 117 ms here, so a collection of a few thousand
+folders stalled the first search for seconds. Two changes instead of a port of the new index:
+
+- The walk is time-sliced. `Browser::step_index` visits folders for at most 8 ms per frame
+  (`INDEX_SLICE`), in the same order as before, and puts the game's folder back at the end of every
+  slice, so nothing else sees a half-walked list. The list shows "Indexing maps... N found" until it is
+  done; clearing the search, Cancel or Confirm drop an unfinished walk (`cancel_walk`), reload restarts
+  it. The cache still makes every later search instant, and the result is saved when the walk ends.
+- The per-frame filter (`contains_no_case`) no longer allocates two lowercase copies per map per
+  frame, which at the 4,000-map cap was thousands of allocations a frame while typing.
+
+Not done: a file-system index that never touches the game's list (upstream's design). It would also
+need our own PUD header parser for name, players and size; revisit if the sliced walk is still too slow
+on a very large collection.

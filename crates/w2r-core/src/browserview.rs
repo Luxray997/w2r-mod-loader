@@ -32,6 +32,9 @@ const STRING_STRIDE: usize = 0x18;
 const MAX_LIVE_ENTRIES: usize = 20_000;
 const MAX_FOLDERS: usize = 2_000;
 const MAX_SIZE_OPTIONS: usize = 32;
+/// How long one frame may spend walking the game's folders for the search index. Each folder
+/// costs the game a list refresh (about 0.6 ms), so this is roughly a dozen folders a frame.
+const INDEX_SLICE: std::time::Duration = std::time::Duration::from_millis(8);
 
 type RefreshFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void);
 type AssignFn = unsafe extern "thiscall" fn(*mut c_void, *const c_char, usize) -> *mut c_void;
@@ -274,6 +277,16 @@ impl View {
         }
         let mut src = self.source;
         let filter = src.size_filter();
+        if b.searching() && !b.index_ready() {
+            // The index is being built a slice per frame (`Browser::step_index`).
+            k.row_dynamic(ROW_H, 1);
+            k.label(
+                &format!("Indexing maps... {} found", b.index_len()),
+                ALIGN_LEFT,
+            );
+            k.end_list();
+            return;
+        }
         if b.searching() {
             let needle = b.search().to_owned();
             let mut picked = None;
@@ -410,8 +423,8 @@ impl View {
         let list_y = dir_y + ROW_H + GAP;
         if b.searching() {
             let first = !b.index_ready();
-            let started = std::time::Instant::now();
-            b.build_index(&mut src);
+            // A slice of the walk per frame, so a big collection never stalls the game.
+            b.step_index(&mut src, Some(INDEX_SLICE));
             if first && b.index_ready() {
                 crate::session::log_info(
                     "mapbrowser",
@@ -423,10 +436,12 @@ impl View {
                             "built by walking the folders"
                         },
                         b.index_len(),
-                        started.elapsed().as_millis()
+                        b.last_walk().as_millis()
                     ),
                 );
             }
+        } else {
+            b.cancel_walk();
         }
         unsafe { self.draw_list(k, b, Rect::new(x0, list_y, left_w, body_bottom - list_y)) };
 
@@ -473,6 +488,7 @@ impl View {
             "Cancel",
             false,
         ) {
+            b.cancel_walk();
             b.close();
         }
         if k.button_at(
@@ -483,6 +499,7 @@ impl View {
             if let Some(i) = b.resolve_choice(&mut src) {
                 self.publish(i);
             }
+            b.cancel_walk();
             b.close();
         }
 

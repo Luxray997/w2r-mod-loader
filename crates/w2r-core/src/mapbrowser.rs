@@ -110,8 +110,12 @@ pub fn contains_no_case(hay: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    hay.to_ascii_lowercase()
-        .contains(&needle.to_ascii_lowercase())
+    // No allocation: this runs for every indexed map on every frame while the player types.
+    let (hay, needle) = (hay.as_bytes(), needle.as_bytes());
+    needle.len() <= hay.len()
+        && hay
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +131,22 @@ pub struct Browser {
     skip_cache_once: bool,
     index_from_cache: bool,
     maps_root: Option<String>,
+    /// A walk that is spread over several frames and not finished yet.
+    walk: Option<Walk>,
+    /// How long the last walk took in total, across all its slices.
+    last_walk: std::time::Duration,
+}
+
+/// The unfinished part of a time-sliced walk: folders still to visit, depth first, in the order
+/// a recursive walk would visit them.
+#[derive(Debug)]
+struct Walk {
+    stack: Vec<(String, usize)>,
+    root: String,
+    /// The folder the game's list showed when the walk began.
+    here: String,
+    cache: Option<std::path::PathBuf>,
+    spent: std::time::Duration,
 }
 
 impl Browser {
@@ -210,6 +230,8 @@ impl Browser {
         let rel = src.rel_path();
         src.set_rel_path(&rel);
         self.index.clear();
+        self.dirs.clear();
+        self.walk = None;
         self.index_built = false;
         self.skip_cache_once = true;
     }
@@ -227,68 +249,120 @@ impl Browser {
         &self.index
     }
 
+    /// Fills the search index in one go (tests and callers that do not mind waiting); see
+    /// [`Browser::step_index`].
+    pub fn build_index(&mut self, src: &mut dyn Source) {
+        self.step_index(src, None);
+    }
+
     /// Fills the search index, once, until a reload: from the cache if it is still true of the
     /// disk, else by walking every folder under the maps root through the game's own list (the
-    /// only way to read them), which is then cached. The game's folder is put back afterwards.
-    pub fn build_index(&mut self, src: &mut dyn Source) {
+    /// only way to read them), which is then cached. Each folder costs the game a list refresh, so
+    /// with a big collection the walk takes seconds: with a `budget` it stops after that long and
+    /// carries on at the next call (one per frame), and the game's folder is put back at the end of
+    /// every slice so nothing else sees a half-walked list. Returns true once the index is ready.
+    pub fn step_index(
+        &mut self,
+        src: &mut dyn Source,
+        budget: Option<std::time::Duration>,
+    ) -> bool {
         if self.index_built {
-            return;
+            return true;
         }
-        let Some(root) = self.maps_root.clone() else {
-            return;
-        };
-        let cache = src.cache_file();
-        let skip = core::mem::take(&mut self.skip_cache_once);
-        if !skip
-            && let Some(file) = &cache
-            && let Some(maps) = crate::mapsearchcache::load(file, &root, &|p| src.stat(p))
-        {
-            self.index = maps;
-            self.index_built = true;
-            self.index_from_cache = true;
-            return;
+        if self.walk.is_none() {
+            let Some(root) = self.maps_root.clone() else {
+                return false;
+            };
+            let cache = src.cache_file();
+            let skip = core::mem::take(&mut self.skip_cache_once);
+            if !skip
+                && let Some(file) = &cache
+                && let Some(maps) = crate::mapsearchcache::load(file, &root, &|p| src.stat(p))
+            {
+                self.index = maps;
+                self.index_built = true;
+                self.index_from_cache = true;
+                self.last_walk = std::time::Duration::ZERO;
+                return true;
+            }
+            self.index_from_cache = false;
+            self.index.clear();
+            self.dirs.clear();
+            self.walk = Some(Walk {
+                stack: vec![(root.clone(), 0)],
+                root,
+                here: src.rel_path(),
+                cache,
+                spent: std::time::Duration::ZERO,
+            });
         }
-        self.index_from_cache = false;
-        let here = src.rel_path();
-        self.index.clear();
-        self.dirs.clear();
-        self.walk(src, &root, 0);
+        let mut walk = self.walk.take().expect("set above");
+        let started = std::time::Instant::now();
+        while let Some((rel, depth)) = walk.stack.pop() {
+            if depth > MAX_INDEX_DEPTH || self.index.len() >= MAX_INDEXED_MAPS {
+                continue;
+            }
+            src.set_rel_path(&rel);
+            self.dirs.push(rel.clone());
+            for e in src.live_entries() {
+                if self.index.len() >= MAX_INDEXED_MAPS {
+                    break;
+                }
+                self.index.push(IndexedMap {
+                    name: e.name,
+                    path: e.path,
+                    desc: e.desc,
+                    rel_dir: rel.clone(),
+                    players: e.players,
+                    dim: e.dim,
+                });
+            }
+            // Pushed backwards so the first child is popped (visited) first.
+            for child in src.folder_names().into_iter().rev() {
+                walk.stack.push((format!("{rel}\\{child}"), depth + 1));
+            }
+            if budget.is_some_and(|b| started.elapsed() >= b) && !walk.stack.is_empty() {
+                walk.spent += started.elapsed();
+                self.set_folder(src, &walk.here);
+                self.walk = Some(walk);
+                return false;
+            }
+        }
+        walk.spent += started.elapsed();
+        self.last_walk = walk.spent;
         self.index_built = true;
-        self.set_folder(src, &here);
-        if let Some(file) = &cache {
+        self.set_folder(src, &walk.here);
+        if let Some(file) = &walk.cache {
             // A cache that cannot be written only costs the next launch a walk.
-            let _ =
-                crate::mapsearchcache::save(file, &root, &self.dirs, &self.index, &|p| src.stat(p));
+            let _ = crate::mapsearchcache::save(file, &walk.root, &self.dirs, &self.index, &|p| {
+                src.stat(p)
+            });
+        }
+        true
+    }
+
+    /// True while a walk has started and not finished.
+    pub fn indexing(&self) -> bool {
+        self.walk.is_some()
+    }
+
+    /// How long the last walk took, all its slices together.
+    pub fn last_walk(&self) -> std::time::Duration {
+        self.last_walk
+    }
+
+    /// Drops an unfinished walk (the search was cleared or the browser closed). The game's
+    /// folder was already put back at the end of the last slice, so there is nothing to undo.
+    pub fn cancel_walk(&mut self) {
+        if self.walk.take().is_some() {
+            self.index.clear();
+            self.dirs.clear();
         }
     }
 
     /// True when the current index came from the cache rather than a walk.
     pub fn index_from_cache(&self) -> bool {
         self.index_from_cache
-    }
-
-    fn walk(&mut self, src: &mut dyn Source, rel: &str, depth: usize) {
-        if depth > MAX_INDEX_DEPTH || self.index.len() >= MAX_INDEXED_MAPS {
-            return;
-        }
-        src.set_rel_path(rel);
-        self.dirs.push(rel.to_owned());
-        for e in src.live_entries() {
-            if self.index.len() >= MAX_INDEXED_MAPS {
-                break;
-            }
-            self.index.push(IndexedMap {
-                name: e.name,
-                path: e.path,
-                desc: e.desc,
-                rel_dir: rel.to_owned(),
-                players: e.players,
-                dim: e.dim,
-            });
-        }
-        for child in src.folder_names() {
-            self.walk(src, &format!("{rel}\\{child}"), depth + 1);
-        }
     }
 
     pub fn choose_live(&mut self, e: &LiveEntry, rel_dir: &str) {
@@ -613,6 +687,68 @@ mod tests {
         c.build_index(&mut g);
         assert!(c.index_from_cache());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn a_time_sliced_walk_gives_the_same_index_and_never_leaves_the_game_mid_walk() {
+        let mut whole = Fake::new();
+        let mut a = browser_at_root(&whole);
+        a.build_index(&mut whole);
+
+        let mut f = Fake::new();
+        let mut b = browser_at_root(&f);
+        b.descend(&mut f, "Duels");
+        let mut calls = 0;
+        // A zero budget stops after every folder: the worst case for slicing.
+        while !b.step_index(&mut f, Some(std::time::Duration::ZERO)) {
+            calls += 1;
+            assert!(b.indexing());
+            assert_eq!(
+                f.rel, "Maps\\Duels",
+                "the user's folder is back after each slice"
+            );
+            assert!(calls < 50, "it must make progress");
+        }
+        assert!(
+            calls >= 3,
+            "four folders cannot fit in one zero-budget slice"
+        );
+        assert!(!b.indexing());
+        assert_eq!(b.indexed(), a.indexed(), "same maps in the same order");
+        assert_eq!(f.rel, "Maps\\Duels");
+        assert!(
+            b.step_index(&mut f, Some(std::time::Duration::ZERO)),
+            "ready stays ready"
+        );
+    }
+
+    #[test]
+    fn cancelling_or_reloading_a_walk_throws_the_partial_index_away() {
+        let mut f = Fake::new();
+        let mut b = browser_at_root(&f);
+        assert!(!b.step_index(&mut f, Some(std::time::Duration::ZERO)));
+        assert!(b.index_len() > 0 && b.indexing());
+        b.cancel_walk();
+        assert!(!b.indexing() && b.index_len() == 0 && !b.index_ready());
+        assert!(!b.step_index(&mut f, Some(std::time::Duration::ZERO)));
+        b.reload(&mut f);
+        assert!(!b.indexing() && b.index_len() == 0);
+        b.build_index(&mut f);
+        assert_eq!(b.index_len(), 5, "a fresh full walk after both");
+    }
+
+    #[test]
+    fn name_matching_ignores_ascii_case_without_allocating_and_handles_edges() {
+        assert!(contains_no_case("Gold Rush", "gOLD"));
+        assert!(contains_no_case("Gold Rush", "rush"));
+        assert!(contains_no_case("Gold Rush", ""));
+        assert!(contains_no_case("", ""));
+        assert!(!contains_no_case("Gold", "Gold Rush"));
+        assert!(!contains_no_case("Gold Rush", "rushes"));
+        assert!(
+            contains_no_case("Caf\u{e9} Map", "caf\u{e9}"),
+            "non-ASCII must match byte for byte"
+        );
     }
 
     #[test]
