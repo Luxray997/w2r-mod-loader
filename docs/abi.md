@@ -71,6 +71,18 @@ a longer or invalid string, a null value pointer or `min >= max` makes the call 
 reports 0. `button` returns 1 when pressed this frame; `checkbox` and `slider_int` return 1 when
 they changed the value this frame (the slider clamps it to the range first). `ctx` is opaque.
 
+Two calls were appended after the first release (`struct_size` grew; a plugin checks
+`ui->struct_size >= W2R_UI_TEXT_EDIT_SIZE` before using them, so it still runs on an older host):
+
+- `text_edit(ctx, text, buf, cap)`: a label and an edit box over the plugin's own NUL-terminated
+  buffer of `cap` bytes (1 to 256; otherwise a no-op that reports 0). The game's edit widget
+  changes the buffer in place while the player types; the call returns 1 on a frame where the text
+  changed. The plugin keeps the buffer between frames and passes it again. A buffer with no NUL is
+  terminated at its last byte before the game sees it. The text is whatever the player types (the
+  game's edit filter applies); the plugin must validate it.
+- `set_active(ctx, active)`: 0 greys out and disables the rows that follow, 1 restores them. A
+  grey-out left open at the end of `on_ui` is closed by the host.
+
 ## Strings and untrusted data
 
 - `W2rStr` is UTF-8 and length-delimited, not NUL-terminated.

@@ -17,8 +17,8 @@ use w2r_abi::*;
 mod hud;
 
 use crate::model::{
-    self, Backlog, CURSOR_COLOUR, Channel, Message, NameSpan, Settings, apply_colour_factor, faded,
-    revealed, rgba, visibility,
+    self, Backlog, CURSOR_COLOUR, Channel, Message, NameSpan, Palette, Settings, TEXT_GREY,
+    apply_colour_factor, faded, revealed, rgba, visibility,
 };
 
 // ---- Nuklear and game layout (wc2r-plus target/struct_offsets.h) ---------------------------
@@ -33,6 +33,7 @@ mod off {
     pub const CTX_TEXT_PADDING_Y: usize = 0x218;
     pub const CTX_TEXT_EXTRA1: usize = 0x21c;
     pub const CTX_TEXT_EXTRA2: usize = 0x220;
+    pub const CTX_TEXT_COLOUR: usize = 0x20c;
     pub const CTX_TEXT_COLOUR_FACTOR: usize = 0x224;
     pub const CTX_WINDOW_BACKGROUND: usize = 0x1f9c;
     pub const CTX_SCROLLBAR_SIZE: usize = 0x2008;
@@ -324,7 +325,13 @@ struct State {
     prompt_channel: Channel,
     /// The teammates (same lobby team and allied) taken at match start, as a recipient mask.
     team_mask: u8,
+    /// The text of the three channel colour boxes in the plugin screen (NUL-terminated); the
+    /// game edits a copy each frame and what it typed is stored back.
+    hex_edit: [[u8; HEX_EDIT_CAP]; 3],
 }
+
+/// Room for six hex digits and a NUL, with a little slack for a longer paste.
+const HEX_EDIT_CAP: usize = 16;
 
 /// The chat line the game is displaying: who sent it, the raw text and the target mode.
 #[derive(Clone, Default)]
@@ -364,6 +371,17 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// The colours of this frame's chat lines: the settings, or the game's own text colour when
+/// channels are off (`model::Palette`).
+unsafe fn palette(ctx: *mut c_void) -> Palette {
+    let game_text = if ctx.is_null() {
+        TEXT_GREY
+    } else {
+        unsafe { rd::<u32>(ctx.cast(), off::CTX_TEXT_COLOUR) }
+    };
+    with_state(|st| Palette::new(&st.settings, game_text))
 }
 
 fn enabled() -> bool {
@@ -653,6 +671,7 @@ unsafe fn wrapped_lines(g: &Game, ctx: *mut c_void, m: &Message, w: f32) -> i32 
 unsafe fn draw_backlog_rows(g: &Game, ctx: *mut c_void, w: f32, line_height: f32) {
     let (messages, name_colours) =
         with_state(|st| (st.backlog.snapshot(), st.settings.name_colours));
+    let palette = unsafe { palette(ctx) };
     for m in &messages {
         let n = unsafe { wrapped_lines(g, ctx, m, w) };
         unsafe {
@@ -662,7 +681,7 @@ unsafe fn draw_backlog_rows(g: &Game, ctx: *mut c_void, w: f32, line_height: f32
                     g,
                     ctx,
                     m,
-                    m.colour(),
+                    m.colour(&palette),
                     &LineLook {
                         names: true,
                         alpha: 1.0,
@@ -670,7 +689,7 @@ unsafe fn draw_backlog_rows(g: &Game, ctx: *mut c_void, w: f32, line_height: f32
                     },
                 );
             } else {
-                (g.draw_wrapped_label)(ctx, m.text.as_ptr(), m.colour());
+                (g.draw_wrapped_label)(ctx, m.text.as_ptr(), m.colour(&palette));
             }
         }
     }
@@ -697,6 +716,7 @@ unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
                 .collect::<Vec<_>>(),
         )
     });
+    let palette = unsafe { palette(ctx) };
     let now = now_ms();
     let max_lines = h as i32 / line_height;
     let mut used = 0;
@@ -722,7 +742,7 @@ unsafe fn draw_recent_lines(g: &Game, ctx: *mut c_void, line_height: i32) {
                 g,
                 ctx,
                 m,
-                m.colour(),
+                m.colour(&palette),
                 &LineLook {
                     names: name_colours,
                     alpha,
@@ -1299,7 +1319,7 @@ unsafe fn draw_message_strip(g: &Game, ctx: *mut c_void, line_height: i32) -> bo
                 ctx,
                 prompt.cast(),
                 (w, h),
-                prompt_channel.colour(),
+                palette(ctx).of(prompt_channel),
                 0,
                 line_height,
             )
@@ -1533,6 +1553,50 @@ fn load_settings() -> Settings {
     settings
 }
 
+/// A stored string setting, if the host has one.
+fn load_str(key: &str) -> Option<String> {
+    let h = host()?;
+    let mut buf = [0u8; 64];
+    let mut len = 0u32;
+    let status =
+        unsafe { (h.settings_get_str)(h.token, s(key), buf.as_mut_ptr().cast(), 64, &mut len) };
+    if status != W2R_OK {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf[..(len as usize).min(buf.len())]).into_owned())
+}
+
+/// Reads the channel colour settings into the state and the edit boxes. A value that is not
+/// six hex digits is logged once and the channel keeps its default (wc2r-plus
+/// `WarnBadChannelColours`).
+fn load_colours() {
+    for (i, spec) in model::CHANNEL_COLOURS.iter().enumerate() {
+        let text = load_str(spec.key).unwrap_or_else(|| spec.default_hex.to_owned());
+        let valid = with_state(|st| {
+            let valid = st.settings.apply_hex(spec.key, &text);
+            let n = text.len().min(HEX_EDIT_CAP - 1);
+            st.hex_edit[i] = [0; HEX_EDIT_CAP];
+            st.hex_edit[i][..n].copy_from_slice(&text.as_bytes()[..n]);
+            valid
+        });
+        if !valid {
+            log(
+                W2R_LOG_WARN,
+                &format!(
+                    "{} \"{text}\" is not six hex digits (e.g. {}) -- using {}",
+                    spec.key, spec.default_hex, spec.default_hex
+                ),
+            );
+        }
+    }
+}
+
+fn save_str(key: &str, value: &str) {
+    if let Some(h) = host() {
+        unsafe { (h.settings_set_str)(h.token, s(key), s(value)) };
+    }
+}
+
 fn save_setting(key: &str, value: i64) {
     if let Some(h) = host() {
         unsafe { (h.settings_set_i64)(h.token, s(key), value) };
@@ -1553,6 +1617,7 @@ unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     };
     let _ = GAME.set(g);
     with_state(|st| st.settings = load_settings());
+    load_colours();
 
     let hooks: [(&str, *mut c_void, &AtomicUsize); 11] = [
         (
@@ -1747,6 +1812,23 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
         }
         if (ui.checkbox)(ui.ctx, s("Enhanced chat channels"), &mut channels) != 0 {
             changed.push((model::CHANNELS.key, channels as i64));
+        }
+        // The colour boxes need the text widget, which hosts before it do not have.
+        if ui.struct_size >= W2R_UI_TEXT_EDIT_SIZE {
+            (ui.set_active)(ui.ctx, channels);
+            for (i, spec) in model::CHANNEL_COLOURS.iter().enumerate() {
+                let mut buf = with_state(|st| st.hex_edit[i]);
+                if (ui.text_edit)(ui.ctx, s(spec.label), buf.as_mut_ptr(), buf.len() as u32) != 0 {
+                    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    with_state(|st| {
+                        st.hex_edit[i] = buf;
+                        st.settings.apply_hex(spec.key, &text);
+                    });
+                    save_str(spec.key, &text);
+                }
+            }
+            (ui.set_active)(ui.ctx, 1);
         }
         if (ui.checkbox)(ui.ctx, s("Click closes chat"), &mut click) != 0 {
             changed.push((model::CLICK_UNFOCUS.key, click as i64));

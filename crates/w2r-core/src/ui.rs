@@ -15,6 +15,9 @@ pub const MAX_TEXT: usize = 128;
 /// Row height in the game's UI space (2160 high), the options screen's value.
 pub const ROW_H: f32 = 90.0;
 pub const HEADING_H: f32 = 120.0;
+/// An edit row. The game's edit box pads its text, and the plugin screen's font is 80 high, so a
+/// 90-high row clips the text away and leaves only the caret (seen in game).
+pub const EDIT_ROW_H: f32 = 150.0;
 
 /// One row of widgets. `label` and friends each take the whole row.
 pub trait Widgets {
@@ -26,6 +29,10 @@ pub trait Widgets {
     fn checkbox(&self, text: &str, value: &mut bool) -> bool;
     /// True when the value changed this frame. `min < max`.
     fn slider(&self, text: &str, value: &mut i32, min: i32, max: i32) -> bool;
+    /// An edit box over `buf` (NUL-terminated, edited in place); true when the text changed.
+    fn text_edit(&self, _text: &str, _buf: &mut [u8]) -> bool {
+        false
+    }
     /// Greys out everything until `disable_end`.
     fn disable_begin(&self) {}
     fn disable_end(&self) {}
@@ -34,7 +41,12 @@ pub trait Widgets {
 /// What a plugin's `on_ui` call sees behind `W2rUi.ctx`.
 struct Frame<'a> {
     widgets: &'a dyn Widgets,
+    /// `set_active(0)` is in effect; closed when the frame ends if the plugin forgot.
+    dimmed: Cell<bool>,
 }
+
+/// The longest edit buffer a plugin may hand over.
+pub const MAX_EDIT: usize = 256;
 
 thread_local! {
     /// The one frame whose table may be used right now (its address), or 0. A `W2rUi` kept
@@ -52,7 +64,10 @@ pub fn with_frame<R>(widgets: &dyn Widgets, f: impl FnOnce(&W2rUi) -> R) -> R {
             ACTIVE.with(|a| a.set(self.0));
         }
     }
-    let mut frame = Frame { widgets };
+    let mut frame = Frame {
+        widgets,
+        dimmed: Cell::new(false),
+    };
     let ctx: *mut Frame<'_> = &mut frame;
     let _restore = Restore(ACTIVE.with(|a| a.replace(ctx as usize)));
     let table = W2rUi {
@@ -62,8 +77,14 @@ pub fn with_frame<R>(widgets: &dyn Widgets, f: impl FnOnce(&W2rUi) -> R) -> R {
         button: cb::button,
         checkbox: cb::checkbox,
         slider_int: cb::slider_int,
+        text_edit: cb::text_edit,
+        set_active: cb::set_active,
     };
-    f(&table)
+    let result = f(&table);
+    if frame.dimmed.get() {
+        widgets.disable_end();
+    }
+    result
 }
 
 mod cb {
@@ -156,6 +177,49 @@ mod cb {
                 0
             }
         })
+    }
+
+    pub unsafe extern "C" fn text_edit(
+        ctx: *mut c_void,
+        text: W2rStr,
+        buf: *mut u8,
+        cap: u32,
+    ) -> i32 {
+        run(|| {
+            let (Some(f), Some(t)) = (unsafe { frame(ctx) }, unsafe { self::text(text) }) else {
+                return 0;
+            };
+            if buf.is_null() || cap == 0 || cap as usize > MAX_EDIT {
+                return 0;
+            }
+            let bytes = unsafe { core::slice::from_raw_parts_mut(buf, cap as usize) };
+            // The plugin's text must end inside its buffer; make it so before the game sees it.
+            if !bytes.contains(&0) {
+                bytes[cap as usize - 1] = 0;
+            }
+            f.widgets.row(EDIT_ROW_H, 2);
+            f.widgets.text_edit(t, bytes) as i32
+        })
+    }
+
+    pub unsafe extern "C" fn set_active(ctx: *mut c_void, active: i32) {
+        run(|| {
+            let Some(f) = (unsafe { frame(ctx) }) else {
+                return 0;
+            };
+            match (active != 0, f.dimmed.get()) {
+                (false, false) => {
+                    f.widgets.disable_begin();
+                    f.dimmed.set(true);
+                }
+                (true, true) => {
+                    f.widgets.disable_end();
+                    f.dimmed.set(false);
+                }
+                _ => {}
+            }
+            0
+        });
     }
 }
 
@@ -348,6 +412,8 @@ pub mod fake {
         pub press: RefCell<Vec<String>>,
         pub flip: RefCell<Vec<String>>,
         pub set: RefCell<BTreeMap<String, i32>>,
+        /// Text the user types into the edit box with this label.
+        pub typed: RefCell<BTreeMap<String, String>>,
     }
 
     impl Widgets for FakeWidgets {
@@ -371,6 +437,22 @@ pub mod fake {
             } else {
                 false
             }
+        }
+        fn text_edit(&self, text: &str, buf: &mut [u8]) -> bool {
+            self.calls.borrow_mut().push(format!("text_edit {text:?}"));
+            let Some(new) = self.typed.borrow().get(text).cloned() else {
+                return false;
+            };
+            let n = new.len().min(buf.len() - 1);
+            buf[..n].copy_from_slice(&new.as_bytes()[..n]);
+            buf[n] = 0;
+            true
+        }
+        fn disable_begin(&self) {
+            self.calls.borrow_mut().push("disable_begin".into());
+        }
+        fn disable_end(&self) {
+            self.calls.borrow_mut().push("disable_end".into());
         }
         fn slider(&self, text: &str, value: &mut i32, min: i32, max: i32) -> bool {
             self.calls
@@ -637,5 +719,72 @@ mod tests {
             Action::ToggleMapSharing
         );
         assert!(host.auto_download && !host.map_sharing);
+    }
+
+    #[test]
+    fn text_edit_edits_the_plugins_buffer_in_place() {
+        let fake = FakeWidgets::default();
+        fake.typed
+            .borrow_mut()
+            .insert("Colour".into(), "ff8800".into());
+        let mut buf = *b"25e65f    ";
+        let mut other = *b"abc ";
+        with_frame(&fake, |ui| unsafe {
+            assert_eq!((ui.text_edit)(ui.ctx, s("Colour"), buf.as_mut_ptr(), 10), 1);
+            assert_eq!(&buf[..7], b"ff8800 ");
+            assert_eq!((ui.text_edit)(ui.ctx, s("Other"), other.as_mut_ptr(), 4), 0);
+            assert_eq!(&other, b"abc ");
+            // Refused: null buffer, zero or oversize capacity.
+            assert_eq!(
+                (ui.text_edit)(ui.ctx, s("Colour"), core::ptr::null_mut(), 8),
+                0
+            );
+            assert_eq!((ui.text_edit)(ui.ctx, s("Colour"), buf.as_mut_ptr(), 0), 0);
+            assert_eq!(
+                (ui.text_edit)(ui.ctx, s("Colour"), buf.as_mut_ptr(), MAX_EDIT as u32 + 1),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn an_unterminated_buffer_is_terminated_before_the_game_sees_it() {
+        let fake = FakeWidgets::default();
+        let mut buf = *b"abcd";
+        with_frame(&fake, |ui| unsafe {
+            (ui.text_edit)(ui.ctx, s("X"), buf.as_mut_ptr(), 4);
+        });
+        assert_eq!(buf[3], 0);
+    }
+
+    #[test]
+    fn set_active_greys_the_rows_after_it_and_is_closed_at_the_end_of_the_frame() {
+        let fake = FakeWidgets::default();
+        with_frame(&fake, |ui| unsafe {
+            (ui.set_active)(ui.ctx, 0);
+            (ui.set_active)(ui.ctx, 0); // twice is still one grey-out
+            (ui.label)(ui.ctx, s("greyed"));
+            (ui.set_active)(ui.ctx, 1);
+            (ui.set_active)(ui.ctx, 1);
+            (ui.label)(ui.ctx, s("normal"));
+            (ui.set_active)(ui.ctx, 0); // forgotten: the host closes it
+        });
+        let calls = fake.calls.borrow();
+        let marks: Vec<&str> = calls
+            .iter()
+            .map(String::as_str)
+            .filter(|c| c.starts_with("disable") || c.starts_with("label"))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                "disable_begin",
+                "label \"greyed\"",
+                "disable_end",
+                "label \"normal\"",
+                "disable_begin",
+                "disable_end"
+            ]
+        );
     }
 }

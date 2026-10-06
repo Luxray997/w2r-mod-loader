@@ -118,6 +118,9 @@ typedef struct W2rUi {
     int32_t (W2R_CALL *button)(void *ctx, W2rStr text);           /* 1 when pressed */
     int32_t (W2R_CALL *checkbox)(void *ctx, W2rStr text, int32_t *value); /* 1 when changed */
     int32_t (W2R_CALL *slider_int)(void *ctx, W2rStr text, int32_t *value, int32_t min, int32_t max);
+    /* Appended after the first release: check ui->struct_size covers these before using them. */
+    int32_t (W2R_CALL *text_edit)(void *ctx, W2rStr text, char *buf, uint32_t cap); /* 1 when changed */
+    void (W2R_CALL *set_active)(void *ctx, int32_t active); /* 0 greys out the rows after it */
 } W2rUi;
 
 /* ---- host table: provided by the host, one instance per plugin ------------------------- */

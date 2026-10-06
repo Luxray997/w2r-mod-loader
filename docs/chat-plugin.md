@@ -130,6 +130,14 @@ taken at match start.
 | Local player | `LocalPlayer` | `u8` |
 | Chat mode and recipients | `ChatTargetMode`, `ChatRecipientMask` | `u8` each; modes 2 all, 3 allies, 4 enemies, 5 private, 6 default team, 8 custom team |
 
+- **Channel colours** (wc2r-plus 1.1.0): `[Team]`, `[All]` and `[Allies]` are settings `team_hex`
+  (default `25e65f`), `all_hex` (`929292`) and `allies_hex` (`69a7ff`), six hex digits, edited in the
+  plugin screen through `W2rUi.text_edit` and greyed out with `set_active` while "Enhanced chat
+  channels" is off. A value that is not exactly six hex digits (no `#`) is logged once at load and the
+  channel keeps its default, so a half-typed value never shows a wrong colour. `[Enemies]` and
+  `[Private]` stay grey; system lines keep the highlight colour. With channels (or the plugin) off,
+  every chat line uses the game's own text colour instead. `model::Palette` builds this once per
+  frame, as wc2r-plus `LinePalette` does.
 - **Colours** (8, RGB): (196,40,40), (48,72,200), (0,152,152), (128,48,168), (232,132,24),
   (32,32,32), (236,236,236), (232,212,48). Index 5 is the black player and is drawn as
   (0x20,0x20,0x20) grey in chat. wc2r-plus can recolour black (its "Black2Pink" option); that is a

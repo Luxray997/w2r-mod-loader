@@ -149,7 +149,18 @@ pub struct W2rUi {
         min: i32,
         max: i32,
     ) -> i32,
+    /// Appended after the first release: check `struct_size` covers this before using it.
+    /// An edit box over the plugin's own NUL-terminated buffer of `cap` bytes; 1 when the text
+    /// changed this frame.
+    pub text_edit:
+        unsafe extern "C" fn(ctx: *mut c_void, text: W2rStr, buf: *mut u8, cap: u32) -> i32,
+    /// Appended with `text_edit`. 0 greys out and disables the rows that follow, 1 restores them.
+    pub set_active: unsafe extern "C" fn(ctx: *mut c_void, active: i32),
 }
+
+/// `W2rUi.struct_size` of the first release: a plugin that wants `text_edit` or `set_active`
+/// checks `ui.struct_size >= W2R_UI_TEXT_EDIT_SIZE`.
+pub const W2R_UI_TEXT_EDIT_SIZE: u32 = core::mem::size_of::<W2rUi>() as u32;
 
 // ---- host table: provided by the host, one instance per plugin -----------------------------
 /// The host fills every version-1 field, so these pointers are never null for a version-1 host.
@@ -302,7 +313,7 @@ mod tests {
         assert_eq!(size_of::<W2rStr>(), 8);
         assert_eq!(size_of::<W2rEvent>(), 12);
         assert_eq!(size_of::<W2rPlugin>(), 20);
-        assert_eq!(size_of::<W2rUi>(), 24);
+        assert_eq!(size_of::<W2rUi>(), 32);
         assert_eq!(size_of::<W2rHost>(), 84);
         assert_eq!(W2R_HOST_V1_SIZE, 84);
         assert_eq!(W2R_PLUGIN_V1_SIZE, 20);
@@ -315,7 +326,7 @@ mod tests {
         assert_eq!(size_of::<W2rStr>(), 16);
         assert_eq!(size_of::<W2rEvent>(), 16);
         assert_eq!(size_of::<W2rPlugin>(), 40);
-        assert_eq!(size_of::<W2rUi>(), 48);
+        assert_eq!(size_of::<W2rUi>(), 64);
         assert_eq!(size_of::<W2rHost>(), 160);
     }
 }

@@ -30,6 +30,10 @@ const ALIGN_TITLE: i32 = 0x12;
 const ALIGN_ROW: i32 = 0x11;
 const WINDOW_NO_SCROLLBAR: u32 = 0x20;
 const GROUP_PLAIN: u32 = 0;
+/// The edit box's flags and the row spacing offset in the game's Nuklear context, as the other
+/// screens use them (`screenkit.rs`, wc2r-plus `struct_offsets.h`).
+const TEXT_EDIT_FLAGS: u32 = 0x260;
+const CTX_SPACING_Y: usize = 0x2004;
 /// After this long without the options screen being built, the next build is a fresh entry.
 const REENTRY_GAP_MS: u64 = 250;
 
@@ -46,6 +50,7 @@ type LabelFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32);
 type MenuButtonFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i8;
 type CheckboxFn = unsafe extern "C" fn(*const c_char, *mut u32, u32) -> u8;
 type SliderFn = unsafe extern "C" fn(*mut u32, *mut u32, *mut u32, *mut u32) -> u8;
+type TextEditFn = unsafe extern "C" fn(*mut c_void, u32, *mut c_char, i32, *mut c_void) -> u32;
 type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
 
 /// The game functions the screen needs, resolved once. Plain pointers, so copies are cheap and
@@ -68,6 +73,9 @@ pub struct Nk {
     slider: SliderFn,
     disable_begin: CtxFn,
     disable_end: CtxFn,
+    text_edit: TextEditFn,
+    text_edit_filter: *mut c_void,
+    skin_text_edit: *const u32,
     set_skin: SetSkinFn,
     skin_manager: *mut c_void,
     skin_window: *const u32,
@@ -101,6 +109,9 @@ impl Nk {
             slider: sym!(symbols, "SliderU32", SliderFn),
             disable_begin: sym!(symbols, "DisableBegin", CtxFn),
             disable_end: sym!(symbols, "DisableEnd", CtxFn),
+            text_edit: sym!(symbols, "TextEdit", TextEditFn),
+            text_edit_filter: symbols.address("TextEditFilter")? as *mut c_void,
+            skin_text_edit: symbols.address("SkinTextEdit")? as *const u32,
             set_skin: sym!(symbols, "SetSkin", SetSkinFn),
             skin_manager: symbols.address("SkinManager")? as *mut c_void,
             skin_window: symbols.address("SkinWindow")? as *const u32,
@@ -200,6 +211,32 @@ impl Widgets for GameWidgets<'_> {
             *value = (v as i64 + min as i64) as i32;
         }
         changed
+    }
+    fn text_edit(&self, text: &str, buf: &mut [u8]) -> bool {
+        // wc2r-plus `TextEdit`: a label in the first cell, the game's edit box in the second,
+        // with the text-edit skin pushed and the row spacing put back around the call.
+        self.label(text);
+        let before = buf.to_vec();
+        let ctx = self.ctx;
+        let max = buf.len() as i32;
+        let typing = Self::call("TextEdit", || unsafe {
+            let spacing_at = (ctx as *mut u8).add(CTX_SPACING_Y).cast::<f32>();
+            let spacing = spacing_at.read_unaligned();
+            let skin = self.nk.push_skin(*self.nk.skin_text_edit);
+            spacing_at.write_unaligned(spacing);
+            let state = (self.nk.text_edit)(
+                ctx,
+                TEXT_EDIT_FLAGS,
+                buf.as_mut_ptr().cast(),
+                max,
+                self.nk.text_edit_filter,
+            );
+            self.nk.push_skin(skin);
+            spacing_at.write_unaligned(spacing);
+            state
+        });
+        let _ = typing;
+        before != *buf
     }
     fn disable_begin(&self) {
         Self::call("DisableBegin", || unsafe {

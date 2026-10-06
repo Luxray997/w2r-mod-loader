@@ -35,15 +35,52 @@ impl Channel {
             Channel::Private => "[Private]",
         }
     }
+}
 
-    pub fn colour(self) -> u32 {
-        match self {
-            Channel::System => HIGHLIGHT,
-            Channel::Team => rgba(0x25, 0xe6, 0x5f, 255),
-            Channel::Allies => rgba(0x69, 0xa7, 0xff, 255),
-            Channel::All | Channel::Enemies | Channel::Private => TEXT_GREY,
-        }
+/// A channel whose colour the player can change (wc2r-plus 1.1.0 `kChannelColourSettings`).
+pub struct ColourSpec {
+    pub channel: Channel,
+    /// The settings key; the value is six hex digits, `rrggbb`.
+    pub key: &'static str,
+    pub label: &'static str,
+    pub default_hex: &'static str,
+}
+
+pub const CHANNEL_COLOURS: [ColourSpec; 3] = [
+    ColourSpec {
+        channel: Channel::Team,
+        key: "team_hex",
+        label: "[Team] color (hex)",
+        default_hex: "25e65f",
+    },
+    ColourSpec {
+        channel: Channel::All,
+        key: "all_hex",
+        label: "[All] color (hex)",
+        default_hex: "929292",
+    },
+    ColourSpec {
+        channel: Channel::Allies,
+        key: "allies_hex",
+        label: "[Allies] color (hex)",
+        default_hex: "69a7ff",
+    },
+];
+
+/// Exactly six hex digits, no `#` and no spaces, as wc2r-plus `hex_colour::Parse`: `rrggbb`.
+pub fn parse_hex(text: &str) -> Option<u32> {
+    if text.len() != 6 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
     }
+    u32::from_str_radix(text, 16).ok()
+}
+
+/// A hex setting as a drawable colour; anything invalid gives the channel's default.
+pub fn hex_to_colour(text: &str, default_hex: &str) -> u32 {
+    let rgb = parse_hex(text)
+        .or_else(|| parse_hex(default_hex))
+        .unwrap_or(0xffffff);
+    rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255)
 }
 
 /// The game's target mode for a team message to a custom recipient mask.
@@ -203,6 +240,8 @@ impl Spec {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// Channel colours in `CHANNEL_COLOURS` order, as drawable colours.
+    pub channel_colours: [u32; 3],
     pub enabled: bool,
     pub lines: i32,
     pub fade_seconds: i32,
@@ -218,6 +257,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            channel_colours: CHANNEL_COLOURS.map(|c| hex_to_colour(c.default_hex, c.default_hex)),
             enabled: ENABLED.default != 0,
             lines: LINES.default as i32,
             fade_seconds: FADE.default as i32,
@@ -248,6 +288,50 @@ impl Settings {
             "click_unfocus" => self.click_unfocus = CLICK_UNFOCUS.clamp(value) != 0,
             _ => {}
         }
+    }
+
+    /// Applies one stored hex colour. False when the text is not six hex digits (the channel
+    /// then uses its default, so a half-typed value never shows a wrong colour); an unknown key
+    /// is ignored and reported as fine.
+    pub fn apply_hex(&mut self, key: &str, text: &str) -> bool {
+        let Some(i) = CHANNEL_COLOURS.iter().position(|c| c.key == key) else {
+            return true;
+        };
+        self.channel_colours[i] = hex_to_colour(text, CHANNEL_COLOURS[i].default_hex);
+        parse_hex(text).is_some()
+    }
+}
+
+/// The colour of every kind of line for one frame (wc2r-plus `LinePalette`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    by_channel: [u32; 6],
+}
+
+impl Palette {
+    /// With enhanced channels on, the three channels the player can recolour use their settings
+    /// and the rest are grey. With them off every chat line takes the game's own text colour
+    /// (`game_text`), so the mod does not repaint chat it is not managing. System lines keep the
+    /// highlight colour either way.
+    pub fn new(settings: &Settings, game_text: u32) -> Palette {
+        let mut by_channel = [TEXT_GREY; 6];
+        by_channel[Channel::System as usize] = HIGHLIGHT;
+        if settings.enabled && settings.channels {
+            for (spec, &c) in CHANNEL_COLOURS.iter().zip(&settings.channel_colours) {
+                by_channel[spec.channel as usize] = c;
+            }
+        } else {
+            for (i, c) in by_channel.iter_mut().enumerate() {
+                if i != Channel::System as usize {
+                    *c = game_text;
+                }
+            }
+        }
+        Palette { by_channel }
+    }
+
+    pub fn of(&self, channel: Channel) -> u32 {
+        self.by_channel[channel as usize]
     }
 }
 
@@ -289,11 +373,11 @@ impl Message {
         self
     }
 
-    pub fn colour(&self) -> u32 {
+    pub fn colour(&self, palette: &Palette) -> u32 {
         if self.highlight {
             HIGHLIGHT
         } else {
-            self.channel.colour()
+            palette.of(self.channel)
         }
     }
 }
@@ -573,9 +657,59 @@ mod tests {
     fn colours_pack_like_wc2r_plus() {
         assert_eq!(rgba(255, 204, 0, 255), 0xff00_ccff);
         assert_eq!(HIGHLIGHT, 0xff00_ccff);
-        assert_eq!(Channel::Team.colour(), rgba(0x25, 0xe6, 0x5f, 255));
-        assert_eq!(Channel::All.colour(), TEXT_GREY);
-        assert_eq!(Channel::System.colour(), HIGHLIGHT);
+        let p = Palette::new(&Settings::default(), 0);
+        assert_eq!(p.of(Channel::Team), rgba(0x25, 0xe6, 0x5f, 255));
+        assert_eq!(p.of(Channel::Allies), rgba(0x69, 0xa7, 0xff, 255));
+        assert_eq!(p.of(Channel::All), TEXT_GREY);
+        assert_eq!(p.of(Channel::System), HIGHLIGHT);
+    }
+
+    #[test]
+    fn hex_is_exactly_six_digits() {
+        assert_eq!(parse_hex("25e65f"), Some(0x25e65f));
+        assert_eq!(parse_hex("FFAA00"), Some(0xffaa00));
+        for bad in [
+            "", "25e65", "25e65ff", "#25e65f", "25e65g", " 25e65f", "+5e65f",
+        ] {
+            assert_eq!(parse_hex(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_hex_setting_falls_back_to_the_default() {
+        let mut s = Settings::default();
+        assert!(s.apply_hex("team_hex", "ff8800"));
+        assert_eq!(
+            Palette::new(&s, 0).of(Channel::Team),
+            rgba(0xff, 0x88, 0x00, 255)
+        );
+        assert!(!s.apply_hex("team_hex", "ff88"));
+        assert_eq!(
+            Palette::new(&s, 0).of(Channel::Team),
+            rgba(0x25, 0xe6, 0x5f, 255)
+        );
+        assert!(
+            s.apply_hex("not_a_colour", "zzz"),
+            "unknown keys are ignored"
+        );
+    }
+
+    #[test]
+    fn channels_off_uses_the_game_text_colour_except_for_system_lines() {
+        let game = rgba(250, 250, 250, 255);
+        let mut s = Settings::default();
+        s.channels = false;
+        let p = Palette::new(&s, game);
+        assert_eq!(p.of(Channel::Team), game);
+        assert_eq!(p.of(Channel::All), game);
+        assert_eq!(p.of(Channel::System), HIGHLIGHT);
+        s.channels = true;
+        s.enabled = false;
+        assert_eq!(
+            Palette::new(&s, game).of(Channel::Allies),
+            game,
+            "plugin off counts as channels off"
+        );
     }
 
     #[test]
@@ -632,10 +766,11 @@ mod tests {
 
     #[test]
     fn highlight_wins_over_the_channel_colour() {
+        let p = Palette::new(&Settings::default(), 0);
         let mut m = msg("x", 0);
-        assert_eq!(m.colour(), TEXT_GREY);
+        assert_eq!(m.colour(&p), TEXT_GREY);
         m.highlight = true;
-        assert_eq!(m.colour(), HIGHLIGHT);
+        assert_eq!(m.colour(&p), HIGHLIGHT);
     }
 
     #[test]
