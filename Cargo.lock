@@ -2439,11 +2439,16 @@ dependencies = [
  "sha2",
  "w2r-abi",
  "w2r-formats",
+ "w2r-preview",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "w2r-formats"
+version = "0.1.0"
+
+[[package]]
+name = "w2r-preview"
 version = "0.1.0"
 
 [[package]]

@@ -9,3 +9,4 @@ rust-version = "1.85"
 [workspace.dependencies]
 w2r-abi = { path = "crates/w2r-abi" }
 w2r-formats = { path = "crates/w2r-formats" }
+w2r-preview = { path = "crates/w2r-preview" }
