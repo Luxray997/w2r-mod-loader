@@ -11,9 +11,7 @@ use core::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use w2r_abi::{
-    W2R_E_BUSY, W2R_E_NOT_FOUND, W2R_LOG_INFO, W2R_LOG_WARN, W2R_OK, W2rStatus,
-};
+use w2r_abi::{W2R_E_BUSY, W2R_E_NOT_FOUND, W2R_LOG_INFO, W2R_LOG_WARN, W2R_OK, W2rStatus};
 
 use crate::browserview::{INDEX_SLICE, Theme, View};
 use crate::createpick::MapPicker;
@@ -439,7 +437,12 @@ impl Screen {
         ));
         if plugin_h > 0.0 {
             let top = b.y + b.h + GAP + ROW_H + GAP;
-            let area = Rect::new(b.x, top, b.w, (column.y + column.h - top).max(0.0));
+            let area = Rect::new(
+                b.x,
+                top,
+                b.w,
+                (column.y + column.h - top).max(0.0),
+            );
             let widgets = PluginRows::new(k, area);
             crate::session::draw_create_ui(&widgets, &mut GamePicker { screen: self });
         }
