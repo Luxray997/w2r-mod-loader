@@ -1,11 +1,10 @@
-//! Manager logic behind `w2rpm` (CLI) and the egui app: verify the signed index, check packages,
+//! Manager logic behind `w2rpm` (CLI) and the egui app: check the index and packages,
 //! install atomically. Specs: `docs/index.md`, `docs/manifest.md`, `docs/layout.md`, `docs/manager.md`.
 //! The in-game host never links this crate; only the manager touches the network.
 
 pub mod index;
-pub mod minisign;
 
-/// A stable reason code from the specs (`bad_signature`, `rollback`, ...).
+/// A stable reason code from the specs (`rollback`, `bad_hash`, ...).
 pub type Reason = &'static str;
 pub mod package;
 
@@ -40,7 +39,7 @@ impl From<std::io::Error> for Error {
 }
 pub mod catalog;
 pub mod check;
-#[cfg(feature = "dev-sign")]
+#[cfg(feature = "dev-repo")]
 pub mod devrepo;
 pub mod fetch;
 pub mod install;

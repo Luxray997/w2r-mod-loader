@@ -37,7 +37,6 @@ pub struct App {
     settings: Settings,
     /// Settings being edited; applied with the Save button.
     draft: Settings,
-    draft_keys: String,
     session: Option<Arc<Session>>,
     root: Option<Root>,
     view: View,
@@ -57,7 +56,6 @@ impl App {
         let (tx, rx) = channel();
         let mut app = App {
             draft: settings.clone(),
-            draft_keys: String::new(),
             settings,
             session: None,
             root: None,
@@ -80,13 +78,12 @@ impl App {
 
     /// Rebuilds the session from the saved settings and reloads the view.
     fn apply_settings(&mut self) {
-        self.draft_keys = join_paths(&self.settings.keys);
         self.draft = self.settings.clone();
         match jobs::root_of(self.settings.root.as_ref()) {
             Ok(root) => {
                 let url = (!self.settings.index_url.trim().is_empty())
                     .then(|| self.settings.index_url.trim().to_owned());
-                self.session = Session::new(root.clone(), url, None, &self.settings.keys)
+                self.session = Session::new(root.clone(), url, None)
                     .map(Arc::new)
                     .map_err(|e| self.status = Some(Err(format!("not connected to an index: {e}"))))
                     .ok();
@@ -212,15 +209,8 @@ impl App {
                 self.start(ctx, "Fetching the index", Job::Refresh);
             }
         });
-        if self.view.rotation_pending {
-            ui.colored_label(
-                Color32::YELLOW,
-                "The index announces a new signing key this manager does not trust yet. Update w2rpm \
-                 (or add the new key in Settings) before the publisher switches to it.",
-            );
-        }
         let Some(idx) = self.view.index.clone() else {
-            ui.label("No index loaded. Press Refresh index (needs an index URL and a key).");
+            ui.label("No index loaded. Press Refresh index (needs an index URL).");
             return;
         };
         let hits = catalog::search(&idx, &self.search);
@@ -288,26 +278,7 @@ impl App {
             ui.label("Index URL:");
             ui.text_edit_singleline(&mut self.draft.index_url);
         });
-        ui.label("Release key files (.pub), one per line; two while the publisher rotates keys:");
-        ui.add(egui::TextEdit::multiline(&mut self.draft_keys).desired_rows(2));
-        if ui.button("Add key file…").clicked()
-            && let Some(p) = rfd::FileDialog::new()
-                .add_filter("minisign public key", &["pub"])
-                .pick_file()
-        {
-            if !self.draft_keys.is_empty() && !self.draft_keys.ends_with('\n') {
-                self.draft_keys.push('\n');
-            }
-            self.draft_keys.push_str(&p.display().to_string());
-        }
         if ui.button("Save").clicked() {
-            self.draft.keys = self
-                .draft_keys
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(Into::into)
-                .collect();
             self.draft.index_url = self.draft.index_url.trim().to_owned();
             self.status = None;
             match self.draft.save() {
@@ -323,8 +294,8 @@ impl App {
         }
         ui.add_space(6.0);
         ui.label(
-            "There is no built-in release key or index URL yet; until the plugin repository is \
-             published, enter both.",
+            "Leave the index URL empty to use the built-in one (once the plugin repository is \
+             published).",
         );
     }
 
@@ -431,13 +402,6 @@ impl App {
             None => {}
         }
     }
-}
-
-fn join_paths(p: &[std::path::PathBuf]) -> String {
-    p.iter()
-        .map(|k| k.display().to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 impl eframe::App for App {

@@ -171,7 +171,6 @@ fn extract_into(bytes: &[u8], entry: &VersionEntry, dir: &Path) -> Result<Extrac
 mod tests {
     use super::*;
     use crate::index::{self, Index};
-    use crate::minisign::PublicKey;
     use w2r_formats::json;
     use zip::write::SimpleFileOptions;
 
@@ -207,12 +206,9 @@ mod tests {
 
     fn entry_for(zip: &[u8]) -> VersionEntry {
         let doc = json::parse(VECTORS.as_bytes()).unwrap();
-        let key = PublicKey::parse_file(doc.get("public_key").unwrap().as_str().unwrap()).unwrap();
         let case = &doc.get("cases").unwrap().as_array().unwrap()[0];
         let raw = case.get("index").unwrap().as_str().unwrap();
-        let sig = case.get("signature").unwrap().as_str().unwrap();
-        let now = index::parse_time("2026-10-15T00:00:00Z").unwrap();
-        let idx: Index = index::verify_index(raw.as_bytes(), sig, &key, 5, now).unwrap();
+        let idx: Index = index::parse_index(raw.as_bytes(), 5).unwrap();
         let mut e = idx.plugins[0].versions[0].clone();
         e.size = zip.len() as u64;
         e.sha256 = Sha256::digest(zip).into();

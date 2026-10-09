@@ -13,8 +13,7 @@ All paths are per-user; nothing needs administrator rights.
         host.json            the host's own settings (require_matching_plugins)
         <plugin-id>.json     per-plugin settings
     cache\
-        index.json           last verified index
-        index.json.sig       its signature
+        index.json           last accepted index
     logs\
         w2r.log
 ```

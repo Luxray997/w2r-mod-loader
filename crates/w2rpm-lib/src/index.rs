@@ -1,9 +1,7 @@
-//! Verifies `index.json` + `index.json.sig` (docs/index.md). Order of work: size, signature over
-//! the exact bytes, then the strict parse and the checks in the spec table order. Nothing in an
-//! unsigned index is interpreted. Reference: `tools/w2r_spec/index.py`.
+//! Checks `index.json` (docs/index.md): size, then the strict parse and the checks in the spec
+//! table order. Reference: `tools/w2r_spec/index.py`.
 
 use crate::Reason;
-use crate::minisign::{self, PublicKey};
 use w2r_formats::json::{self, Value};
 use w2r_formats::manifest::{self, Manifest, is_valid_id};
 use w2r_formats::semver::Version;
@@ -36,8 +34,6 @@ pub struct PluginEntry {
 pub struct Index {
     pub serial: u64,
     pub generated: i64,
-    pub expires: i64,
-    pub next_key: Option<String>,
     pub plugins: Vec<PluginEntry>,
 }
 
@@ -47,27 +43,9 @@ impl Index {
     }
 }
 
-/// `now` is unix seconds (UTC).
-pub fn verify_index(
-    raw: &[u8],
-    sig_text: &str,
-    key: &PublicKey,
-    cached_serial: u64,
-    now: i64,
-) -> Result<Index, Reason> {
-    if raw.len() > MAX_INDEX_BYTES {
-        return Err("too_large");
-    }
-    if !minisign::verify(raw, sig_text, key) {
-        return Err("bad_signature");
-    }
-    parse_index(raw, cached_serial, now)
-}
-
-/// The checks of the spec table after the signature: strict parse, fields, freshness, entries.
-/// [`verify_index`] calls it once the signature holds; the publishing tool calls it on an index it
-/// has just assembled, before anyone signs it. Never call it on bytes of unknown origin.
-pub fn parse_index(raw: &[u8], cached_serial: u64, now: i64) -> Result<Index, Reason> {
+/// The checks of the spec table: size, strict parse, fields, rollback, entries. `cached_serial`
+/// is the highest serial accepted so far (0 when none).
+pub fn parse_index(raw: &[u8], cached_serial: u64) -> Result<Index, Reason> {
     if raw.len() > MAX_INDEX_BYTES {
         return Err("too_large");
     }
@@ -75,11 +53,7 @@ pub fn parse_index(raw: &[u8], cached_serial: u64, now: i64) -> Result<Index, Re
     if !matches!(doc, Value::Object(_)) {
         return Err("bad_type");
     }
-    keys(
-        &doc,
-        &["schema", "serial", "generated", "expires", "plugins"],
-        &["next_key"],
-    )?;
+    keys(&doc, &["schema", "serial", "generated", "plugins"], &[])?;
     let schema = field(&doc, "schema");
     if !is_int(schema) || int(schema) != Some(1) {
         return Err("bad_schema");
@@ -88,58 +62,15 @@ pub fn parse_index(raw: &[u8], cached_serial: u64, now: i64) -> Result<Index, Re
         .filter(|&s| s <= MAX_SERIAL)
         .ok_or("bad_type")?;
     let generated = time(field(&doc, "generated"))?;
-    let expires = time(field(&doc, "expires"))?;
-    if generated > expires {
-        return Err("bad_time");
-    }
     if serial < cached_serial {
         return Err("rollback");
     }
-    if expires <= now {
-        return Err("expired");
-    }
-    let next_key = match doc.get("next_key") {
-        None => None,
-        Some(Value::String(s)) if minisign::key_body_ok(s) => Some(s.clone()),
-        Some(_) => return Err("bad_key"),
-    };
     let plugins = check_plugins(field(&doc, "plugins"))?;
     Ok(Index {
         serial,
         generated,
-        expires,
-        next_key,
         plugins,
     })
-}
-
-/// Like [`verify_index`] with several trusted keys: the first one whose key id and signature
-/// match decides. A signature none of them made is `bad_signature`.
-pub fn verify_index_any(
-    raw: &[u8],
-    sig_text: &str,
-    keys: &[PublicKey],
-    cached_serial: u64,
-    now: i64,
-) -> Result<Index, Reason> {
-    for key in keys {
-        match verify_index(raw, sig_text, key, cached_serial, now) {
-            Err("bad_signature") => continue,
-            other => return other,
-        }
-    }
-    Err("bad_signature")
-}
-
-impl Index {
-    /// True when the index announces a signing key that is not among `trusted`: the publisher is
-    /// about to rotate, and this manager must be updated to a release that embeds the new key.
-    pub fn rotation_pending(&self, trusted: &[PublicKey]) -> bool {
-        self.next_key
-            .as_deref()
-            .and_then(PublicKey::parse_body)
-            .is_some_and(|next| !trusted.contains(&next))
-    }
 }
 
 /// A field `keys` already proved present.
@@ -410,67 +341,23 @@ mod tests {
         assert!(!url_ok("https://example.com/a b"));
     }
 
-    #[test]
-    fn several_keys_and_rotation() {
-        let doc = json::parse(VECTORS.as_bytes()).unwrap();
-        let signer = PublicKey::parse_file(field(&doc, "public_key").as_str().unwrap()).unwrap();
-        let now = parse_time(field(&doc, "now").as_str().unwrap()).unwrap();
-        let case = |name: &str| {
-            let cases = field(&doc, "cases").as_array().unwrap();
-            let c = cases
-                .iter()
-                .find(|c| field(c, "name").as_str() == Some(name))
-                .unwrap();
-            (
-                field(c, "index").as_str().unwrap().to_owned(),
-                field(c, "signature").as_str().unwrap().to_owned(),
-            )
-        };
-        let mut other = signer.clone();
-        other.key_id[0] ^= 1;
-
-        let (raw, sig) = case("valid_with_next_key");
-        let both = [other.clone(), signer.clone()];
-        let idx = verify_index_any(raw.as_bytes(), &sig, &both, 5, now).unwrap();
-        assert_eq!(
-            verify_index_any(raw.as_bytes(), &sig, &[other.clone()], 5, now).unwrap_err(),
-            "bad_signature"
-        );
-        assert_eq!(
-            verify_index_any(raw.as_bytes(), &sig, &[], 5, now).unwrap_err(),
-            "bad_signature"
-        );
-
-        // The announced key is not trusted yet: rotation pending. Trusting it clears that.
-        assert!(idx.rotation_pending(std::slice::from_ref(&signer)));
-        let next = PublicKey::parse_body(idx.next_key.as_deref().unwrap()).unwrap();
-        assert!(!idx.rotation_pending(&[signer, next]));
-
-        let (raw, sig) = case("valid");
-        let idx = verify_index_any(raw.as_bytes(), &sig, &both, 5, now).unwrap();
-        assert!(!idx.rotation_pending(&both), "no next_key, nothing pending");
-    }
-
     /// Every vector in docs/vectors/index.json must give the reference result.
     #[test]
     fn spec_vectors() {
         let doc = json::parse(VECTORS.as_bytes()).expect("vectors parse");
-        let key = PublicKey::parse_file(field(&doc, "public_key").as_str().unwrap()).unwrap();
-        let now = parse_time(field(&doc, "now").as_str().unwrap()).unwrap();
         let cached = int(field(&doc, "cached_serial")).unwrap();
         let mut n = 0;
         for case in field(&doc, "cases").as_array().unwrap() {
             let name = field(case, "name").as_str().unwrap();
             let expect = field(case, "expect").as_str().unwrap();
             let raw = field(case, "index").as_str().unwrap();
-            let sig = field(case, "signature").as_str().unwrap();
-            let got = match verify_index(raw.as_bytes(), sig, &key, cached, now) {
+            let got = match parse_index(raw.as_bytes(), cached) {
                 Ok(_) => "ok",
                 Err(r) => r,
             };
             assert_eq!(got, expect, "vector {name}");
             n += 1;
         }
-        assert!(n >= 50, "ran {n} vectors");
+        assert!(n >= 40, "ran {n} vectors");
     }
 }

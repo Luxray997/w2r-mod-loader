@@ -1,27 +1,25 @@
 # Plugin index (`index.json`)
 
 The index lists installable plugins. It is fetched only by the manager (the in-game host never
-touches the network) and cached as `cache\index.json` plus `cache\index.json.sig` (see
-[layout.md](layout.md)). The rules are normative; `tools/w2r_spec/index.py` and
-`tools/w2r_spec/minisign.py` are the executable reference and `docs/vectors/index.json` holds the
-test vectors.
+touches the network) and cached as `cache\index.json` (see [layout.md](layout.md)). The rules are
+normative; `tools/w2r_spec/index.py` is the executable reference and `docs/vectors/index.json` holds
+the test vectors.
 
-## Signature
+## Trust
 
-- Format: minisign file format, ed25519, algorithm `ED`. The signed message is the BLAKE2b-512
-  digest of the raw bytes of `index.json`. The legacy `Ed` mode (no prehash) is refused.
-- A signature file has four lines: `untrusted comment: ...`, base64 of `"ED" || key id (8) ||
-  signature (64)`, `trusted comment: ...`, base64 of the global signature over `signature ||
-  trusted comment`. Both signatures must verify, and the key id must match the embedded public key.
-  The file is exactly four lines plus one final newline; CRLF line endings are accepted (as minisign
-  does), anything else after the fourth line is refused.
-- The signature file has a hard cap of 4,096 bytes (minisign allows trusted comments of about 1 KiB);
-  anything larger is refused before it is parsed or decoded.
-- Order of work: check the size limit, verify the signature over the exact received bytes, and only
-  then parse the JSON. Nothing in an unsigned index is ever interpreted.
-- **Interoperability is verified** (Phase 6, 2026-10-04): an index signed by the real `minisign` 0.12
-  (`minisign -S -H`, which writes the `ED` form) verifies in `w2rpm-lib`, and `minisign -V` accepts the
-  same pair; a changed byte gives `bad_signature`. Sign with `-H`; the legacy form is refused.
+The index is **not signed**. This is a small hobby project and the maintainers decided that
+offline signing keys and a signing step on every release are not worth it. What protects a user:
+
+- the index and every package are fetched over HTTPS only (also across redirects);
+- the index carries the SHA-256 and size of each package, and the manager checks both before it
+  opens the archive;
+- the packaged `plugin.json` must equal the index copy.
+
+What it does not protect against: whoever controls the index host (the `w2r-plugins` GitHub
+account, its Pages site or its release assets) can publish any plugin. Plugins are native code, so
+users should only install plugins from a publisher they trust, as the README says. If that is not
+good enough later, signing can be added back as a new `schema` (the minisign-based version is in
+git history, before the commit "Remove index signing").
 
 ## Document
 
@@ -30,7 +28,6 @@ test vectors.
   "schema": 1,
   "serial": 7,
   "generated": "2026-10-02T00:00:00Z",
-  "expires": "2026-11-02T00:00:00Z",
   "plugins": [
     {
       "id": "example-plugin",
@@ -49,22 +46,17 @@ test vectors.
 }
 ```
 
-`next_key` is optional and left out of the example; when present it must be a base64 minisign
-public key body (`null` is refused). Omit it when no rotation is planned.
-
 ## Rules and reason codes
 
 | Check | Rule | Code |
 |---|---|---|
 | size | index at most 8 MiB (8,388,608 bytes), checked first | `too_large` |
-| signature | see above | `bad_signature` |
 | JSON | strict rules from [manifest.md](manifest.md) (no duplicate keys, `NaN`, BOM, lone surrogates, nesting deeper than 32) | `not_json`, `duplicate_key` |
-| top level | an object; exactly the fields above (`next_key` optional) | `bad_type`, `unknown_field`, `missing_field` |
+| top level | an object; exactly the fields above | `bad_type`, `unknown_field`, `missing_field` |
 | `schema` | integer 1 | `bad_schema` |
 | `serial` | integer, 0 to 9,007,199,254,740,991 (2^53 - 1) | `bad_type` |
-| `generated`, `expires` | exactly `YYYY-MM-DDTHH:MM:SSZ`, a real calendar date and time, UTC; `generated` <= `expires` | `bad_time` |
-| freshness | `serial` not lower than the cached serial (equal is accepted); `expires` later than now | `rollback`, `expired` |
-| `next_key` | base64 of 42 bytes starting `Ed` | `bad_key` |
+| `generated` | exactly `YYYY-MM-DDTHH:MM:SSZ`, a real calendar date and time, UTC | `bad_time` |
+| freshness | `serial` not lower than the cached serial (equal is accepted) | `rollback` |
 | `plugins` | list, at most 1,000; each entry exactly `id`, `versions` (else `unknown_field`/`missing_field`); `id` follows the manifest id rule (device names refused) and is unique | `bad_type`, `too_many`, `bad_id`, `duplicate` |
 | `versions` | non-empty list, at most 200 per plugin; `version` and `min_manager` are SemVer with the manifest's length and range limits; `(id, version)` unique | `bad_type`, `too_many`, `bad_version`, `duplicate` |
 | `manifest` | passes [manifest.md](manifest.md); its `id` and `version` equal the entry's | `bad_manifest`, `mismatch` |
@@ -75,19 +67,17 @@ public key body (`null` is refused). Omit it when no rotation is planned.
 The first failing check wins, in the order of this table. The manager refuses the whole index on any
 failure and keeps using the previously cached one.
 
-## Freshness and rollback
+## Rollback
 
 - The manager stores the highest `serial` it has accepted. A lower serial is refused so that a
-  network attacker cannot replay an older index to hide an update or reinstate a vulnerable
-  version. An equal serial is accepted so that re-fetching an unchanged index works.
-- An index whose `expires` has passed is refused. A wrong system clock is a likely cause; the UI
-  says which check failed and shows the clock time it used.
-- Publishers raise `serial` on every publication and set `expires` to a limited horizon (suggested:
-  30 days) and re-sign before it.
+  stale mirror or a replayed older index cannot hide an update or reinstate a vulnerable version.
+  An equal serial is accepted so that re-fetching an unchanged index works.
+- Publishers raise `serial` on every publication. There is no expiry date: an index stays valid
+  until a newer one replaces it.
 
 ## Package verification (used by the manager, Phase 4)
 
-1. Download only the `url` from the verified index entry.
+1. Download only the `url` from the checked index entry.
 2. Compare the package's SHA-256 and size with the index entry.
 3. Extract with the archive rules below, then parse the packaged `plugin.json` and compare it to the
    index copy; refuse on any difference.
@@ -102,19 +92,9 @@ Archive rules (the extractor stops at the first violation and deletes its stagin
   limit of 100:1;
 - entry names are compared after normalisation and must not collide case-insensitively.
 
-## Key management
-
-- The manager embeds the release public key. The signing key is kept offline.
-- Rotation: publish an index that carries `next_key` signed by the current key, ship a manager
-  release embedding the new key, then switch signing to the new key. Managers older than that
-  release must be updated to continue.
-- A compromised signing key breaks the model and requires a new manager release. The threat model
-  says so.
-
 ## Test vectors
 
-`docs/vectors/index.json` has the public key, a fixed "now" (`2026-10-15T00:00:00Z`), the cached
-serial (5) and a list of `{name, expect, index, signature}` cases. The signing keys are **test
-only**: the seed is `bytes(range(32))` and is committed on purpose. Never reuse it. Oversize and
-too-many-entries cases are covered by unit tests rather than committed vectors (they would be
-megabytes). Regenerate with `python3 tools/gen_index_vectors.py`; run with `bash tools/run_all.sh`.
+`docs/vectors/index.json` has the cached serial (5) and a list of `{name, expect, index}` cases.
+Oversize and too-many-entries cases are covered by unit tests rather than committed vectors (they
+would be megabytes). Regenerate with `python3 tools/gen_index_vectors.py`; run with
+`bash tools/run_all.sh`.

@@ -1,21 +1,21 @@
 # Manager library and CLI (Phase 4)
 
-`w2rpm-lib` holds all manager logic; `w2rpm-cli` (`w2rpm`) and the egui app (`w2rpm-gui`, Phase 5) are thin callers; what both need before any command (root, keys, fetcher, preflight, install) is `session.rs`.
+`w2rpm-lib` holds all manager logic; `w2rpm-cli` (`w2rpm`) and the egui app (`w2rpm-gui`, Phase 5) are thin callers; what both need before any command (root, fetcher, preflight, install) is `session.rs`.
 The in-game host never links it. Formats are shared with the host through `w2r-formats` (json, semver,
 `plugin.json`, `state.json`), so the two cannot disagree about what is valid.
 
-Normative inputs: [index.md](index.md) (signature, index rules, package verification, archive
+Normative inputs: [index.md](index.md) (index rules, package verification, archive
 rules), [manifest.md](manifest.md), [layout.md](layout.md) (paths, `state.json`),
 [threat-model.md](threat-model.md).
 
 ## Status
 
 All five slices are written and tested (2026-10-04); the exit criterion is met by
-`crates/w2rpm-cli/tests/cli.rs`, which runs the real binary against a signed test repository.
+`crates/w2rpm-cli/tests/cli.rs`, which runs the real binary against a test repository.
 
 | Slice | Module | What it does |
 |---|---|---|
-| 1 | `w2r-formats`, `minisign.rs`, `index.rs` | shared parsers; signature and index rules; every case of `docs/vectors/index.json` gives the reference result |
+| 1 | `w2r-formats`, `index.rs` | shared parsers; index rules; every case of `docs/vectors/index.json` gives the reference result |
 | 2 | `package.rs` | size and SHA-256 against the index entry, then archive rules, packaged `plugin.json` equals the index copy |
 | 3 | `install.rs`, `store.rs` | atomic install/update, rollback, remove, enable/disable, `verify`, `state.json` access |
 | 4 | `fetch.rs`, `catalog.rs` | HTTPS fetch, index cache with rollback protection, version selection, update list |
@@ -24,15 +24,14 @@ All five slices are written and tested (2026-10-04); the exit criterion is met b
 ## Using it
 
 ```
-w2rpm --key release.pub --index-url https://.../index.json <command>
+w2rpm --index-url https://.../index.json <command>
 ```
 
-`--root` (or `W2R_ROOT`, absolute) moves the w2r folder; `W2RPM_INDEX_URL` and `W2RPM_KEY_FILE`
-are the environment forms of the other two. Commands:
+`--root` (or `W2R_ROOT`, absolute) moves the w2r folder; `W2RPM_INDEX_URL` is the environment form of `--index-url`. Commands:
 
 - `list`: installed plugins, `(update available: x)` from the cached index only (no network).
 - `search [term]`, `refresh`: read or refresh the index. `install`, `update` and `search` use the
-  cached index while it still verifies and fetch a fresh one otherwise.
+  cached index while it still parses and fetch a fresh one otherwise.
 - `install id[@version]`: shows name, author, description, whether it affects the simulation and
   every capability (`[new]` for the ones you have not approved yet), then asks. `--yes` accepts the
   list but not `hooks.raw`; that also needs `--allow-hooks-raw`. Without a version it takes the
@@ -42,11 +41,9 @@ are the environment forms of the other two. Commands:
 - `remove id [--purge]`, `enable id`, `disable id`, `rollback id`, `verify` (exit code 1 on any
   finding).
 
-The release keys are embedded from `crates/w2rpm-lib/release/keys.txt` (one key body per line, empty until
-the signers have generated theirs) and the default index URL is `session::DEFAULT_INDEX_URL`
-(GitHub Pages of `w2r-plugins`). `--key` and `--index-url` override them; while `keys.txt` is empty `--key`
-is still required. `--key` may be repeated (or `;`-separated in `W2RPM_KEY_FILE`) to trust two keys around a rotation. `--index-dir DIR` (hidden) serves the index and packages from a folder
-for tests; the signature, URL rules and package hashes are still enforced.
+The default index URL is `session::DEFAULT_INDEX_URL` (GitHub Pages of `w2r-plugins`);
+`--index-url` overrides it. `--index-dir DIR` (hidden) serves the index and packages from a folder
+for tests; the URL rules and package hashes are still enforced.
 
 ## Decisions
 
@@ -88,7 +85,6 @@ expanded), `ratio` (over 100:1), `missing_file`, `manifest_mismatch`, `bad_manif
   dependencies that are missing, disabled or outside `version_req` (`check.rs`), and lists the
   game builds the plugin targets (it cannot know which build is installed). Warnings never block.
 - Installing or removing while the game runs fails on Windows (the DLL is open); the error says so.
-- Minisign interoperability was checked against the real binary in Phase 6 ([index.md](index.md)). The
-  `dev-sign` feature signs with the committed test key and must never be enabled in a release build.
-- Key rotation never switches keys by itself: the manager trusts every `--key` it is given and
-  warns when an index announces a `next_key` it does not trust (`index.md`, "Key management").
+- The `dev-repo` feature builds test repositories and must never be enabled in a release build.
+- The index is not signed (see [index.md](index.md), "Trust"): integrity comes from HTTPS and the
+  SHA-256 in each entry.

@@ -1,4 +1,4 @@
-//! The GUI's own settings: which w2r folder, which index, which keys. Kept in
+//! The GUI's own settings: which w2r folder and which index. Kept in
 //! `%APPDATA%\w2rpm\gui.json` (override: `W2RPM_GUI_CONFIG`). Not part of the trust record
 //! (`state.json`); a bad file is ignored and the defaults are used.
 
@@ -10,8 +10,6 @@ pub struct Settings {
     /// The w2r folder; `None` means `%USERPROFILE%\Saved Games\Warcraft2Remastered\w2r`.
     pub root: Option<PathBuf>,
     pub index_url: String,
-    /// Minisign `.pub` files the index may be signed with.
-    pub keys: Vec<PathBuf>,
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -30,13 +28,6 @@ impl Settings {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             index_url: str_of("index_url").unwrap_or_default(),
-            keys: v
-                .get("keys")
-                .and_then(Value::as_array)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|k| k.as_str().map(PathBuf::from))
-                .collect(),
         })
     }
 
@@ -50,10 +41,6 @@ impl Settings {
                     .map_or(Value::Null, |p| s(&p.to_string_lossy())),
             ),
             ("index_url".into(), s(&self.index_url)),
-            (
-                "keys".into(),
-                Value::Array(self.keys.iter().map(|k| s(&k.to_string_lossy())).collect()),
-            ),
         ])
         .to_json()
     }
@@ -108,7 +95,6 @@ mod tests {
                 "/g/w2r"
             })),
             index_url: "https://example.org/index.json".into(),
-            keys: vec![PathBuf::from("a.pub"), PathBuf::from("b.pub")],
         };
         assert_eq!(Settings::parse(s.to_json().as_bytes()), Some(s));
     }

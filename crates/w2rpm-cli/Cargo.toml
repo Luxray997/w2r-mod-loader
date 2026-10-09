@@ -15,4 +15,4 @@ w2r-formats.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
-w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-sign"] }
+w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-repo"] }

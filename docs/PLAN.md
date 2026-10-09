@@ -6,7 +6,7 @@ in-game, egui for the desktop manager.
 
 ## Repository layout
 
-One Cargo workspace for the code; a separate repo (`w2r-plugins`) for the signed plugin index.
+One Cargo workspace for the code; a separate repo (`w2r-plugins`) for the plugin index.
 
 ```
 w2rpm/
@@ -45,7 +45,7 @@ Status: written (`docs/abi.md`, `manifest.md`, `index.md`, `load-policy.md`); ve
   widgets, peer messages, symbol lookup, hook registry), event list.
 - Plugin manifest (`plugin.json`): id, version, author, game-build range, capabilities,
   `affects_simulation`, dependencies, file hashes.
-- Index format: signed JSON, ed25519 (minisign-compatible), SHA-256 per package.
+- Index format: JSON over HTTPS, SHA-256 per package (not signed, see Phase 6).
 - Host load policy.
 Exit: specs in `docs/`, test vectors for the manifest and index parsers.
 
@@ -179,10 +179,9 @@ Exit: feature parity, with a regression test per fixed finding.
 ### 4. Manager library and CLI
 Status: written and tested (2026-10-04), spec [manager.md](manager.md). `w2r-formats` (json, semver,
 manifest, state) was extracted from `w2r-core` so host and manager share one parser; `w2rpm-lib`
-(minisign, index, package, install, store, fetch, catalog) and `w2rpm-cli` (`w2rpm`) sit on top.
-Also done: install-time dependency/ABI warnings, multi-key trust with a rotation notice, and the
-security review ([security-review-phase4.md](security-review-phase4.md), three fixes). Not done: an
-embedded release key and default index URL (Phase 6).
+(index, package, install, store, fetch, catalog) and `w2rpm-cli` (`w2rpm`) sit on top.
+Also done: install-time dependency/ABI warnings, and the
+security review ([security-review-phase4.md](security-review-phase4.md), three fixes). The default index URL is built in (Phase 6).
 Fetch/verify index, download, hash check, atomic install, enable/disable, update, rollback,
 `verify`. Safe archive handling (no traversal, size limits, no symlinks).
 Exit: `w2rpm install|list|verify` against a test index.
@@ -195,23 +194,23 @@ key-file pickers. No logic of its own; it calls `w2rpm-lib`. The code both front
 (root, keys, fetcher, clock, preflight, install) moved from the CLI into `w2rpm-lib::session`.
 `crates/w2rpm-gui`: `jobs.rs` (job sequencing and the `View` snapshot, UI-free), `settings.rs`
 (`%APPDATA%\w2rpm\gui.json`), `app.rs` (egui); `tests/jobs.rs` runs the whole cycle against a
-signed test repo. The Phase 6 key and index URL are embedded; until the signers' keys are in `keys.txt` a key file is entered in Settings.
+test repo. The default index URL is embedded; the Settings field overrides it.
 
 ### 6. Plugin repository and CI
 `w2r-plugins` repo: source + manifest per plugin, CI builds binaries and publishes hashes, PR
-review before listing, offline release-signing key with a documented rotation process.
-Exit: one third-party-style plugin goes through the whole pipeline, and the index signature is
-verified against the real `minisign` binary (the Phase 1 reference implementation was written from
-the format description).
-Status (2026-10-04), repo at `D:\Tools\w2r-plugins`: scaffold written. `plugins/w2r-chat` (moved from
-`crates/chat-plugin`) and `plugins/hello-example`; `tools/w2r-publish` (`check`, `package`, `index`,
-`verify`; never signs); CI and an unsigned-index release workflow; SIGNING, ROTATION, PIPELINE,
-CONTRIBUTING docs. Policy: one offline minisign key per maintainer (1-3), any one may sign, CI holds no
-key, index `expires` 90 days. **Done:** interop with real minisign 0.12 (positive and tamper cases), local
-package + index run, manager embeds `keys.txt` and the default URL. **Left:** push w2rpm and pin the
-`rev` in the plugin repo's `Cargo.toml` (it uses path dependencies now), maintainers generate keys and
-`keys.txt` gets them, first CI run on GitHub, first real signed index on Pages, then delete
-`crates/chat-plugin` here and point `tools/install_dev.ps1` at the plugin repo.
+review before listing.
+Exit: one third-party-style plugin goes through the whole pipeline and installs with the real `w2rpm`.
+**Decision (2026-10-08): no index signing.** It is a hobby project with two contributors, so the
+minisign scheme (offline keys, a manual signing step, 90-day `expires`, key rotation) was removed
+from the manager, the specs and the plugin repo. The index is plain JSON on GitHub Pages; integrity
+is HTTPS plus the SHA-256 and size per package ([index.md](index.md), "Trust"). The old scheme is in
+git history.
+Status, repo at `D:\Tools\w2r-plugins`: `plugins/w2r-chat` (moved from `crates/chat-plugin`) and
+`plugins/hello-example`; `tools/w2r-publish` (`check`, `package`, `index`, `verify`); CI and a release
+workflow that builds the packages and publishes the index. **Left:** make `w2r-plugins` public (Pages
+on a private repo needs a paid plan, and users must reach the packages; making `w2rpm` public too
+removes the CI read token), the first publish to `gh-pages`, then delete `crates/chat-plugin` here
+and point `tools/install_dev.ps1` at the plugin repo.
 
 ## Cross-cutting
 - Tests: unit tests for parsers/validators on Linux; `cargo-fuzz` targets for manifest, index,

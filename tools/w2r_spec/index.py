@@ -1,11 +1,10 @@
-"""Reference verifier for index.json + index.json.sig (docs/index.md). Returns "ok" or a reason code."""
-import base64
+"""Reference checker for index.json (docs/index.md). Returns "ok" or a reason code."""
 import json
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from . import jsonutil, minisign
+from . import jsonutil
 from .manifest import valid_id, valid_semver, validate_manifest
 
 MAX_INDEX_BYTES = 8 * 1024 * 1024
@@ -17,16 +16,14 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 TIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-TOP_REQUIRED = {"schema", "serial", "generated", "expires", "plugins"}
-TOP_OPTIONAL = {"next_key"}
+TOP_REQUIRED = {"schema", "serial", "generated", "plugins"}
 PLUGIN_KEYS = {"id", "versions"}
 VERSION_KEYS = {"version", "manifest", "url", "sha256", "size", "min_manager"}
 
 REASONS = {
-    "too_large", "bad_signature", "not_json", "duplicate_key", "bad_type", "unknown_field",
-    "missing_field", "bad_schema", "bad_time", "rollback", "expired", "bad_key", "too_many",
-    "bad_id", "duplicate", "bad_version", "bad_manifest", "mismatch", "bad_url", "bad_hash",
-    "bad_size",
+    "too_large", "not_json", "duplicate_key", "bad_type", "unknown_field", "missing_field",
+    "bad_schema", "bad_time", "rollback", "too_many", "bad_id", "duplicate", "bad_version",
+    "bad_manifest", "mismatch", "bad_url", "bad_hash", "bad_size",
 }
 
 
@@ -59,14 +56,6 @@ def _url_ok(u):
         return p.scheme == "https" and bool(p.hostname) and p.username is None and p.password is None
     except ValueError:
         return False
-
-
-def _key_ok(k):
-    try:
-        raw = base64.b64decode(k, validate=True)
-    except (ValueError, TypeError):
-        return False
-    return len(raw) == 42 and raw[:2] == minisign.KEY_ALG
 
 
 def _check_version(plugin_id, v, seen):
@@ -129,31 +118,23 @@ def _check_plugins(plugins):
     return None
 
 
-def verify_index(index_raw, sig_text, pubkey_text, cached_serial, now):
+def check_index(index_raw, cached_serial):
     if len(index_raw) > MAX_INDEX_BYTES:
         return "too_large"
-    if not minisign.verify(index_raw, sig_text, pubkey_text):
-        return "bad_signature"
     try:
         doc = jsonutil.parse(index_raw)
         if not isinstance(doc, dict):
             return "bad_type"
-        err = _keys(doc, TOP_REQUIRED, TOP_OPTIONAL)
+        err = _keys(doc, TOP_REQUIRED)
         if err:
             return err
         if not _is_int(doc["schema"]) or doc["schema"] != 1:
             return "bad_schema"
         if not _is_int(doc["serial"]) or not 0 <= doc["serial"] <= MAX_SERIAL:
             return "bad_type"
-        generated, expires = _time(doc["generated"]), _time(doc["expires"])
+        _time(doc["generated"])
     except jsonutil.Reject as r:
         return r.code
-    if generated > expires:
-        return "bad_time"
     if doc["serial"] < cached_serial:
         return "rollback"
-    if expires <= now:
-        return "expired"
-    if "next_key" in doc and not (isinstance(doc["next_key"], str) and _key_ok(doc["next_key"])):
-        return "bad_key"
     return _check_plugins(doc["plugins"]) or "ok"

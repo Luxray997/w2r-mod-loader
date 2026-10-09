@@ -15,13 +15,7 @@ fn setup(name: &str) -> (PathBuf, Session) {
     fs::create_dir_all(&base).unwrap();
     let repo = base.join("repo");
     publish(&repo, 1, &["1.0.0"]);
-    let session = Session::new(
-        Root(base.join("root")),
-        None,
-        Some(repo.clone()),
-        &[repo.join("test.pub")],
-    )
-    .unwrap();
+    let session = Session::new(Root(base.join("root")), None, Some(repo.clone())).unwrap();
     (repo, session)
 }
 

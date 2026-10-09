@@ -6,10 +6,10 @@ Plugin host and plugin manager for Warcraft II Remastered (game build 1.0.2.2818
   and carries the features ported from [wc2r-plus](https://github.com/Luxray997/wc2r-plus) (by Luxray997): the
   lobby handshake, chat history, lobby policy, map download and sharing, and the enhanced Create
   Multiplayer Game and lobby screens. Plugins get a small C ABI ([docs/abi.md](docs/abi.md)).
-- **Manager** (`w2rpm-lib`, the `w2rpm` CLI and the `w2rpm-gui` egui app): reads a signed plugin index,
-  downloads, verifies and installs plugins, and keeps their enabled and approved state.
+- **Manager** (`w2rpm-lib`, the `w2rpm` CLI and the `w2rpm-gui` egui app): reads a plugin index,
+  downloads, checks hashes and installs plugins, and keeps their enabled and approved state.
 - **Plugins** live in a separate repository, [`w2r-plugins`](https://github.com/hastinbe/w2r-plugins),
-  with CI and an offline-signed index.
+  with CI that builds the packages and publishes the index.
 
 ## Warning
 
@@ -20,12 +20,10 @@ plugins you trust: native plugins are not sandboxed (see [docs/threat-model.md](
 
 ## Status
 
-Phases 0 to 5 are written and tested; Phase 6 (the plugin repository, signing and CI) is scaffolded.
+Phases 0 to 5 are written and tested; Phase 6 (the plugin repository and CI) is written.
 [docs/PLAN.md](docs/PLAN.md) has the per-phase status and what is still open. Not done yet:
 
-- The release keys are not generated, so the manager has no embedded key
-  (`crates/w2rpm-lib/release/keys.txt` is empty) and `--key` is still required.
-- Nothing has been published: neither repository is pushed, and there is no signed index.
+- The plugin repository is still private, so the default index URL does not resolve yet.
 - No plugin SDK crate (`w2r-sdk`); plugins use the `w2r-abi` bindings or the C header directly.
 - The egui app has been tested through its job layer, not clicked through by a person.
 - Features that need two machines (lobby policy, map download between two players, the lobby screen
@@ -52,7 +50,7 @@ tools/           spec reference implementations, generators, the dev installer
 - [docs/PLAN.md](docs/PLAN.md), [docs/threat-model.md](docs/threat-model.md), [docs/layout.md](docs/layout.md)
 - [docs/abi.md](docs/abi.md) and [crates/w2r-abi/include/w2r_abi.h](crates/w2r-abi/include/w2r_abi.h): plugin ABI
 - [docs/manifest.md](docs/manifest.md): `plugin.json`
-- [docs/index.md](docs/index.md): signed plugin index
+- [docs/index.md](docs/index.md): plugin index
 - [docs/load-policy.md](docs/load-policy.md): when the host loads a plugin, and the simulation fingerprint
 - [docs/manager.md](docs/manager.md): the manager library, CLI and GUI
 - [docs/peer-protocol.md](docs/peer-protocol.md): the host's own peer messages (the handshake), wire-compatible with wc2r-plus

@@ -16,4 +16,4 @@ eframe = { version = "0.31", default-features = false, features = ["default_font
 rfd = { version = "0.15", default-features = false }
 
 [dev-dependencies]
-w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-sign"] }
+w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-repo"] }

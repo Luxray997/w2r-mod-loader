@@ -1,10 +1,9 @@
 //! Network access and the index cache (docs/manager.md, slice 4). This is the only code that
-//! touches the network; everything it fetches is verified before use: the index by its signature
-//! and the spec rules, a package by the SHA-256 and size in the verified index entry.
+//! touches the network; everything it fetches is checked before use: the index by the spec rules,
+//! a package by the SHA-256 and size in its index entry.
 
 use crate::Error;
 use crate::index::{self, Index, MAX_INDEX_BYTES, VersionEntry};
-use crate::minisign::{MAX_SIG_BYTES, PublicKey};
 use crate::store::{Root, read_bounded};
 use std::fs;
 use std::io::Write;
@@ -53,7 +52,7 @@ impl Fetcher for Https {
     }
 }
 
-/// A development source: serves `https://.../name` from `dir/name`, so a signed test index and
+/// A development source: serves `https://.../name` from `dir/name`, so a test index and
 /// its packages work offline. The URLs still go through the index rules; only the transport differs.
 pub struct DirFetcher(pub std::path::PathBuf);
 
@@ -79,12 +78,10 @@ impl Fetcher for DirFetcher {
     }
 }
 
-/// Where the index lives and the keys, any one of which may have signed it (a manager release
-/// embeds the current key and, around a rotation, the next one).
+/// Where the index lives.
 #[derive(Clone, Debug)]
 pub struct Source {
     pub index_url: String,
-    pub keys: Vec<PublicKey>,
 }
 
 fn serial_path(root: &Root) -> std::path::PathBuf {
@@ -110,28 +107,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Fetches the index and its signature, verifies them against the cached serial and `now`, and
-/// only then replaces the cache. A refused index leaves the previous cache untouched.
-pub fn refresh(root: &Root, fetcher: &dyn Fetcher, src: &Source, now: i64) -> Result<Index, Error> {
+/// Fetches the index, checks it against the cached serial, and only then replaces the cache. A
+/// refused index leaves the previous cache untouched.
+pub fn refresh(root: &Root, fetcher: &dyn Fetcher, src: &Source) -> Result<Index, Error> {
     let raw = fetcher.get(&src.index_url, MAX_INDEX_BYTES as u64)?;
-    let sig = fetcher.get(&format!("{}.sig", src.index_url), MAX_SIG_BYTES as u64)?;
-    let sig_text = String::from_utf8(sig).map_err(|_| Error::new("bad_signature", "not UTF-8"))?;
-    let idx = index::verify_index_any(&raw, &sig_text, &src.keys, cached_serial(root), now)
+    let idx = index::parse_index(&raw, cached_serial(root))
         .map_err(|r| Error::new(r, "the fetched index was refused"))?;
     fs::create_dir_all(root.cache_dir())?;
     // The serial goes first: a crash after it can only make the next check stricter, never let
     // an older index through.
     write_atomic(&serial_path(root), idx.serial.to_string().as_bytes())?;
     write_atomic(&root.cache_dir().join("index.json"), &raw)?;
-    write_atomic(
-        &root.cache_dir().join("index.json.sig"),
-        sig_text.as_bytes(),
-    )?;
     Ok(idx)
 }
 
-/// Loads and re-verifies the cached index (the cache is never trusted without its signature).
-pub fn load_cached(root: &Root, keys: &[PublicKey], now: i64) -> Result<Index, Error> {
+/// Loads and re-checks the cached index (the cache is never trusted unparsed).
+pub fn load_cached(root: &Root) -> Result<Index, Error> {
     let raw = read_bounded(&root.cache_dir().join("index.json"), MAX_INDEX_BYTES).map_err(|e| {
         if e.code == "not_found" {
             Error::new("no_index", "run refresh first")
@@ -139,9 +130,7 @@ pub fn load_cached(root: &Root, keys: &[PublicKey], now: i64) -> Result<Index, E
             e
         }
     })?;
-    let sig = read_bounded(&root.cache_dir().join("index.json.sig"), MAX_SIG_BYTES)?;
-    let sig_text = String::from_utf8(sig).map_err(|_| Error::new("bad_signature", "not UTF-8"))?;
-    index::verify_index_any(&raw, &sig_text, keys, cached_serial(root), now)
+    index::parse_index(&raw, cached_serial(root))
         .map_err(|r| Error::new(r, "the cached index was refused"))
 }
 
@@ -168,10 +157,10 @@ mod tests {
     }
 
     impl Fake {
-        fn serve(&self, index: &str, sig: &str) {
-            let mut f = self.files.borrow_mut();
-            f.insert(URL.to_owned(), index.as_bytes().to_vec());
-            f.insert(format!("{URL}.sig"), sig.as_bytes().to_vec());
+        fn serve(&self, index: &str) {
+            self.files
+                .borrow_mut()
+                .insert(URL.to_owned(), index.as_bytes().to_vec());
         }
     }
 
@@ -186,84 +175,56 @@ mod tests {
         }
     }
 
-    fn vector(name: &str) -> (String, String) {
+    fn vector(name: &str) -> String {
         let doc = json::parse(VECTORS.as_bytes()).unwrap();
         for c in doc.get("cases").unwrap().as_array().unwrap() {
             if c.get("name").and_then(Value::as_str) == Some(name) {
-                let s = |k| c.get(k).unwrap().as_str().unwrap().to_owned();
-                return (s("index"), s("signature"));
+                return c.get("index").unwrap().as_str().unwrap().to_owned();
             }
         }
         panic!("no vector {name}");
     }
 
-    fn source() -> (Source, i64) {
-        let doc = json::parse(VECTORS.as_bytes()).unwrap();
-        let key = PublicKey::parse_file(doc.get("public_key").unwrap().as_str().unwrap()).unwrap();
-        let now = index::parse_time(doc.get("now").unwrap().as_str().unwrap()).unwrap();
-        (
-            Source {
-                index_url: URL.to_owned(),
-                keys: vec![key],
-            },
-            now,
-        )
+    fn source() -> Source {
+        Source {
+            index_url: URL.to_owned(),
+        }
     }
 
     #[test]
-    fn refresh_caches_a_verified_index_and_keeps_it_when_a_later_one_is_refused() {
+    fn refresh_caches_a_checked_index_and_keeps_it_when_a_later_one_is_refused() {
         let t = TempRoot::new("refresh");
-        let (src, now) = source();
+        let src = source();
         let fake = Fake::default();
-        assert_eq!(
-            load_cached(&t.0, &src.keys, now).unwrap_err().code,
-            "no_index"
-        );
+        assert_eq!(load_cached(&t.0).unwrap_err().code, "no_index");
 
-        let (idx, sig) = vector("valid");
-        fake.serve(&idx, &sig);
-        let got = refresh(&t.0, &fake, &src, now).unwrap();
+        fake.serve(&vector("valid"));
+        let got = refresh(&t.0, &fake, &src).unwrap();
         assert_eq!(got.serial, 7);
         assert_eq!(cached_serial(&t.0), 7);
-        assert_eq!(load_cached(&t.0, &src.keys, now).unwrap().serial, 7);
+        assert_eq!(load_cached(&t.0).unwrap().serial, 7);
         let asked = fake.asked.borrow().clone();
-        assert_eq!(asked[0], (URL.to_owned(), MAX_INDEX_BYTES as u64));
-        assert_eq!(asked[1], (format!("{URL}.sig"), MAX_SIG_BYTES as u64));
+        assert_eq!(asked, vec![(URL.to_owned(), MAX_INDEX_BYTES as u64)]);
 
-        // An older (signed) index is a replay: refused, cache untouched.
-        let (old, old_sig) = vector("rollback");
-        fake.serve(&old, &old_sig);
-        assert_eq!(
-            refresh(&t.0, &fake, &src, now).unwrap_err().code,
-            "rollback"
-        );
-        // A tampered one fails its signature.
-        let (bad, bad_sig) = vector("tampered_body");
-        fake.serve(&bad, &bad_sig);
-        assert_eq!(
-            refresh(&t.0, &fake, &src, now).unwrap_err().code,
-            "bad_signature"
-        );
+        // An older index is a replay or a stale mirror: refused, cache untouched.
+        fake.serve(&vector("rollback"));
+        assert_eq!(refresh(&t.0, &fake, &src).unwrap_err().code, "rollback");
+        // A malformed one is refused too.
+        fake.serve(&vector("not_json"));
+        assert_eq!(refresh(&t.0, &fake, &src).unwrap_err().code, "not_json");
         assert_eq!(cached_serial(&t.0), 7);
-        assert_eq!(load_cached(&t.0, &src.keys, now).unwrap().serial, 7);
+        assert_eq!(load_cached(&t.0).unwrap().serial, 7);
     }
 
     #[test]
-    fn the_cache_is_reverified_on_load() {
-        let t = TempRoot::new("reverify");
-        let (src, now) = source();
+    fn the_cache_is_rechecked_on_load() {
+        let t = TempRoot::new("recheck");
         let fake = Fake::default();
-        let (idx, sig) = vector("valid");
-        fake.serve(&idx, &sig);
-        refresh(&t.0, &fake, &src, now).unwrap();
+        fake.serve(&vector("valid"));
+        refresh(&t.0, &fake, &source()).unwrap();
         let path = t.0.cache_dir().join("index.json");
-        let mut raw = fs::read(&path).unwrap();
-        raw[10] ^= 1;
-        fs::write(&path, raw).unwrap();
-        assert_eq!(
-            load_cached(&t.0, &src.keys, now).unwrap_err().code,
-            "bad_signature"
-        );
+        fs::write(&path, b"{").unwrap();
+        assert_eq!(load_cached(&t.0).unwrap_err().code, "not_json");
     }
 
     #[test]

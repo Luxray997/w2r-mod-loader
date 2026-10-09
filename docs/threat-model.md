@@ -3,7 +3,7 @@
 ## Assets
 - The player's machine and account (plugins are native code in the game process).
 - The integrity of multiplayer matches (simulation must stay in sync).
-- The plugin index and release signing key.
+- The plugin index and the account that publishes it.
 
 ## Actors
 - **Hostile peer / host in a lobby:** sends peer messages, chat, map files, names.
@@ -17,7 +17,8 @@
    safe string/path types, not raw buffers, wherever possible.
 3. Plugins send peer messages only through the host, which enforces size, rate, lobby-only and
    sender-slot rules.
-4. The index is signed (ed25519); packages are verified by SHA-256 from the signed index.
+4. The index and packages are fetched over HTTPS only; packages are verified by SHA-256 and size
+   from the index. The index is not signed (see `docs/index.md`, "Trust").
 5. A plugin loads only if enabled, hash-pinned, and its capabilities were approved by the user.
    Hashes are rechecked at load, so a swapped DLL is refused.
 6. Plugins and the manager install per-user. Nothing requires administrator rights, and nothing
@@ -34,7 +35,8 @@
 - Native plugins can do anything in-process. Capabilities are consent and guardrails, not a
   sandbox. Users must be told this plainly.
 - We cannot audit the game's own map/packet parsers.
-- A compromised signing key breaks the model; keep it offline and document rotation.
+- A compromised publisher account (the `w2r-plugins` GitHub repository, Pages or releases) can
+  publish any plugin; there is no separate signing key. Enable two-factor authentication on it.
 
 ## Lessons carried over from reviews of existing Remastered mods
 - Unsanitised remote filenames into `Path.Combine` -> path traversal.

@@ -21,18 +21,9 @@ struct Cli {
     /// The w2r folder (default: %USERPROFILE%\Saved Games\Warcraft2Remastered\w2r).
     #[arg(long, env = "W2R_ROOT", global = true)]
     root: Option<PathBuf>,
-    /// Where the signed index is published (`index.json`; the signature is `index.json.sig`).
+    /// Where the index is published (`index.json`).
     #[arg(long, env = "W2RPM_INDEX_URL", global = true)]
     index_url: Option<String>,
-    /// A minisign public key (.pub file) the index may be signed with. Repeat it, or separate
-    /// files with `;` in W2RPM_KEY_FILE, to trust more than one (around a key rotation).
-    #[arg(
-        long = "key",
-        env = "W2RPM_KEY_FILE",
-        global = true,
-        value_delimiter = ';'
-    )]
-    keys: Vec<PathBuf>,
     /// Development: serve the index and packages from a folder instead of the network.
     #[arg(long, global = true, hide = true)]
     index_dir: Option<PathBuf>,
@@ -58,7 +49,7 @@ enum Cmd {
     Search {
         term: Option<String>,
     },
-    /// Fetch and verify the index now.
+    /// Fetch and check the index now.
     Refresh,
     /// Install a plugin: `id` for the latest version or `id@1.2.3`.
     Install {
@@ -94,33 +85,15 @@ enum Cmd {
 
 fn context(cli: &Cli) -> Result<Session, Error> {
     let root = session::resolve_root(cli.root.as_deref())?;
-    Session::new(
-        root,
-        cli.index_url.clone(),
-        cli.index_dir.clone(),
-        &cli.keys,
-    )
-}
-
-/// The publisher announced a new signing key this manager does not trust yet.
-fn note_rotation(ctx: &Session, idx: &Index) {
-    if ctx.rotation_pending(idx) {
-        eprintln!(
-            "warning: the index announces a new signing key; update w2rpm (or add the new              key with --key) before the publisher switches to it"
-        );
-    }
+    Session::new(root, cli.index_url.clone(), cli.index_dir.clone())
 }
 
 fn index(ctx: &Session) -> Result<Index, Error> {
-    let idx = ctx.index()?;
-    note_rotation(ctx, &idx);
-    Ok(idx)
+    ctx.index()
 }
 
 fn refresh(ctx: &Session) -> Result<Index, Error> {
-    let idx = ctx.refresh()?;
-    note_rotation(ctx, &idx);
-    Ok(idx)
+    ctx.refresh()
 }
 
 use w2rpm_lib::session::capability_note;

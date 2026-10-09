@@ -109,7 +109,6 @@ pub struct View {
     pub index: Option<Index>,
     /// Why the installed list or the index is not available.
     pub notes: Vec<String>,
-    pub rotation_pending: bool,
     pub findings: Vec<Finding>,
 }
 
@@ -133,9 +132,6 @@ impl View {
             Ok(f) => v.findings = f,
             Err(e) if state.is_some() => v.notes.push(format!("verify: {e}")),
             Err(_) => {}
-        }
-        if let (Some(s), Some(idx)) = (session, &v.index) {
-            v.rotation_pending = s.rotation_pending(idx);
         }
         let updates = match (session, &v.index) {
             (Some(s), Some(idx)) => s.updates(idx).unwrap_or_default(),

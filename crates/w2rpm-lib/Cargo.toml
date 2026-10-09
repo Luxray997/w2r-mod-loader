@@ -8,13 +8,10 @@ description = "Plugin manager logic for Warcraft II Remastered: index, download,
 [dependencies]
 w2r-abi.workspace = true
 w2r-formats.workspace = true
-base64 = "0.22"
-blake2 = "0.10"
-ed25519-dalek = "2"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [features]
-# Signing and test-repository builders for tests and local demos. Never part of a release build.
-dev-sign = []
+# Test-repository builder for tests and local demos. Never part of a release build.
+dev-repo = []
