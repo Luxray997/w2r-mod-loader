@@ -531,6 +531,29 @@ impl Handshake {
         }
     }
 
+    /// Whether every other player in the lobby announced and runs the same simulation plugins as
+    /// we do, so a feature that needs the same code on every machine (the observer team) may be
+    /// used. False when unsure: not in a lobby, no simulation plugins of our own, the roster not
+    /// read yet, or somebody present who has not announced.
+    pub fn everyone_has(&self) -> bool {
+        let ours = self.local.fingerprint;
+        if !self.in_lobby || ours == [0; 4] {
+            return false;
+        }
+        let Some(present) = &self.present else {
+            return false;
+        };
+        // The host is net slot 0 even before it has heard its own announcement.
+        let me = self
+            .self_slot
+            .or(self.is_host.then_some(HOST_SLOT));
+        (0..8).all(|s| {
+            Some(s as u32) == me
+                || present[s].is_none()
+                || self.peers[s].as_ref().is_some_and(|p| p.fingerprint == ours)
+        })
+    }
+
     /// What the lobby shows the local player right now (docs/load-policy.md, "Policy").
     pub fn warnings(&self, now: u64) -> Vec<String> {
         let mut lines = Vec::new();
@@ -905,6 +928,45 @@ mod tests {
             decode(body(hello[0])).unwrap().caps,
             CAP_HANDSHAKE | CAP_STRICT
         );
+    }
+
+    #[test]
+    fn everyone_has_needs_every_present_player_to_announce_the_same_plugins() {
+        let mut host = Handshake::new(Local {
+            strict: false,
+            fingerprint: FP_A,
+        });
+        assert!(!host.everyone_has(), "not in a lobby");
+        host.enter(0x1111);
+        assert!(!host.everyone_has(), "roster not read yet");
+        host.frame(frame(0, true), || Some(vec![0, 1, 2]));
+        assert!(!host.everyone_has(), "two players have not announced");
+        let same = encode(KIND_HELLO, 0x2222, CAP_HANDSHAKE, FP_A);
+        let differs = encode(KIND_HELLO, 0x3333, CAP_HANDSHAKE, FP_B);
+        host.receive(10, 1, body(&same));
+        assert!(!host.everyone_has());
+        host.receive(10, 2, body(&differs));
+        assert!(!host.everyone_has(), "different plugins do not count");
+        host.receive(20_000, 2, body(&encode(KIND_HELLO, 0x4444, CAP_HANDSHAKE, FP_A)));
+        assert!(host.everyone_has());
+        // A player who leaves no longer counts against it.
+        host.frame(frame(2_000, true), || Some(vec![0, 1]));
+        assert!(host.everyone_has());
+        // Alone in the lobby with the plugin, it is fine; without simulation plugins it is not.
+        let mut alone = Handshake::new(Local {
+            strict: false,
+            fingerprint: FP_A,
+        });
+        alone.enter(1);
+        alone.frame(frame(0, true), || Some(vec![0]));
+        assert!(alone.everyone_has());
+        let mut none = Handshake::new(Local {
+            strict: false,
+            fingerprint: [0; 4],
+        });
+        none.enter(1);
+        none.frame(frame(0, true), || Some(vec![0]));
+        assert!(!none.everyone_has());
     }
 
     #[test]

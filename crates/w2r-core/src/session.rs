@@ -289,6 +289,17 @@ pub fn on_window(name: Option<&str>) {
                 Err(_) => Vec::new(),
             };
             net.run(outs);
+            #[cfg(target_arch = "x86")]
+            {
+                let everyone = net
+                    .handshake
+                    .try_borrow()
+                    .is_ok_and(|h| h.everyone_has());
+                crate::observer::frame(
+                    everyone,
+                    net.transport.is_host() && net.transport.connected(),
+                );
+            }
         }
     });
 }
@@ -918,7 +929,13 @@ fn start() -> Session {
     };
 
     log.line(W2R_LOG_INFO, "host", "loading plugins on the main thread");
+    #[cfg(target_arch = "x86")]
+    let host_log = log.clone();
     let loaded = plugins::load_all(&startup.root, running, log, game, services);
+    #[cfg(target_arch = "x86")]
+    if loaded.simulation.iter().any(|id| id == "w2r-observer") {
+        crate::lobbyscreen::add_observer_team_option(&symbols, &*host_log);
+    }
     net.handshake
         .borrow_mut()
         .set_fingerprint(loaded.fingerprint);

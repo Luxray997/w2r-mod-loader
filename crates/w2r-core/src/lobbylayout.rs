@@ -177,9 +177,10 @@ pub fn clean_text(s: &str) -> String {
         .collect()
 }
 
-/// The digit shown for the team option at `index` in place of the game's own text.
+/// The digit shown for the team option at `index` in place of the game's own text. The ninth
+/// option is the observer team, added only when the observer plugin is loaded.
 pub fn team_digit(index: usize) -> Option<&'static CStr> {
-    const DIGITS: [&CStr; 9] = [c"1", c"2", c"3", c"4", c"5", c"6", c"7", c"8", c"9"];
+    const DIGITS: [&CStr; 9] = [c"1", c"2", c"3", c"4", c"5", c"6", c"7", c"8", c"OBS"];
     DIGITS.get(index).copied()
 }
 
@@ -1157,7 +1158,7 @@ mod tests {
     #[test]
     fn team_digits_cover_nine_options() {
         assert_eq!(team_digit(0), Some(c"1"));
-        assert_eq!(team_digit(8), Some(c"9"));
+        assert_eq!(team_digit(8), Some(c"OBS"));
         assert_eq!(team_digit(9), None);
     }
 }

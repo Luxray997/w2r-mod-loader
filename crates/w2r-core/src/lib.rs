@@ -30,6 +30,7 @@ pub mod maproles;
 pub mod mapsearchcache;
 pub mod mapstore;
 pub mod mapwire;
+pub mod observer;
 pub mod pe;
 pub mod peer;
 pub use w2r_preview::pud;

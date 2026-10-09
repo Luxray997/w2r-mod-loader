@@ -799,7 +799,10 @@ pub mod hook {
         // A host fault means "do not refuse": the lobby keeps working without the lock.
         let refused = guarded(|| refuse(sender, "team change", |p, s| p.allow_team_change(s)))
             .unwrap_or(false);
-        if refused {
+        // Team 9 (OBS) only while every player in the lobby has the observer plugin.
+        let observer_refused = !packet.is_null()
+            && guarded(|| crate::observer::refuses_team(unsafe { *packet.add(2) })).unwrap_or(false);
+        if refused || observer_refused {
             return;
         }
         let original: RequestFn =

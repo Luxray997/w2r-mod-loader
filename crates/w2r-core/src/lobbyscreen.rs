@@ -161,6 +161,50 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
     }
 }
 
+/// The localization key of the ninth team option; `team_digit` turns it into "OBS" while our slots
+/// panel draws.
+pub const OBSERVER_TEAM_KEY: &CStr = c"w2r_team_obs";
+
+/// Appends the observer team to the game's team option list (a `std::vector` of key pointers,
+/// eight long), so the stock slot row can offer and show team 9. Done once at startup, only when
+/// the observer plugin is loaded: every machine in the game has it (it is in the simulation
+/// fingerprint), so none reads past the end of the list. The vector's new buffer comes from the
+/// process heap, which the game's own exit-time free also uses; the old buffer is left alone.
+pub fn add_observer_team_option(symbols: &Symbols, log: &dyn Log) {
+    let Some(addr) = symbols.address("MpLobbyTeamOptions") else {
+        return;
+    };
+    let vector = addr as *mut *const *const c_char;
+    // SAFETY: MpLobbyTeamOptions is the game's std::vector<const char*> (begin, end, capacity end),
+    // built by a static initializer before any plugin loads; this runs on the main thread.
+    unsafe {
+        let (begin, end) = (*vector, *vector.add(1));
+        if begin.is_null() || end < begin || end.offset_from(begin) != 8 {
+            log.line(
+                W2R_LOG_WARN,
+                "host",
+                "observer: the team option list is not the expected eight entries; no OBS team",
+            );
+            return;
+        }
+        let mut keys: Vec<*const c_char> = core::slice::from_raw_parts(begin, 8).to_vec();
+        keys.push(OBSERVER_TEAM_KEY.as_ptr());
+        let keys = Box::leak(keys.into_boxed_slice());
+        let first = keys.as_ptr();
+        // Shown as eight entries until the lobby says everyone has the plugin (`observer::frame`).
+        vector.write(first);
+        vector.add(1).write(first.add(8));
+        vector.add(2).write(first.add(9));
+        crate::observer::installed(
+            addr,
+            first as usize,
+            symbols.address("MpLobbySlots").unwrap_or(0),
+            symbols.address("BroadcastLobbySlot").unwrap_or(0),
+        );
+    }
+    log.line(W2R_LOG_INFO, "host", "observer: OBS added to the team options");
+}
+
 fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
     let at = |name: &'static str| symbols.address(name).ok_or(name);
     let kit = Kit::new(symbols).ok_or("a screen-kit symbol")?;
@@ -236,6 +280,9 @@ fn hook_localized(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
 unsafe extern "C" fn localized_detour(key: *const c_char) -> *const c_char {
     let original: LocalizedFn =
         unsafe { core::mem::transmute(REAL_LOCALIZED.load(Ordering::Acquire)) };
+    if !key.is_null() && unsafe { CStr::from_ptr(key) } == OBSERVER_TEAM_KEY {
+        return c"OBS".as_ptr();
+    }
     if REWRITE_TEAMS.load(Ordering::Relaxed) && !key.is_null() {
         let options = TEAM_OPTIONS.load(Ordering::Acquire) as *const *const *const c_char;
         if !options.is_null() {
