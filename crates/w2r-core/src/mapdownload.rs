@@ -154,7 +154,10 @@ fn scan_into_registry(game: GameMap, dir: &Path) {
 
 /// The maps folder (`<base>Maps`), in the same form as the game's own folder paths.
 pub fn maps_root_string() -> Option<String> {
-    GAME.get().copied()?.maps_root().map(|p| p.display().to_string())
+    GAME.get()
+        .copied()?
+        .maps_root()
+        .map(|p| p.display().to_string())
 }
 
 /// The create screen browser's reload button: the game rescans the whole maps folder into its
