@@ -246,6 +246,20 @@ impl Registry {
         true
     }
 
+    /// Calls one active plugin's create-screen callback with `ui`, under the guard; a fault
+    /// disables it. Returns whether the plugin had one.
+    pub fn call_create_ui(&self, slot: &Slot, ui: &W2rUi) -> bool {
+        let Some(callback) = slot.create_ui() else {
+            return false;
+        };
+        let started = std::time::Instant::now();
+        if let Err(fault) = guarded(|| unsafe { callback(ui) }) {
+            slot.disable(format!("create_ui: {fault}"));
+        }
+        slot.note_duration(started.elapsed().as_millis(), "create_ui");
+        true
+    }
+
     /// `W2R_EVT_SHUTDOWN` to subscribers, then best-effort `on_unload` for every active plugin.
     pub fn shutdown(&self) {
         self.dispatch(W2R_EVT_SHUTDOWN, core::ptr::null());
@@ -530,7 +544,7 @@ mod tests {
         let (mut reg, log) = registry();
         let i = reg.load_entry("p", entry).unwrap();
         let h = unsafe { &*reg.slot(i).host() };
-        assert_eq!(h.struct_size, W2R_HOST_V1_SIZE);
+        assert_eq!(h.struct_size, W2R_HOST_CREATE_UI_SIZE);
         assert_eq!(h.abi_version, W2R_ABI_VERSION);
 
         let long = "x".repeat(W2R_MAX_LOG_BYTES as usize + 1);

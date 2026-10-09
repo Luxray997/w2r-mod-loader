@@ -6,21 +6,26 @@
 //!
 //! "Change map" opens the map browser (`browserview`) in place of the screen's content.
 
+use core::cell::Cell;
 use core::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use w2r_abi::{W2R_LOG_INFO, W2R_LOG_WARN};
+use w2r_abi::{
+    W2R_E_BUSY, W2R_E_NOT_FOUND, W2R_LOG_INFO, W2R_LOG_WARN, W2R_OK, W2rStatus,
+};
 
-use crate::browserview::{Theme, View};
+use crate::browserview::{INDEX_SLICE, Theme, View};
+use crate::createpick::MapPicker;
 use crate::guard::guarded;
 use crate::host::Log;
-use crate::mapbrowser::Browser;
+use crate::mapbrowser::{Browser, Source};
 use crate::mappreview::tileset_for_key;
 use crate::previewdraw::{self, PreviewGame, Request};
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
 use crate::symbols::Symbols;
+use crate::ui::Widgets;
 
 /// Where things sit in the game's map-list entry (wc2r-plus `struct_offsets.h`).
 const ENTRY_PLAYERS: usize = 0x04;
@@ -226,6 +231,113 @@ pub fn try_draw() -> bool {
     true
 }
 
+/// Height reserved under the Change map button for the plugins' rows: a slider with its caption
+/// and a button. Rows that do not fit are not drawn.
+const PLUGIN_AREA_H: f32 = CAPTION_H + ROW_H + GAP + ROW_H + GAP;
+
+/// The plugins' rows: placed one under the other in the map column, in the screen's own style.
+struct PluginRows<'a> {
+    kit: &'a Kit,
+    area: Rect,
+    y: Cell<f32>,
+}
+
+impl<'a> PluginRows<'a> {
+    fn new(kit: &'a Kit, area: Rect) -> PluginRows<'a> {
+        PluginRows {
+            kit,
+            y: Cell::new(area.y),
+            area,
+        }
+    }
+
+    /// The next `h`-high row, or none when the area is used up.
+    fn next(&self, h: f32) -> Option<Rect> {
+        let y = self.y.get();
+        if y + h > self.area.y + self.area.h {
+            return None;
+        }
+        self.y.set(y + h);
+        Some(Rect::new(self.area.x, y, self.area.w, h))
+    }
+
+    fn gap(&self) {
+        self.y.set(self.y.get() + GAP);
+    }
+}
+
+impl Widgets for PluginRows<'_> {
+    fn row(&self, _height: f32, _cols: i32) {}
+
+    fn label(&self, text: &str) {
+        if let Some(r) = self.next(CAPTION_H) {
+            self.kit.label_at(r, text, ALIGN_LEFT);
+        }
+    }
+
+    fn button(&self, text: &str) -> bool {
+        let pressed = self
+            .next(ROW_H)
+            .is_some_and(|r| self.kit.button_at(r, text, false));
+        self.gap();
+        pressed
+    }
+
+    /// Not offered on this screen: the text is shown and the value stays.
+    fn checkbox(&self, text: &str, _value: &mut bool) -> bool {
+        self.label(text);
+        false
+    }
+
+    fn slider(&self, text: &str, value: &mut i32, min: i32, max: i32) -> bool {
+        let (Some(caption), Some(bar)) = (self.next(CAPTION_H), self.next(ROW_H)) else {
+            return false;
+        };
+        self.kit.label_at(caption, text, ALIGN_LEFT);
+        self.kit.set_rect(bar);
+        let mut offset = (*value).clamp(min, max).wrapping_sub(min) as u32;
+        let changed = unsafe { self.kit.slider(&mut offset, 0, (max - min) as u32) };
+        if changed {
+            *value = min.saturating_add(offset as i32).min(max);
+        }
+        self.gap();
+        changed
+    }
+}
+
+/// The host's map index, as the plugins' `create_map_count` and `create_map_select` see it.
+struct GamePicker<'a> {
+    screen: &'a Screen,
+}
+
+impl MapPicker for GamePicker<'_> {
+    fn count(&mut self, players: u32) -> Result<u32, W2rStatus> {
+        let mut browser = self.screen.browser();
+        let mut src = self.screen.view.source;
+        browser.observe_root(&src.rel_path());
+        if !browser.index_ready() {
+            // A slice of the walk per call (one call a frame), as the browser's search does.
+            browser.step_index(&mut src, Some(INDEX_SLICE));
+        }
+        if !browser.index_ready() {
+            return Err(W2R_E_BUSY);
+        }
+        Ok(browser.with_players(players).count() as u32)
+    }
+
+    fn select(&mut self, players: u32, nth: u32) -> W2rStatus {
+        let mut browser = self.screen.browser();
+        let Some(map) = browser.with_players(players).nth(nth as usize).cloned() else {
+            return W2R_E_NOT_FOUND;
+        };
+        if self.screen.view.select_indexed(&mut browser, &map) {
+            W2R_OK
+        } else {
+            W2R_E_NOT_FOUND
+        }
+    }
+}
+
 impl Screen {
     fn browser(&self) -> std::sync::MutexGuard<'_, Browser> {
         self.browser.lock().unwrap_or_else(|e| e.into_inner())
@@ -310,7 +422,24 @@ impl Screen {
             ALIGN_CENTRE,
             Some(unsafe { *self.font_heading }),
         );
-        let b = preview_box(column);
+        // Room under the Change map button for the plugins' rows, only when one wants them.
+        let plugin_h = if crate::session::create_ui_present() {
+            PLUGIN_AREA_H
+        } else {
+            0.0
+        };
+        let b = preview_box(Rect::new(
+            column.x,
+            column.y,
+            column.w,
+            (column.h - plugin_h).max(0.0),
+        ));
+        if plugin_h > 0.0 {
+            let top = b.y + b.h + GAP + ROW_H + GAP;
+            let area = Rect::new(b.x, top, b.w, (column.y + column.h - top).max(0.0));
+            let widgets = PluginRows::new(k, area);
+            crate::session::draw_create_ui(&widgets, &mut GamePicker { screen: self });
+        }
         if k.button_at(
             Rect::new(b.x, b.y + b.h + GAP, b.w, ROW_H),
             "Change map",

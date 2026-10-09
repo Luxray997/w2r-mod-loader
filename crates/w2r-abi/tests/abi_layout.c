@@ -18,7 +18,8 @@ CHECK(offsetof(W2rEvent, struct_size) == 0);
 CHECK(offsetof(W2rStr, len) == sizeof(void *));
 CHECK(sizeof(W2rStatus) == 4);
 CHECK(W2R_OK == 0);
-CHECK(W2R_E_DENIED < 0 && W2R_E_CONFLICT < 0);
+CHECK(W2R_E_DENIED < 0 && W2R_E_BUSY < 0);
+CHECK(W2R_HOST_CREATE_UI_SIZE > offsetof(W2rHost, symbol_address));
 CHECK(W2R_MAX_PEER_PAYLOAD + W2R_PEER_HEADER_BYTES <= 989);
 
 /* The smallest possible plugin must compile against the header. */

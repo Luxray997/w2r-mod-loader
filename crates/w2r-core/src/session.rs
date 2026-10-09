@@ -717,6 +717,36 @@ pub fn map_sharing_settings() -> (bool, bool) {
     })
 }
 
+/// Whether any active plugin has registered a Create-screen callback.
+pub fn create_ui_present() -> bool {
+    SESSION.with(|cell| {
+        cell.try_borrow().ok().is_some_and(|s| {
+            s.as_ref()
+                .is_some_and(|s| s.registry.slots().any(|slot| slot.create_ui().is_some()))
+        })
+    })
+}
+
+/// Calls every plugin's Create-screen callback with a table over `w`; inside them `picker`
+/// serves `create_map_count` and `create_map_select`. Main thread, from the screen's draw.
+pub fn draw_create_ui(w: &dyn Widgets, picker: &mut dyn crate::createpick::MapPicker) {
+    SESSION.with(|cell| {
+        let Ok(session) = cell.try_borrow() else {
+            return;
+        };
+        let Some(session) = session.as_ref() else {
+            return;
+        };
+        crate::createpick::with_picker(picker, || {
+            for slot in session.registry.slots() {
+                if slot.create_ui().is_some() {
+                    ui::with_frame(w, |table| session.registry.call_create_ui(slot, table));
+                }
+            }
+        });
+    });
+}
+
 /// Whether the replacement Create Multiplayer Game screen is switched on (`host.json`).
 pub fn enhanced_create_screen() -> bool {
     SESSION.with(|cell| {

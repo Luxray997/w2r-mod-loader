@@ -27,6 +27,7 @@ functions it provides; it cannot stop a plugin from using the operating system d
 | `W2R_E_NOT_FOUND` -6 | no such symbol, handle or event |
 | `W2R_E_RATE` -7 | rate limit hit; the call had no effect |
 | `W2R_E_CONFLICT` -8 | the hook overlaps an existing patch |
+| `W2R_E_BUSY` -9 | not ready yet, ask again on a later frame |
 
 ## Loading and versioning
 
@@ -82,6 +83,31 @@ Two calls were appended after the first release (`struct_size` grew; a plugin ch
   game's edit filter applies); the plugin must validate it.
 - `set_active(ctx, active)`: 0 greys out and disables the rows that follow, 1 restores them. A
   grey-out left open at the end of `on_ui` is closed by the host.
+
+## Create screen
+
+Appended after the first release (`host->struct_size >= W2R_HOST_CREATE_UI_SIZE`, `W2R_HOST_CREATE_UI_SIZE` in the header; an older host has a smaller table). Implicit, no capability: the plugin
+can only change which map the local player is about to host, the same as picking one in the map
+browser, and `affects_simulation` stays the plugin's own declaration.
+
+- `create_ui_register(token, callback)` registers the plugin's one create-screen callback (null
+  removes it; registering again replaces it). While the enhanced Create Multiplayer Game screen
+  draws, the host calls it every frame with a `W2rUi`, under the same guard as `on_ui`. The rows
+  appear under the map preview and the Change map button, in a strip reserved for them (room for a
+  slider with its caption and one button; rows that do not fit are not drawn). `label`, `button`
+  and `slider_int` work; `checkbox` shows its text and never changes; `text_edit` does nothing.
+  Nothing is called, and no room is reserved, when no plugin registered one or when the stock
+  create screen is in use.
+- `create_map_count(token, players, count_out)` and `create_map_select(token, players, nth)` work
+  only inside that callback (`W2R_E_STATE` elsewhere). They see the host's map index, the one the
+  map browser's search uses: every map under the maps folder, up to the browser's caps. `players`
+  is the map's maximum player count, 1 to 8, or 0 for any (`W2R_E_INVALID` above 8). The index is
+  read from its cache or built a slice per frame the first time a plugin calls `create_map_count`;
+  until it is ready the call returns `W2R_E_BUSY` and the plugin asks again next frame. Maps keep
+  their index order while the index is not rebuilt (reload in the browser rebuilds it). `nth` is
+  0-based and below the last count (`W2R_E_NOT_FOUND` otherwise, also for a map that vanished since
+  indexing). A selection is exactly what Confirm in the map browser does: the game's map list is
+  pointed at the map's folder and the map is selected for the game being created.
 
 ## Strings and untrusted data
 

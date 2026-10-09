@@ -6,7 +6,8 @@
 use core::ffi::{CStr, c_char, c_void};
 
 use crate::mapbrowser::{
-    Browser, Choice, LiveEntry, MAX_SEARCH, SizeFilter, Source, contains_no_case, sanitize,
+    Browser, Choice, IndexedMap, LiveEntry, MAX_SEARCH, SizeFilter, Source, contains_no_case,
+    sanitize,
 };
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
@@ -34,7 +35,7 @@ const MAX_FOLDERS: usize = 2_000;
 const MAX_SIZE_OPTIONS: usize = 32;
 /// How long one frame may spend walking the game's folders for the search index. Each folder
 /// costs the game a list refresh (about 0.6 ms), so this is roughly a dozen folders a frame.
-const INDEX_SLICE: std::time::Duration = std::time::Duration::from_millis(8);
+pub const INDEX_SLICE: std::time::Duration = std::time::Duration::from_millis(8);
 
 type RefreshFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void);
 type AssignFn = unsafe extern "thiscall" fn(*mut c_void, *const c_char, usize) -> *mut c_void;
@@ -236,6 +237,17 @@ impl View {
             rel_dir: self.source.rel_path(),
             players: live.players,
             dim: live.dim,
+        }
+    }
+
+    /// Makes an indexed map the game's selected map, as a pick in the browser would: the list is
+    /// pointed at the map's folder and the entry found again there. False when it is gone.
+    pub fn select_indexed(&self, b: &mut Browser, m: &IndexedMap) -> bool {
+        let mut src = self.source;
+        b.choose_indexed(m);
+        match b.resolve_choice(&mut src) {
+            Some(i) => self.publish(i),
+            None => false,
         }
     }
 

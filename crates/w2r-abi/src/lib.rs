@@ -31,6 +31,8 @@ pub const W2R_E_NOT_FOUND: W2rStatus = -6;
 pub const W2R_E_RATE: W2rStatus = -7;
 /// hook overlaps an existing patch
 pub const W2R_E_CONFLICT: W2rStatus = -8;
+/// not ready yet, ask again on a later frame (the map index is still being built)
+pub const W2R_E_BUSY: W2rStatus = -9;
 
 // ---- value types ---------------------------------------------------------------------------
 /// UTF-8, NOT NUL-terminated.
@@ -256,6 +258,27 @@ pub struct W2rHost {
         symbol: W2rHandle,
         address_out: *mut usize,
     ) -> W2rStatus,
+
+    // Create-screen extension (implicit). Appended after the first release: check
+    // `struct_size >= W2R_HOST_CREATE_UI_SIZE` before using these.
+    /// Registers the plugin's one callback for the Create Multiplayer Game screen. The host calls
+    /// it every frame the enhanced screen draws, with a `W2rUi` whose rows appear under the map
+    /// preview. Registering again replaces the callback; null removes it.
+    pub create_ui_register: unsafe extern "C" fn(
+        token: *mut c_void,
+        callback: Option<unsafe extern "C" fn(ui: *const W2rUi)>,
+    ) -> W2rStatus,
+    /// Only inside the create-screen callback. Counts the maps of the host's map index with
+    /// `players` maximum players (0 = any). `W2R_E_BUSY` while the index is being built.
+    pub create_map_count: unsafe extern "C" fn(
+        token: *mut c_void,
+        players: u32,
+        count_out: *mut u32,
+    ) -> W2rStatus,
+    /// Only inside the create-screen callback. Makes the `nth` (0-based, in index order) map with
+    /// `players` maximum players (0 = any) the screen's selected map.
+    pub create_map_select:
+        unsafe extern "C" fn(token: *mut c_void, players: u32, nth: u32) -> W2rStatus,
 }
 
 // ---- plugin table: returned by the plugin --------------------------------------------------
@@ -280,7 +303,10 @@ pub const W2R_PLUGIN_MAIN_SYMBOL: &core::ffi::CStr = c"w2r_plugin_main";
 /// Minimum `struct_size` a version-1 `W2rPlugin` may report.
 pub const W2R_PLUGIN_V1_SIZE: u32 = core::mem::size_of::<W2rPlugin>() as u32;
 /// `struct_size` a version-1 host reports.
-pub const W2R_HOST_V1_SIZE: u32 = core::mem::size_of::<W2rHost>() as u32;
+pub const W2R_HOST_V1_SIZE: u32 =
+    (core::mem::offset_of!(W2rHost, symbol_address) + core::mem::size_of::<usize>()) as u32;
+/// `struct_size` of a host that has the create-screen functions.
+pub const W2R_HOST_CREATE_UI_SIZE: u32 = core::mem::size_of::<W2rHost>() as u32;
 
 // Mirrors tests/abi_layout.c. Keep both in sync.
 const _: () = {
@@ -295,7 +321,7 @@ const _: () = {
     assert!(offset_of!(W2rStr, len) == size_of::<*const c_void>());
     assert!(size_of::<W2rStatus>() == 4);
     assert!(W2R_OK == 0);
-    assert!(W2R_E_DENIED < 0 && W2R_E_CONFLICT < 0);
+    assert!(W2R_E_DENIED < 0 && W2R_E_BUSY < 0);
     assert!(W2R_MAX_PEER_PAYLOAD + W2R_PEER_HEADER_BYTES <= 989);
     // Option<fn> must be pointer-sized with NULL as None for the plugin table to match C.
     assert!(size_of::<Option<unsafe extern "C" fn()>>() == size_of::<*const c_void>());
@@ -314,9 +340,10 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 12);
         assert_eq!(size_of::<W2rPlugin>(), 20);
         assert_eq!(size_of::<W2rUi>(), 32);
-        assert_eq!(size_of::<W2rHost>(), 84);
+        assert_eq!(size_of::<W2rHost>(), 96);
         assert_eq!(W2R_HOST_V1_SIZE, 84);
         assert_eq!(W2R_PLUGIN_V1_SIZE, 20);
+        assert_eq!(W2R_HOST_CREATE_UI_SIZE, 96);
     }
 
     // Not a shipping target, but the tests run here too; pointer alignment pads the u32 headers.
@@ -327,6 +354,6 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 16);
         assert_eq!(size_of::<W2rPlugin>(), 40);
         assert_eq!(size_of::<W2rUi>(), 64);
-        assert_eq!(size_of::<W2rHost>(), 160);
+        assert_eq!(size_of::<W2rHost>(), 192);
     }
 }

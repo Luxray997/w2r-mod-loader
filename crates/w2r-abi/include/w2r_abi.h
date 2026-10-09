@@ -37,7 +37,8 @@ enum {
     W2R_E_UNSUPPORTED = -5, /* host does not provide this (older host) */
     W2R_E_NOT_FOUND = -6,
     W2R_E_RATE = -7,        /* rate limit hit; the call had no effect */
-    W2R_E_CONFLICT = -8     /* hook overlaps an existing patch */
+    W2R_E_CONFLICT = -8,    /* hook overlaps an existing patch */
+    W2R_E_BUSY = -9         /* not ready yet, ask again on a later frame */
 };
 
 /* ---- value types ----------------------------------------------------------------------- */
@@ -170,7 +171,20 @@ typedef struct W2rHost {
     /* hooks.raw (dangerous): the runtime address of any symbol (function or global), always inside
        the game module. For plugins that call game functions or write game memory themselves. */
     W2rStatus (W2R_CALL *symbol_address)(void *token, W2rHandle symbol, uintptr_t *address_out);
+
+    /* Create-screen extension (implicit), appended after the first release: check
+       host->struct_size >= W2R_HOST_CREATE_UI_SIZE before using these. */
+    /* The callback is called every frame the enhanced Create Multiplayer Game screen draws, with a
+       W2rUi whose rows appear under the map preview. NULL removes it. */
+    W2rStatus (W2R_CALL *create_ui_register)(void *token, void (W2R_CALL *callback)(const W2rUi *ui));
+    /* Only inside that callback. Counts the indexed maps with `players` maximum players (0 = any);
+       W2R_E_BUSY while the host is still building its map index. */
+    W2rStatus (W2R_CALL *create_map_count)(void *token, uint32_t players, uint32_t *count_out);
+    /* Only inside that callback. Selects the nth (0-based) such map for the game being created. */
+    W2rStatus (W2R_CALL *create_map_select)(void *token, uint32_t players, uint32_t nth);
 } W2rHost;
+
+#define W2R_HOST_CREATE_UI_SIZE (offsetof(W2rHost, create_map_select) + sizeof(void *))
 
 /* ---- plugin table: returned by the plugin ---------------------------------------------- */
 typedef struct W2rPlugin {

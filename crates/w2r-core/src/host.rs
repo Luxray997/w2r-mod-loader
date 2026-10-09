@@ -148,9 +148,14 @@ pub struct Slot {
     pub tag: [u8; 4],
     /// Consecutive callbacks over [`Slot::SLOW_MS`].
     slow: Cell<u32>,
+    /// The callback from `create_ui_register`, if any.
+    create_ui: Cell<Option<CreateUiFn>>,
     shared: Rc<Shared>,
     host: W2rHost,
 }
+
+/// A plugin's create-screen callback.
+pub type CreateUiFn = unsafe extern "C" fn(ui: *const W2rUi);
 
 impl Slot {
     pub fn new(index: usize, id: &str, caps: &[&str], shared: Rc<Shared>) -> Box<Slot> {
@@ -172,6 +177,7 @@ impl Slot {
             data: RefCell::new(None),
             tag: peer::peer_tag(id),
             slow: Cell::new(0),
+            create_ui: Cell::new(None),
             shared,
             host: host_table(core::ptr::null_mut()),
         });
@@ -206,6 +212,15 @@ impl Slot {
 
     pub fn state(&self) -> State {
         self.state.borrow().clone()
+    }
+
+    /// The create-screen callback, only while the plugin is active.
+    pub fn create_ui(&self) -> Option<CreateUiFn> {
+        if self.is_active() {
+            self.create_ui.get()
+        } else {
+            None
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -264,6 +279,7 @@ impl Slot {
         self.log(W2R_LOG_ERROR, &format!("disabled: {reason}"));
         *self.state.borrow_mut() = State::Disabled { reason };
         self.subs.borrow_mut().clear();
+        self.create_ui.set(None);
         let removed = hooks::global().remove_all(self.owner());
         if !removed.is_empty() {
             self.log(
@@ -276,7 +292,7 @@ impl Slot {
 
 fn host_table(token: *mut c_void) -> W2rHost {
     W2rHost {
-        struct_size: W2R_HOST_V1_SIZE,
+        struct_size: W2R_HOST_CREATE_UI_SIZE,
         abi_version: W2R_ABI_VERSION,
         token,
         log: cb::log,
@@ -297,6 +313,9 @@ fn host_table(token: *mut c_void) -> W2rHost {
         hook_install: cb::hook_install,
         hook_remove: cb::hook_remove,
         symbol_address: cb::symbol_address,
+        create_ui_register: cb::create_ui_register,
+        create_map_count: cb::create_map_count,
+        create_map_select: cb::create_map_select,
     }
 }
 
@@ -666,6 +685,55 @@ mod cb {
                     W2R_E_INVALID
                 }
             }
+        })
+    }
+
+    /// docs/abi.md, "Create screen": registers (or with null removes) the plugin's one callback.
+    pub unsafe extern "C" fn create_ui_register(
+        token: *mut c_void,
+        callback: Option<CreateUiFn>,
+    ) -> W2rStatus {
+        run(|| match enter(token) {
+            Ok(slot) => {
+                slot.create_ui.set(callback);
+                W2R_OK
+            }
+            Err(e) => e,
+        })
+    }
+
+    /// docs/abi.md, "Create screen": maps with `players` maximum players, only inside the callback.
+    pub unsafe extern "C" fn create_map_count(
+        token: *mut c_void,
+        players: u32,
+        count_out: *mut u32,
+    ) -> W2rStatus {
+        run(|| {
+            if let Err(e) = enter(token) {
+                return e;
+            }
+            if count_out.is_null() {
+                return W2R_E_INVALID;
+            }
+            match crate::createpick::count(players) {
+                Ok(n) => {
+                    unsafe { count_out.write(n) };
+                    W2R_OK
+                }
+                Err(e) => e,
+            }
+        })
+    }
+
+    /// docs/abi.md, "Create screen": selects the nth such map, only inside the callback.
+    pub unsafe extern "C" fn create_map_select(
+        token: *mut c_void,
+        players: u32,
+        nth: u32,
+    ) -> W2rStatus {
+        run(|| match enter(token) {
+            Ok(_) => crate::createpick::select(players, nth),
+            Err(e) => e,
         })
     }
 

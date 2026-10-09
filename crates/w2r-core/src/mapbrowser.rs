@@ -249,6 +249,13 @@ impl Browser {
         &self.index
     }
 
+    /// The indexed maps with `players` maximum players (0 = any), in index order.
+    pub fn with_players(&self, players: u32) -> impl Iterator<Item = &IndexedMap> {
+        self.index
+            .iter()
+            .filter(move |m| players == 0 || m.players == players)
+    }
+
     /// Fills the search index in one go (tests and callers that do not mind waiting); see
     /// [`Browser::step_index`].
     pub fn build_index(&mut self, src: &mut dyn Source) {
@@ -812,6 +819,29 @@ mod tests {
         assert_eq!(f.rel, "Maps\\Big\\Deep");
         f.tree.get_mut("Maps\\Big\\Deep").unwrap().1.clear();
         assert_eq!(b.resolve_choice(&mut f), None, "gone");
+    }
+
+    #[test]
+    fn with_players_filters_in_index_order() {
+        let map = |name: &str, players| IndexedMap {
+            name: name.into(),
+            path: format!("Maps\\{name}.pud"),
+            desc: String::new(),
+            rel_dir: "Maps".into(),
+            players,
+            dim: 64,
+        };
+        let mut b = Browser::default();
+        b.index = vec![map("a", 2), map("b", 4), map("c", 2), map("d", 8)];
+        let names = |players| {
+            b.with_players(players)
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(0), ["a", "b", "c", "d"]);
+        assert_eq!(names(2), ["a", "c"]);
+        assert_eq!(names(8), ["d"]);
+        assert!(names(3).is_empty());
     }
 
     #[test]

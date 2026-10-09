@@ -6,6 +6,7 @@
 pub use w2r_formats::{json, manifest, semver, state};
 pub mod build_guard;
 pub mod chat;
+pub mod createpick;
 pub mod dispatch;
 pub mod downloadclient;
 pub mod downloadhost;
