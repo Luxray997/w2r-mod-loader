@@ -1,4 +1,5 @@
 /target/
 **/target/
+!crates/w2r-core/src/target/
 __pycache__/
 *.pyc
