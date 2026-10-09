@@ -2431,14 +2431,6 @@ name = "w2r-abi"
 version = "0.1.0"
 
 [[package]]
-name = "w2r-chat"
-version = "0.1.0"
-dependencies = [
- "w2r-abi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "w2r-core"
 version = "0.1.0"
 dependencies = [

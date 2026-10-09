@@ -139,7 +139,7 @@ plugins over the public ABI (chat may well be the latter).
    with a second player (wc2r-plus or another w2rpm) the log shows `net slot N … runs …` and
    `replied`; `tools\install_dev.ps1 -Simulation` gives a non-zero fingerprint so a mismatch
    warning can be seen.
-2. Chat, a first-party plugin (`crates/chat-plugin`, id `w2r-chat`, spec [chat-plugin.md](chat-plugin.md)).
+2. Chat, a first-party plugin (`plugins/w2r-chat` in `w2r-plugins`, id `w2r-chat`, spec [chat-plugin.md](chat-plugin.md)).
    **In progress (2026-10-04).** Host prerequisites done and verified in the game: `symbol_address`
    (`hooks.raw`), `settings_*` and `data_*` (`store.rs`), `W2R_EVT_MATCH_START` (`matchstart.rs`);
    `MATCH_END` stays reserved. Plugin slices done and verified in the game: 1 scrollable history
@@ -205,12 +205,12 @@ minisign scheme (offline keys, a manual signing step, 90-day `expires`, key rota
 from the manager, the specs and the plugin repo. The index is plain JSON on GitHub Pages; integrity
 is HTTPS plus the SHA-256 and size per package ([index.md](index.md), "Trust"). The old scheme is in
 git history.
-Status, repo at `D:\Tools\w2r-plugins`: `plugins/w2r-chat` (moved from `crates/chat-plugin`) and
+Status, repo at `D:\Tools\w2r-plugins`: `plugins/w2r-chat` (moved from this repo's `crates/chat-plugin`, removed 2026-10-08) and
 `plugins/hello-example`; `tools/w2r-publish` (`check`, `package`, `index`, `verify`); CI and a release
 workflow that builds the packages and publishes the index. **Left:** make `w2r-plugins` public (Pages
 on a private repo needs a paid plan, and users must reach the packages; making `w2rpm` public too
-removes the CI read token), the first publish to `gh-pages`, then delete `crates/chat-plugin` here
-and point `tools/install_dev.ps1` at the plugin repo.
+removes the CI read token), the first publish to `gh-pages`, `crates/chat-plugin` is gone and
+`tools/install_dev.ps1 -WithChat` builds from the sibling `w2r-plugins` checkout.
 
 ## Cross-cutting
 - Tests: unit tests for parsers/validators on Linux; `cargo-fuzz` targets for manifest, index,

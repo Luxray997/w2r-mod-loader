@@ -154,8 +154,9 @@ taken at match start.
 
 ## Plugin shape
 
-- Crate `crates/chat-plugin` (cdylib, i686, Rust; builds against `w2r-abi`, with the SDK pieces
-  it needs inline until `w2r-sdk` exists). It moves to the `w2r-plugins` repo in Phase 6.
+- Crate `plugins/w2r-chat` in the `w2r-plugins` repository (cdylib, i686, Rust; builds against `w2r-abi`,
+  with the SDK pieces it needs inline until `w2r-sdk` exists). It lived in `crates/chat-plugin` here until
+  2026-10-08.
 - Manifest: id `w2r-chat`, capabilities `game.read` and `hooks.raw`; `chat.read` is **not** needed (the plugin
   sees chat through its own hooks, with the game's raw text, and hands it straight back to
   the game's own renderer exactly as wc2r-plus does; it only cuts a message at a NUL),

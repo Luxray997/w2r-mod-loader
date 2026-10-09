@@ -39,7 +39,6 @@ crates/
   w2rpm-lib/     manager logic: index, download, verify, install
   w2rpm-cli/     the `w2rpm` command
   w2rpm-gui/     the egui manager
-  chat-plugin/   the first-party chat plugin (also published from w2r-plugins)
   test-plugins/  fixture DLLs for the host's tests
 docs/            specs, plan, threat model, per-feature notes
 tools/           spec reference implementations, generators, the dev installer
