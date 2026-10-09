@@ -185,15 +185,41 @@ impl Source for GameSource {
 
     fn folder_names(&self) -> Vec<String> {
         let (begin, end) = unsafe { (*self.folder_list, *self.folder_list.add(1)) };
-        if begin.is_null() || end <= begin {
-            return Vec::new();
+        if !begin.is_null() && end > begin {
+            let n = ((end as usize - begin as usize) / STRING_STRIDE).min(MAX_FOLDERS);
+            let names: Vec<String> = (0..n)
+                .map(|i| sanitize(&unsafe { str_data(begin.add(i * STRING_STRIDE)) }))
+                .filter(|n| !n.is_empty() && n != "..")
+                .collect();
+            if !names.is_empty() {
+                return names;
+            }
         }
-        let n = ((end as usize - begin as usize) / STRING_STRIDE).min(MAX_FOLDERS);
-        (0..n)
-            .map(|i| sanitize(&unsafe { str_data(begin.add(i * STRING_STRIDE)) }))
-            .filter(|n| !n.is_empty() && n != "..")
-            .collect()
+        // Fall back to the disk when the game's list has no folders (the entries themselves still
+        // come from the game).
+        subfolders_on_disk(&self.rel_path())
     }
+}
+
+/// Names of the folders directly inside `rel` (relative to the game's folder), sorted, links
+/// and odd names skipped, capped like the game's list.
+fn subfolders_on_disk(rel: &str) -> Vec<String> {
+    if !crate::mappreview::safe_map_path(rel) {
+        return Vec::new();
+    }
+    let Ok(rd) = std::fs::read_dir(rel) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .map(|n| sanitize(&n))
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .collect();
+    names.sort_by_key(|n| n.to_ascii_lowercase());
+    names.truncate(MAX_FOLDERS);
+    names
 }
 
 /// Everything the browser needs beyond the list: the screen's selection and how to publish.
@@ -351,6 +377,9 @@ impl View {
         theme: Theme,
     ) -> Option<(Rect, String)> {
         let mut src = self.source;
+        if let Some(root) = crate::mapdownload::maps_root_string() {
+            b.set_root(&root);
+        }
         b.observe_root(&src.rel_path());
 
         let browser_w = fl(window.w * BROWSER_W_FRACTION);

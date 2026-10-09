@@ -152,6 +152,11 @@ fn scan_into_registry(game: GameMap, dir: &Path) {
     let _ = guarded(|| unsafe { (game.scan_directory)(obj.as_mut_ptr().cast()) });
 }
 
+/// The maps folder (`<base>Maps`), in the same form as the game's own folder paths.
+pub fn maps_root_string() -> Option<String> {
+    GAME.get().copied()?.maps_root().map(|p| p.display().to_string())
+}
+
 /// The create screen browser's reload button: the game rescans the whole maps folder into its
 /// registry, so a map copied in while the game runs is found. Logged; false if it could not.
 pub fn rescan_maps() -> bool {

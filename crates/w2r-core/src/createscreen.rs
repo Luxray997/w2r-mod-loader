@@ -314,6 +314,9 @@ impl MapPicker for GamePicker<'_> {
     fn count(&mut self, players: u32) -> Result<u32, W2rStatus> {
         let mut browser = self.screen.browser();
         let mut src = self.screen.view.source;
+        if let Some(root) = crate::mapdownload::maps_root_string() {
+            browser.set_root(&root);
+        }
         browser.observe_root(&src.rel_path());
         if !browser.index_ready() {
             // A slice of the walk per call (one call a frame), as the browser's search does.

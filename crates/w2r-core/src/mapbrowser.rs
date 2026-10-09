@@ -191,6 +191,13 @@ impl Browser {
         }
     }
 
+    /// The maps folder as the host knows it, when the game started in a subfolder of it.
+    pub fn set_root(&mut self, root: &str) {
+        if !root.is_empty() {
+            self.maps_root = Some(root.to_owned());
+        }
+    }
+
     pub fn maps_root(&self) -> Option<&str> {
         self.maps_root.as_deref()
     }
