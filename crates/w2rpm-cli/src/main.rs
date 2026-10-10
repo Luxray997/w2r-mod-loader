@@ -81,6 +81,12 @@ enum Cmd {
     },
     /// Re-check installed files against the pins in state.json.
     Verify,
+    /// Your results so far, from the signed reports in the outbox folder (nothing is uploaded).
+    Stats {
+        /// How many of the latest matches to list.
+        #[arg(long, default_value_t = 10)]
+        recent: usize,
+    },
 }
 
 fn context(cli: &Cli) -> Result<Session, Error> {
@@ -212,6 +218,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
             }
             return Ok(findings.is_empty());
         }
+        Cmd::Stats { recent } => return stats(cli, *recent),
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
             let ctx = context(cli)?;
@@ -307,6 +314,70 @@ fn list(cli: &Cli) -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn stats(cli: &Cli, recent: usize) -> Result<bool, Error> {
+    use w2r_stats::history::{self, Match, Tally};
+    use w2r_stats::report::Outcome;
+
+    let root = context_root(cli)?;
+    let dir = root.0.join("outbox");
+    let loaded = history::load(&dir);
+    for (path, why) in &loaded.rejected {
+        println!("not counted: {} ({why})", path.display());
+    }
+    if loaded.matches.is_empty() {
+        println!("no matches reported yet ({})", dir.display());
+        return Ok(loaded.rejected.is_empty());
+    }
+    let line = |t: &Tally| {
+        format!(
+            "{:>3} games  {:>3} won  {:>3} lost  {:>3} left  {:>3} unfinished",
+            t.games, t.wins, t.losses, t.left, t.unfinished
+        )
+    };
+    let summary = history::summarize(&loaded.matches);
+    println!("All       {}", line(&summary.total));
+    println!(
+        "
+By opponent"
+    );
+    for (name, t) in &summary.by_opponent {
+        println!("  {name:<32} {}", line(t));
+    }
+    println!(
+        "
+By map"
+    );
+    for (name, t) in &summary.by_map {
+        println!("  {name:<32} {}", line(t));
+    }
+    println!(
+        "
+Latest"
+    );
+    for m in loaded.matches.iter().rev().take(recent) {
+        let outcome = match m.result.as_ref().map(|r| &r.outcome) {
+            Some(Outcome::Win) => "won".to_string(),
+            Some(Outcome::Loss) => "lost".to_string(),
+            Some(Outcome::Left) => "left".to_string(),
+            Some(Outcome::Other(c)) => format!("code {c}"),
+            None => "unfinished".to_string(),
+        };
+        let turns = m
+            .result
+            .as_ref()
+            .map_or(String::new(), |r| format!("{} turns", r.turns));
+        let against: Vec<String> = m.opponents().map(Match::label).collect();
+        println!(
+            "  {}  {:<10} {:<20} vs {}  {turns}",
+            m.started,
+            outcome,
+            m.map,
+            against.join(", ")
+        );
+    }
+    Ok(loaded.rejected.is_empty())
 }
 
 fn main() -> ExitCode {

@@ -5,6 +5,7 @@
 
 pub mod envelope;
 pub mod hex;
+pub mod history;
 pub mod identity;
 pub mod queue;
 pub mod report;
