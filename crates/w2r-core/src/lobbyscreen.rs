@@ -648,13 +648,18 @@ impl Screen {
                     k.fill_rect(part, geo::CROWN_COLOUR);
                 }
             }
-            if mods[i]
+            let dot = match mods[i] {
+                geo::ModMark::None => None,
+                geo::ModMark::Match => Some(geo::MOD_BADGE_COLOUR),
+                geo::ModMark::Differs => Some(geo::MOD_BADGE_DIFFERS_COLOUR),
+            };
+            if let Some(colour) = dot
                 && let Some(b) = geo::mod_badge_rect(crown, is_host)
             {
                 k.fill_round(b, b.w * 0.5, geo::MOD_BADGE_RING);
                 let ring = geo::MOD_BADGE_RING_WIDTH;
                 let inner = Rect::new(b.x + ring, b.y + ring, b.w - ring * 2.0, b.h - ring * 2.0);
-                k.fill_round(inner, inner.w * 0.5, geo::MOD_BADGE_COLOUR);
+                k.fill_round(inner, inner.w * 0.5, colour);
             }
             if dl.bars[i] != geo::BarKind::None
                 && let Some(track) = geo::bar_track(rects.name[i])

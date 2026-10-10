@@ -227,6 +227,12 @@ impl Handshake {
         }
     }
 
+    /// For an announced player, whether their simulation plugins match ours.
+    pub fn peer_matches(&self, slot: u32) -> Option<bool> {
+        self.peer(slot)
+            .map(|p| p.fingerprint == self.local.fingerprint)
+    }
+
     /// Whether a player announced map sharing.
     pub fn peer_shares_maps(&self, slot: u32) -> bool {
         self.peer(slot)

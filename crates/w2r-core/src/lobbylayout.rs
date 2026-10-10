@@ -294,6 +294,8 @@ pub const TEAM_COLOURS: [u32; SLOT_COUNT] = [
 ];
 pub const CROWN_COLOUR: u32 = pack(240, 206, 74, 255);
 pub const MOD_BADGE_COLOUR: u32 = pack(96, 200, 120, 255);
+/// The dot for a player running the mod with different simulation plugins.
+pub const MOD_BADGE_DIFFERS_COLOUR: u32 = pack(236, 170, 40, 255);
 pub const MOD_BADGE_RING: u32 = pack(18, 36, 22, 255);
 pub const MOD_BADGE_RING_WIDTH: f32 = 2.0;
 const MOD_BADGE_ALONE: f32 = 0.55;
@@ -365,20 +367,41 @@ pub fn crown_fallback(r: Rect) -> [Rect; 4] {
     ]
 }
 
-/// Which lobby slots hold a player running the mod: the ones whose net slot announced itself in
-/// the handshake, and ourselves. `lobby_of_net` is the game's net slot to lobby slot table.
+/// What the mod dot says about a seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ModMark {
+    /// Not running the mod, or not heard from.
+    #[default]
+    None,
+    /// Running the mod with the same simulation plugins as us.
+    Match,
+    /// Running the mod with different simulation plugins.
+    Differs,
+}
+
+/// Which lobby slots hold a player running the mod, and whether their simulation plugins match
+/// ours: `peer` gives `Some(matches)` for a net slot that announced itself in the handshake.
+/// Ourselves always match. `lobby_of_net` is the game's net slot to lobby slot table.
 pub fn mod_slots(
     lobby_of_net: &[Option<u8>; SLOT_COUNT],
-    announced: impl Fn(u32) -> bool,
+    peer: impl Fn(u32) -> Option<bool>,
     self_net_slot: Option<u32>,
-) -> [bool; SLOT_COUNT] {
-    let mut out = [false; SLOT_COUNT];
+) -> [ModMark; SLOT_COUNT] {
+    let mut out = [ModMark::None; SLOT_COUNT];
     for (net, lobby) in lobby_of_net.iter().enumerate() {
-        let known = announced(net as u32) || self_net_slot == Some(net as u32);
-        if let (true, Some(l)) = (known, lobby)
+        let status = if self_net_slot == Some(net as u32) {
+            Some(true)
+        } else {
+            peer(net as u32)
+        };
+        if let (Some(matches), Some(l)) = (status, lobby)
             && (*l as usize) < SLOT_COUNT
         {
-            out[*l as usize] = true;
+            out[*l as usize] = if matches {
+                ModMark::Match
+            } else {
+                ModMark::Differs
+            };
         }
     }
     out
@@ -959,13 +982,17 @@ mod tests {
     fn mod_slots_follow_announcements_and_ourselves() {
         // Net slots 0 to 3 sit in lobby slots 2, 0, 5 and 7; net slot 1 announced, we are net 0.
         let table = [Some(2), Some(0), Some(5), Some(7), None, None, None, None];
-        let got = mod_slots(&table, |n| n == 1, Some(0));
-        assert_eq!(got, [true, false, true, false, false, false, false, false]);
-        assert_eq!(mod_slots(&table, |_| false, None), [false; 8]);
+        use ModMark::{Differs, Match, None as No};
+        let got = mod_slots(&table, |n| (n == 1).then_some(true), Some(0));
+        assert_eq!(got, [Match, No, Match, No, No, No, No, No]);
+        assert_eq!(mod_slots(&table, |_| None, None), [No; 8]);
+        let differs = mod_slots(&table, |n| (n == 1).then_some(false), Some(0));
+        assert_eq!(differs[0], Differs, "net slot 1 sits in lobby slot 0");
+        assert_eq!(differs[2], Match, "ourselves always match");
         let bad = [Some(9), None, None, None, None, None, None, None];
         assert_eq!(
-            mod_slots(&bad, |_| true, None),
-            [false; 8],
+            mod_slots(&bad, |_| Some(true), None),
+            [No; 8],
             "an out-of-range seat is ignored"
         );
     }

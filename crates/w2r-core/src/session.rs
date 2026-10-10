@@ -26,7 +26,7 @@ use crate::handshake::{self, Handshake, Out};
 use crate::host::{Game, Log, Services, State as SlotState};
 use crate::hostcfg::{self, HostConfig};
 use crate::lobby::{self, Event, Lobby};
-use crate::lobbylayout;
+use crate::lobbylayout::{self, ModMark};
 use crate::lobbypolicy::{self, Locks};
 use crate::manifest::Build;
 #[cfg(target_arch = "x86")]
@@ -852,24 +852,24 @@ pub fn enhanced_lobby_screen() -> bool {
 
 /// For the lobby screen's marks: the lobby seat of the host (net slot 0), and which lobby seats
 /// hold a player running the mod (announced in the handshake, or ourselves). Empty off a lobby.
-pub fn lobby_roles() -> (Option<u8>, [bool; 8]) {
+pub fn lobby_roles() -> (Option<u8>, [ModMark; 8]) {
     SESSION.with(|cell| {
         let Ok(slot) = cell.try_borrow() else {
-            return (None, [false; 8]);
+            return (None, [ModMark::None; 8]);
         };
         let Some(s) = slot.as_ref() else {
-            return (None, [false; 8]);
+            return (None, [ModMark::None; 8]);
         };
         let (Some(table), Ok(h)) = (s.net.transport.lobby_slots(), s.net.handshake.try_borrow())
         else {
-            return (None, [false; 8]);
+            return (None, [ModMark::None; 8]);
         };
         if !h.in_lobby() {
-            return (table[0], [false; 8]);
+            return (table[0], [ModMark::None; 8]);
         }
         (
             table[0],
-            lobbylayout::mod_slots(&table, |n| h.announced(n), h.self_slot()),
+            lobbylayout::mod_slots(&table, |n| h.peer_matches(n), h.self_slot()),
         )
     })
 }
