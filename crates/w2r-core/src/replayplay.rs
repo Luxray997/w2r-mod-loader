@@ -673,7 +673,6 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
                 W2R_LOG_INFO,
                 "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision;                  Page Up/Down speed, End pause, Delete step",
             );
-            say(a, "Replay: [ ] player, Insert vision, PgUp/PgDn speed, End pause, Del step");
         }
     }
     // SAFETY: a u32 in the game's data section.
@@ -1130,38 +1129,6 @@ fn change_speed(by: i8) {
     SPEED.store(to as u8, Ordering::Release);
 }
 
-fn pace_text() -> String {
-    let speed = SPEEDS[SPEED.load(Ordering::Acquire) as usize];
-    let state = if PAUSED.load(Ordering::Acquire) {
-        "paused"
-    } else {
-        "playing"
-    };
-    let progress = ADDRS.get().and_then(|a| {
-        let total = PLAY.lock().ok()?.as_ref()?.replay.turns.len();
-        // SAFETY: a u32 in the game's data section.
-        let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
-        Some(progress_bar(turn, total))
-    });
-    match progress {
-        Some(p) => format!("Replay {state} {speed}x {p}"),
-        None => format!("Replay {state} {speed}x"),
-    }
-}
-
-/// `[#####-----] 50%`, with the turn it is at.
-fn progress_bar(turn: usize, total: usize) -> String {
-    let total = total.max(1);
-    let turn = turn.min(total);
-    let filled = turn * 20 / total;
-    format!(
-        "[{}{}] {}% (turn {turn}/{total})",
-        "#".repeat(filled),
-        "-".repeat(20 - filled),
-        turn * 100 / total
-    )
-}
-
 /// Called before each network turn: true means the turn is not run yet (paused). Otherwise the
 /// game's tick deadline is moved to run turns faster or slower than its own pace: the game adds
 /// one frame time after every turn, so each turn's share of that is stretched or squeezed here.
@@ -1179,9 +1146,7 @@ pub fn hold_turn() -> bool {
         if total.is_some_and(|n| turn >= n) {
             // Nothing left to play: hold here (no live commands run) until the player leaves
             // through the game menu.
-            if !ENDED.swap(true, Ordering::AcqRel) {
-                say(a, "Replay finished - open the menu to leave");
-            }
+            ENDED.store(true, Ordering::Release);
             return true;
         }
     }
@@ -1287,7 +1252,6 @@ fn poll_keys() {
             PAUSED.store(true, Ordering::Release);
             STEP.store(true, Ordering::Release);
         }
-        say(a, &pace_text());
     }
     if pressed & KEY_BOARD != 0 {
         let next = (BOARD.load(Ordering::Acquire) + 1) % 4;
