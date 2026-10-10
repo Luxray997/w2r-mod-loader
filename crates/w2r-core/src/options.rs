@@ -489,3 +489,100 @@ fn draw_screen(nk: &Nk) {
     }
     nk.push_skin(prev_skin);
 }
+
+const MAIN_MENU_SYMBOL: &str = "MainMenuScreen";
+/// The title screen's own "Build: ... Net:..." label is a 120-high row at the top-left corner of
+/// the full-screen "main_menu" window, 20 units in; ours are the next rows down.
+const VERSION_X: f32 = 20.0;
+const VERSION_Y: f32 = 110.0;
+const VERSION_W: f32 = 1400.0;
+const VERSION_H: f32 = 120.0;
+
+static MAIN_MENU_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Hooks the title screen so a "w2rpm <version>" line shows under the game's build label.
+pub fn install_main_menu(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
+    let Some(target) = symbols.address(MAIN_MENU_SYMBOL) else {
+        log.line(
+            W2R_LOG_ERROR,
+            "host",
+            &format!("{MAIN_MENU_SYMBOL} is not in the symbol table"),
+        );
+        return false;
+    };
+    // SAFETY: `main_menu_detour` matches MainMenuScreen's cdecl `void()` signature.
+    let result = unsafe {
+        hooks::global().install(
+            Owner::Host,
+            image,
+            target,
+            main_menu_detour as *mut c_void,
+            &format!("host:{MAIN_MENU_SYMBOL}"),
+            |original| MAIN_MENU_ORIGINAL.store(original as usize, Ordering::Release),
+        )
+    };
+    match result {
+        Ok(_) => {
+            log.line(
+                W2R_LOG_INFO,
+                "host",
+                &format!("hooked {MAIN_MENU_SYMBOL} @ {target:#010x}"),
+            );
+            true
+        }
+        Err(e) => {
+            log.line(
+                W2R_LOG_ERROR,
+                "host",
+                &format!("could not hook {MAIN_MENU_SYMBOL}: {e:?}"),
+            );
+            false
+        }
+    }
+}
+
+unsafe extern "C" fn main_menu_detour() {
+    let original: unsafe extern "C" fn() =
+        unsafe { core::mem::transmute(MAIN_MENU_ORIGINAL.load(Ordering::Acquire)) };
+    unsafe { original() };
+    if let Err(fault) = guarded(|| crate::session::with_nk(draw_version)) {
+        crate::session::host_fault("title screen version", &fault);
+    }
+}
+
+fn draw_version(nk: &Nk) {
+    let ctx = nk.ctx();
+    if ctx.is_null() {
+        return;
+    }
+    let width = unsafe { (nk.ui_width)() };
+    let name = c"w2rpm_version";
+    let version = match option_env!("W2R_GIT_HASH") {
+        Some(hash) if !hash.is_empty() => {
+            format!("w2rpm {} ({hash})", env!("CARGO_PKG_VERSION"))
+        }
+        _ => format!("w2rpm {}", env!("CARGO_PKG_VERSION")),
+    };
+    let lines = [Some(version), crate::session::plugin_summary()];
+    unsafe {
+        if (nk.begin_window)(
+            ctx,
+            name.as_ptr(),
+            0.0,
+            VERSION_Y,
+            VERSION_W.min(width),
+            VERSION_H * lines.len() as f32,
+            WINDOW_NO_SCROLLBAR,
+        ) != 0
+        {
+            (nk.space_begin)(ctx, 1, 0.0, 1000);
+            for (i, line) in lines.iter().flatten().enumerate() {
+                let text = cstr(line);
+                (nk.rect)(ctx, VERSION_X, VERSION_H * i as f32, VERSION_W, VERSION_H);
+                (nk.label)(ctx, text.as_ptr().cast(), ALIGN_ROW);
+            }
+            (nk.space_end)(ctx);
+        }
+        (nk.end_window)(ctx);
+    }
+}

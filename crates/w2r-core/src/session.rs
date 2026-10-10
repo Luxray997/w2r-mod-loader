@@ -50,9 +50,30 @@ struct Session {
     simulation: Vec<String>,
     /// Plugin id to author, read once from the manifests for the plugin screen.
     authors: BTreeMap<String, String>,
+    /// How many plugins `state.json` had enabled at startup, for the title screen's summary.
+    enabled_at_start: usize,
     net: Rc<Net>,
     #[cfg(target_arch = "x86")]
     nk: Option<options::Nk>,
+}
+
+/// One line for the title screen: how many plugins are running and how many are not.
+pub fn plugin_summary() -> Option<String> {
+    SESSION.with(|cell| {
+        let slot = cell.try_borrow().ok()?;
+        let s = slot.as_ref()?;
+        let disabled = (0..s.registry.len())
+            .filter(|&i| matches!(s.registry.slot(i).state(), SlotState::Disabled { .. }))
+            .count();
+        let active = s.registry.len() - disabled;
+        let failed = disabled + s.enabled_at_start.saturating_sub(s.registry.len());
+        let noun = |n: usize| if n == 1 { "plugin" } else { "plugins" };
+        Some(if failed == 0 {
+            format!("{active} {} loaded", noun(active))
+        } else {
+            format!("{active} {} loaded, {failed} failed", noun(active))
+        })
+    })
 }
 
 /// The handshake and the game's net session. Separate from [`Session`] because the packet
@@ -914,6 +935,7 @@ fn start() -> Session {
             fingerprint: [0; 4],
             simulation: Vec::new(),
             authors: BTreeMap::new(),
+            enabled_at_start: 0,
             net,
             #[cfg(target_arch = "x86")]
             nk: None,
@@ -978,6 +1000,7 @@ fn start() -> Session {
         match (&nk, &startup.image) {
             (Some(_), Some(image)) => {
                 options::install(image, &symbols, &*log);
+                options::install_main_menu(image, &symbols, &*log);
                 crate::lobbycreate::install(image, &symbols, &*log);
                 crate::createscreen::install(&symbols, &*log);
                 crate::lobbyscreen::install(image, &symbols, &*log);
@@ -1020,6 +1043,7 @@ fn start() -> Session {
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
     let authors = plugins::authors(&startup.root, &loaded.state);
+    let enabled_at_start = loaded.state.plugins.iter().filter(|p| p.enabled).count();
     Session {
         registry: loaded.registry,
         lobby,
@@ -1029,6 +1053,7 @@ fn start() -> Session {
         fingerprint: loaded.fingerprint,
         simulation: loaded.simulation,
         authors,
+        enabled_at_start,
         net,
         #[cfg(target_arch = "x86")]
         nk,
