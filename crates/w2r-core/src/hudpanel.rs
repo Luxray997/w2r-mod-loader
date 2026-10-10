@@ -35,6 +35,13 @@ struct Game {
     units: usize,
     unit_count: usize,
     type_flags: usize,
+    kills: usize,
+    razed: usize,
+    lost: usize,
+    buildings_lost: usize,
+    mined_gold: usize,
+    mined_lumber: usize,
+    mined_oil: usize,
 }
 
 struct Panel {
@@ -77,7 +84,18 @@ const SLOT_COLOURS: [u32; 8] = [
     rgba(244, 224, 40, 255),
 ];
 
-/// A column of the scoreboard: left edge, width, heading.
+/// The totals page: left edge, width, heading.
+const TOTAL_COLUMNS: [(f32, f32, &str); 7] = [
+    (112.0, 34.0, "Kill"),
+    (148.0, 34.0, "Lost"),
+    (184.0, 34.0, "Raze"),
+    (220.0, 36.0, "BLost"),
+    (258.0, 36.0, "Gold+"),
+    (296.0, 32.0, "Wood+"),
+    (330.0, 28.0, "Oil+"),
+];
+
+/// The current page: left edge, width, heading.
 const COLUMNS: [(f32, f32, &str); 7] = [
     (112.0, 40.0, "Gold"),
     (154.0, 40.0, "Wood"),
@@ -108,6 +126,13 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         Some(units),
         Some(unit_count),
         Some(type_flags),
+        Some(kills),
+        Some(razed),
+        Some(lost),
+        Some(buildings_lost),
+        Some(mined_gold),
+        Some(mined_lumber),
+        Some(mined_oil),
     ) = (
         get("PlayerGold"),
         get("PlayerLumber"),
@@ -118,6 +143,13 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         get("UnitArrayPtr"),
         get("UnitCount"),
         get("UnitTypeFlags"),
+        get("ScoreUnitsKilled"),
+        get("ScoreBuildingsRazed"),
+        get("ScoreUnitsLost"),
+        get("ScoreBuildingsLost"),
+        get("ScoreGoldMined"),
+        get("ScoreLumberMined"),
+        get("ScoreOilMined"),
     )
     else {
         log.line(W2R_LOG_ERROR, "host", "replay scoreboard: symbols missing");
@@ -135,6 +167,13 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         units,
         unit_count,
         type_flags,
+        kills,
+        razed,
+        lost,
+        buildings_lost,
+        mined_gold,
+        mined_lumber,
+        mined_oil,
     };
     let _ = PANEL.set(Panel {
         kit,
@@ -156,7 +195,8 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
     let Some(pace) = replayplay::pace() else { return };
     let Some(panel) = PANEL.get() else { return };
     let result = guarded(|| unsafe {
-        let board = if replayplay::board_shown() {
+        let mode = replayplay::board_mode();
+        let board = if mode < 2 {
             Some(read_board(&panel.game))
         } else {
             None
@@ -168,7 +208,7 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
         let x = ((panel.ui_width)() - MARGIN_RIGHT - WIDTH).max(0.0);
         if begin(ctx, c"replay_panel".as_ptr(), x, TOP, WIDTH, height, WINDOW_FLAGS) != 0 {
             panel.kit.space_begin();
-            draw(&pace, board.as_deref(), x, height);
+            draw(&pace, board.as_deref(), mode, x, height);
             panel.kit.space_end();
             panel.kit.end_window();
         }
@@ -187,6 +227,11 @@ struct Row {
     food_used: u16,
     food_cap: u16,
     counts: Counts,
+    kills: u16,
+    lost: u16,
+    razed: u16,
+    buildings_lost: u16,
+    mined: [u32; 3],
 }
 
 /// # Safety
@@ -224,6 +269,11 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
                     food_used: u16_at(g.food_used).wrapping_sub(u16_at(g.food_free)),
                     food_cap: u16_at(g.food_cap).min(200),
                     counts: counts[p],
+                    kills: u16_at(g.kills),
+                    lost: u16_at(g.lost),
+                    razed: u16_at(g.razed),
+                    buildings_lost: u16_at(g.buildings_lost),
+                    mined: [u32_at(g.mined_gold), u32_at(g.mined_lumber), u32_at(g.mined_oil)],
                     member,
                 }
             }
@@ -232,7 +282,7 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
 }
 
 /// `x` is the window's left edge: fills use screen coordinates, labels the window's own.
-fn draw(pace: &Pace, board: Option<&[Row]>, x: f32, height: f32) {
+fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     let Some(panel) = PANEL.get() else { return };
     let kit = &panel.kit;
     kit.fill_round(Rect::new(x, TOP, WIDTH, height), 3.0, BACKGROUND);
@@ -273,14 +323,15 @@ fn draw(pace: &Pace, board: Option<&[Row]>, x: f32, height: f32) {
     let hint = if pace.ended {
         "Open the menu to leave"
     } else {
-        "PgUp/PgDn speed   End pause   Del step   ` scoreboard"
+        "PgUp/PgDn speed   End pause   Del step   ` page"
     };
     kit.label_at(Rect::new(0.0, 28.0, WIDTH, 14.0), hint, ALIGN_CENTRE);
 
     let Some(rows) = board else { return };
     let watching = replayplay::watching();
     let top = HEADER_HEIGHT;
-    for (rect_x, rect_w, title) in COLUMNS {
+    let columns = if mode == 1 { &TOTAL_COLUMNS } else { &COLUMNS };
+    for &(rect_x, rect_w, title) in columns {
         kit.label_coloured_at(
             Rect::new(rect_x, top, rect_w, ROW_HEIGHT),
             title,
@@ -309,7 +360,7 @@ fn draw(pace: &Pace, board: Option<&[Row]>, x: f32, height: f32) {
             swatch,
         );
         let text = |value: String, column: usize| {
-            let (cx, cw, _) = COLUMNS[column];
+            let (cx, cw, _) = columns[column];
             let r = Rect::new(cx, y, cw, ROW_HEIGHT);
             if gone {
                 kit.label_coloured_at(r, &value, ALIGN_RIGHT, GONE);
@@ -323,12 +374,29 @@ fn draw(pace: &Pace, board: Option<&[Row]>, x: f32, height: f32) {
         } else {
             kit.label_at(name, &row.member.name, ALIGN_LEFT);
         }
-        text(row.gold.to_string(), 0);
-        text(row.lumber.to_string(), 1);
-        text(row.oil.to_string(), 2);
-        text(format!("{}/{}", row.food_used, row.food_cap), 3);
-        text(row.counts.army.to_string(), 4);
-        text(row.counts.workers.to_string(), 5);
-        text(row.counts.buildings.to_string(), 6);
+        let values: [String; 7] = if mode == 1 {
+            [
+                row.kills.to_string(),
+                row.lost.to_string(),
+                row.razed.to_string(),
+                row.buildings_lost.to_string(),
+                row.mined[0].to_string(),
+                row.mined[1].to_string(),
+                row.mined[2].to_string(),
+            ]
+        } else {
+            [
+                row.gold.to_string(),
+                row.lumber.to_string(),
+                row.oil.to_string(),
+                format!("{}/{}", row.food_used, row.food_cap),
+                row.counts.army.to_string(),
+                row.counts.workers.to_string(),
+                row.counts.buildings.to_string(),
+            ]
+        };
+        for (column, value) in values.into_iter().enumerate() {
+            text(value, column);
+        }
     }
 }

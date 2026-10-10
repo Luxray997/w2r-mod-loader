@@ -73,8 +73,8 @@ static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// Which watched keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
-/// The scoreboard under the panel is shown.
-static BOARD: AtomicBool = AtomicBool::new(true);
+/// The scoreboard under the panel: 0 now, 1 totals, 2 hidden.
+static BOARD: AtomicU8 = AtomicU8::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 /// Let one turn through while paused.
 static STEP: AtomicBool = AtomicBool::new(false);
@@ -914,8 +914,8 @@ pub fn watching() -> Option<u8> {
     }
 }
 
-/// The scoreboard is shown (the backtick key turns it off for a bare panel).
-pub fn board_shown() -> bool {
+/// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 none.
+pub fn board_mode() -> u8 {
     BOARD.load(Ordering::Acquire)
 }
 
@@ -1082,7 +1082,8 @@ fn poll_keys() {
         say(a, &pace_text());
     }
     if pressed & KEY_BOARD != 0 {
-        BOARD.fetch_xor(true, Ordering::AcqRel);
+        let next = (BOARD.load(Ordering::Acquire) + 1) % 3;
+        BOARD.store(next, Ordering::Release);
     }
     if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD) == 0 {
         return;
@@ -1132,7 +1133,7 @@ fn reset_view() {
     FULL_VISION.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
-    BOARD.store(true, Ordering::Release);
+    BOARD.store(0, Ordering::Release);
     STEP.store(false, Ordering::Release);
     SPEED.store(NORMAL_SPEED, Ordering::Release);
     ENDED.store(false, Ordering::Release);
