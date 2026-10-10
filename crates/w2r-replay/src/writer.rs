@@ -104,6 +104,11 @@ impl<W: Write> Writer<W> {
         self.out.flush()
     }
 
+    /// Hands the sink back without a footer: what was written so far is a cut-off recording.
+    pub fn into_inner(self) -> W {
+        self.out
+    }
+
     /// Writes the final footer and hands the sink back.
     pub fn finish(mut self, footer: &Footer) -> io::Result<W> {
         self.footer(footer)?;

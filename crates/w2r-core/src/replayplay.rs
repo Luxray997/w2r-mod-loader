@@ -23,7 +23,9 @@
 use core::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -47,6 +49,7 @@ pub const MARKER: &str = "replay-play.txt";
 type StartFn = unsafe extern "C" fn(i32, *mut c_void, i32) -> u32;
 type SeedFn = unsafe extern "C" fn(u32);
 type VoidFn = unsafe extern "C" fn();
+type SlotRequestFn = unsafe extern "C" fn(*const u8, i32);
 type DisplayChatFn = unsafe extern "C" fn(*const u8, u8, u32, i8);
 type SimModeFn = unsafe extern "C" fn(u32) -> u32;
 type PushFn = unsafe extern "C" fn(*const u8, i32, u32);
@@ -102,6 +105,8 @@ struct Config {
 }
 
 struct Addrs {
+    slot_type: usize,
+    team_change: usize,
     deadline: usize,
     display_chat: usize,
     recompute_hidden: usize,
@@ -137,6 +142,162 @@ struct Play {
 
 fn log(level: u32, text: &str) {
     crate::session::StartupLog.line(level, "replay", text);
+}
+
+/// A queued replay is waiting for the lobby to open so its opponents can be seated.
+static PREFILL: AtomicBool = AtomicBool::new(false);
+
+/// The lobby opened: if a replay is queued, its opponents are seated on the first frames.
+pub fn on_lobby_enter() {
+    PREFILL_SINCE.store(0, Ordering::Release);
+    PREFILL_LOGGED.store(false, Ordering::Release);
+    PREFILL.store(queued().is_some(), Ordering::Release);
+}
+
+/// Once per lobby frame. When a replay is queued and the host is seated, fills the other slots
+/// with computer opponents, one for each other player in the recording (its race and team), by
+/// feeding the game's own "set slot" handler the packet the slot dropdown would have sent.
+pub fn lobby_frame() {
+    if !PREFILL.load(Ordering::Acquire) {
+        return;
+    }
+    let _ = guarded(prefill_lobby);
+}
+
+/// The lobby slot table: stride, and where the state, race and team sit.
+const SLOT_STRIDE: usize = 0x26;
+const SLOT_STATE: usize = 8;
+const SLOT_TEAM: usize = 10;
+const STATE_HUMAN: u8 = 0;
+const STATE_COMPUTER: u8 = 4;
+/// What the host's slot dropdown sends (the net layer hands it to the game's own handlers, with
+/// the sender's net slot, 0 for the host): a slot type request `[0x21, slot, mode]` (mode 0 is
+/// Computer) and a team request `[0x20, slot, team]`.
+const SLOT_TYPE_PACKET: u8 = 0x21;
+const TEAM_PACKET: u8 = 0x20;
+const MODE_COMPUTER: u8 = 0;
+
+/// How long after the lobby opens the opponents are kept seated (ms): the game may still be
+/// setting its own slots up on the first frames.
+const PREFILL_WINDOW_MS: u64 = 4_000;
+static PREFILL_SINCE: AtomicU64 = AtomicU64::new(0);
+static PREFILL_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn slot_states(a: &Addrs) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    for (i, o) in out.iter_mut().enumerate() {
+        // SAFETY: the lobby slot table is the start of the lobby block in the game's data section.
+        *o = unsafe { *((a.lobby + i * SLOT_STRIDE + SLOT_STATE) as *const u8) };
+    }
+    out
+}
+
+fn prefill_lobby() {
+    let (Some(a), Some(cfg)) = (ADDRS.get(), CONFIG.get()) else {
+        return;
+    };
+    let now = crate::chat::now_ms();
+    // The host takes its seat on the first frames; wait for it.
+    let before = slot_states(a);
+    if before[0] != STATE_HUMAN {
+        return;
+    }
+    let since = match PREFILL_SINCE.load(Ordering::Acquire) {
+        0 => {
+            PREFILL_SINCE.store(now, Ordering::Release);
+            now
+        }
+        t => t,
+    };
+    if now.saturating_sub(since) > PREFILL_WINDOW_MS {
+        PREFILL.store(false, Ordering::Release);
+        PREFILL_SINCE.store(0, Ordering::Release);
+        PREFILL_LOGGED.store(false, Ordering::Release);
+        return;
+    }
+    let Some(name) = queued() else {
+        PREFILL.store(false, Ordering::Release);
+        return;
+    };
+    let Ok(raw) = fs::read(cfg.root.join("replays").join(&name)) else {
+        return;
+    };
+    let Ok(replay) = Replay::parse(&raw) else {
+        return;
+    };
+    let block = &replay.header.lobby;
+    if block.len() != LOBBY_LEN {
+        return;
+    }
+    let local = usize::from(replay.header.local).min(7);
+    // The recording's other players, in slot order: each becomes a computer in the next slot.
+    let others: Vec<u8> = (0..8usize)
+        .filter(|&i| i != local)
+        .filter(|&i| matches!(block[i * SLOT_STRIDE + SLOT_STATE], 0 | STATE_COMPUTER))
+        .map(|i| block[i * SLOT_STRIDE + SLOT_TEAM])
+        .collect();
+    let mut changed = false;
+    for (n, team) in others.iter().enumerate().take(7) {
+        let slot = n as u8 + 1;
+        if before[usize::from(slot)] == STATE_COMPUTER {
+            continue;
+        }
+        // SAFETY: each handler reads its three packet bytes and the sender (0: the host).
+        unsafe {
+            let kind = [SLOT_TYPE_PACKET, slot, MODE_COMPUTER];
+            let set_type: SlotRequestFn = core::mem::transmute(a.slot_type);
+            set_type(kind.as_ptr(), 0);
+            let side = [TEAM_PACKET, slot, *team];
+            let set_team: SlotRequestFn = core::mem::transmute(a.team_change);
+            set_team(side.as_ptr(), 0);
+        }
+        changed = true;
+    }
+    if changed && !PREFILL_LOGGED.swap(true, Ordering::AcqRel) {
+        log(
+            W2R_LOG_INFO,
+            &format!(
+                "lobby: seating {} computer opponent(s) for {name}; slot states {:?} -> {:?}",
+                others.len(),
+                before,
+                slot_states(a)
+            ),
+        );
+    }
+}
+
+/// The folder the recordings live in.
+pub fn replays_dir() -> Option<PathBuf> {
+    CONFIG.get().map(|c| c.root.join("replays"))
+}
+
+/// The simulation fingerprint of the plugins loaded now; a recording plays only on the same one.
+pub fn fingerprint() -> Option<[u8; 4]> {
+    CONFIG.get().map(|c| c.fingerprint)
+}
+
+/// Queues a recording (a file in the replays folder) for the next game, as `w2rpm replays --play`
+/// does.
+pub fn queue(file: &str) -> std::io::Result<()> {
+    let Some(cfg) = CONFIG.get() else {
+        return Err(std::io::Error::other("replays are not set up"));
+    };
+    fs::write(cfg.root.join(MARKER), format!("{file}\n"))
+}
+
+/// The recording queued for the next game, if any.
+pub fn queued() -> Option<String> {
+    let cfg = CONFIG.get()?;
+    let text = fs::read_to_string(cfg.root.join(MARKER)).ok()?;
+    let name = text.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Takes the queued recording back out.
+pub fn unqueue() {
+    if let Some(cfg) = CONFIG.get() {
+        let _ = fs::remove_file(cfg.root.join(MARKER));
+    }
 }
 
 /// The player the replay was recorded as (`0xff` until its first turn).
@@ -182,7 +343,12 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
-    let (Some(display_chat), Some(deadline)) = (get("DisplayChatOrGameMessage"), get("TickDeadline")) else {
+    let (Some(display_chat), Some(deadline), Some(slot_type), Some(team_change)) = (
+        get("DisplayChatOrGameMessage"),
+        get("TickDeadline"),
+        get("HandleLobbySlotTypeRequest"),
+        get("HandleLobbyTeamChangeRequest"),
+    ) else {
         log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
         return false;
     };
@@ -216,6 +382,8 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         return false;
     };
     let _ = ADDRS.set(Addrs {
+        slot_type,
+        team_change,
         deadline,
         display_chat,
         recompute_hidden,

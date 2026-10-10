@@ -3,6 +3,7 @@
 //! streaming writer, the tolerant reader and a scanner that splits a packet into commands. Pure
 //! Rust with no game or Windows calls, so everything is tested without the game.
 
+pub mod catalog;
 pub mod chat;
 pub mod format;
 pub mod packet;

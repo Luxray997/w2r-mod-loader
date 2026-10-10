@@ -246,6 +246,8 @@ pub fn on_window(name: Option<&str>) {
                 session.net.handshake.borrow_mut().enter(nonce());
                 #[cfg(target_arch = "x86")]
                 crate::matchend::on_lobby_enter();
+                #[cfg(target_arch = "x86")]
+                crate::replayplay::on_lobby_enter();
                 session
                     .registry
                     .dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
@@ -265,6 +267,8 @@ pub fn on_window(name: Option<&str>) {
                 slots: session.config.lock_slot_swaps,
             };
             lobbypolicy::with(|p| p.frame(now, net.transport.is_host(), chosen));
+            #[cfg(target_arch = "x86")]
+            crate::replayplay::lobby_frame();
             while let Some(e) = lobbypolicy::with(|p| p.next_event()) {
                 StartupLog.line(
                     W2R_LOG_INFO,

@@ -61,6 +61,8 @@ pub mod chatrec;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod hudpanel;
 #[cfg(all(windows, target_arch = "x86"))]
+pub mod replaypicker;
+#[cfg(all(windows, target_arch = "x86"))]
 pub mod fogtrack;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod viewmem;

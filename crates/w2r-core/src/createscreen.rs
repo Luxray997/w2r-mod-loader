@@ -20,6 +20,7 @@ use crate::host::Log;
 use crate::mapbrowser::{Browser, Source};
 use crate::mappreview::tileset_for_key;
 use crate::previewdraw::{self, PreviewGame, Request};
+use crate::replaypicker::Picker;
 use crate::screenkit::game::{Kit, str_data};
 use crate::screenkit::*;
 use crate::symbols::Symbols;
@@ -67,6 +68,7 @@ struct Screen {
     options: [Option4; 4],
     view: View,
     browser: Mutex<Browser>,
+    picker: Mutex<Picker>,
     preview: PreviewGame,
 }
 
@@ -177,6 +179,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
         ],
         view: View::new(symbols)?,
         browser: Mutex::new(Browser::default()),
+        picker: Mutex::new(Picker::default()),
         preview: PreviewGame::new(symbols)?,
     })
 }
@@ -197,6 +200,9 @@ pub fn try_draw() -> bool {
     let last = LAST_FRAME_MS.swap(now, Ordering::Relaxed);
     if last != 0 && now.saturating_sub(last) > REENTRY_GAP_MS {
         screen.browser().close();
+        let mut picker = screen.picker();
+        picker.close();
+        picker.forget_auto();
     }
     let drawn = guarded(|| {
         let request = unsafe { screen.draw(window) };
@@ -344,10 +350,40 @@ impl Screen {
         self.browser.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn picker(&self) -> std::sync::MutexGuard<'_, Picker> {
+        self.picker.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     unsafe fn draw(&self, window: Rect) -> Option<Request> {
         let k = &self.kit;
         let previous = k.push_skin(unsafe { *self.skin_screen });
         k.space_begin();
+        {
+            let mut picker = self.picker();
+            // A queued replay's map becomes the selected one.
+            if !picker.is_open() && !self.browser().is_open() {
+                let mut browser = self.browser();
+                picker.auto_select(&mut browser, &self.view);
+            }
+            if picker.is_open() {
+                let theme = Theme {
+                    right_frame: unsafe { *self.skin_right },
+                    left_frame: unsafe { *self.skin_left },
+                    text_edit: unsafe { *self.skin_text_edit },
+                    heading_font: unsafe { *self.font_heading },
+                };
+                let mut browser = self.browser();
+                let shown =
+                    unsafe { picker.draw(k, &mut browser, &self.view, window, theme) };
+                k.space_end();
+                k.pop_skin(previous);
+                return shown.map(|(area, path)| Request {
+                    area,
+                    path,
+                    tileset: None,
+                });
+            }
+        }
         {
             let mut browser = self.browser();
             if browser.is_open() {
@@ -437,22 +473,39 @@ impl Screen {
         ));
         if plugin_h > 0.0 {
             let top = b.y + b.h + GAP + ROW_H + GAP;
+            // The plugins' rows use the whole column, not just the picture's width.
             let area = Rect::new(
-                b.x,
+                column.x,
                 top,
-                b.w,
+                column.w,
                 (column.y + column.h - top).max(0.0),
             );
             let widgets = PluginRows::new(k, area);
             crate::session::draw_create_ui(&widgets, &mut GamePicker { screen: self });
         }
-        if k.button_at(
-            Rect::new(b.x, b.y + b.h + GAP, b.w, ROW_H),
-            "Change map",
-            false,
-        ) {
+        // Change map and the replay picker share a row across the whole column, half each; the
+        // picker's label says when a replay is queued, in words when there is room for them.
+        let half = fl((column.w - GAP) * 0.5);
+        let row_y = b.y + b.h + GAP;
+        if k.button_at(Rect::new(column.x, row_y, half, ROW_H), "Change map", false) {
             let selected = self.view.selected_choice();
             self.browser().open(Some(selected));
+        }
+        let queued = crate::replayplay::queued().is_some();
+        // About 36 units a character in this font (2160-high space).
+        let roomy = half >= 15.0 * 36.0;
+        let replay_label = match (queued, roomy) {
+            (false, true) => "Watch a replay",
+            (false, false) => "Replays",
+            (true, true) => "Replay queued",
+            (true, false) => "Replay set",
+        };
+        if k.button_at(
+            Rect::new(column.x + half + GAP, row_y, column.w - half - GAP, ROW_H),
+            replay_label,
+            false,
+        ) {
+            self.picker().open();
         }
         let path = unsafe { str_data(self.selected.add(ENTRY_PATH)) };
         let tileset = tileset_for_key(&unsafe { str_data(self.options[2].current as *const u8) });
