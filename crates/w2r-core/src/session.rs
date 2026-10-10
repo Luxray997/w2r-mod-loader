@@ -215,7 +215,10 @@ pub fn on_match_end() {
 /// if it gave one.
 pub fn on_window(name: Option<&str>) {
     #[cfg(target_arch = "x86")]
-    crate::matchend::note_frame();
+    {
+        crate::matchend::note_frame();
+        crate::replayplay::poll();
+    }
     let now = chat::now_ms();
     ensure_started();
     // Queued messages first, at the top level only: a nested call (a plugin callback made the

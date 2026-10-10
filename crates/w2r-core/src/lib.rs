@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod downloadclient;
 pub mod downloadhost;
 pub mod fingerprint;
+pub mod fogmaps;
 pub mod gamepath;
 pub mod guard;
 pub mod handshake;
@@ -53,6 +54,8 @@ pub mod entry;
 pub mod frame;
 #[cfg(windows)]
 pub mod loader;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod fogtrack;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod lobbycreate;
 #[cfg(all(windows, target_arch = "x86"))]
