@@ -23,7 +23,7 @@
 use core::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -73,6 +73,18 @@ static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// Which watched keys were down on the previous frame.
 static KEYS_DOWN: AtomicU8 = AtomicU8::new(0);
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Let one turn through while paused.
+static STEP: AtomicBool = AtomicBool::new(false);
+/// The recording has run out; the game is held there until the player leaves.
+static ENDED: AtomicBool = AtomicBool::new(false);
+static SPEED: AtomicU8 = AtomicU8::new(NORMAL_SPEED);
+/// The tick deadline as playback left it, to tell how far the game moved it on.
+static LAST_DEADLINE: AtomicU32 = AtomicU32::new(0);
+
+/// Playback speeds, as multiples of the game's own pace.
+const SPEEDS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+const NORMAL_SPEED: u8 = 2;
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static ADDRS: OnceLock<Addrs> = OnceLock::new();
@@ -86,6 +98,7 @@ struct Config {
 }
 
 struct Addrs {
+    deadline: usize,
     display_chat: usize,
     recompute_hidden: usize,
     fog_vis: usize,
@@ -163,7 +176,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
-    let Some(display_chat) = get("DisplayChatOrGameMessage") else {
+    let (Some(display_chat), Some(deadline)) = (get("DisplayChatOrGameMessage"), get("TickDeadline")) else {
         log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
         return false;
     };
@@ -197,6 +210,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         return false;
     };
     let _ = ADDRS.set(Addrs {
+        deadline,
         display_chat,
         recompute_hidden,
         fog_vis,
@@ -482,8 +496,9 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
             REAL.store(local, Ordering::Release);
             log(
                 W2R_LOG_INFO,
-                "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision",
+                "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision;                  Page Up/Down speed, End pause, Delete step",
             );
+            say(a, "Replay: [ ] player, Insert vision, PgUp/PgDn speed, End pause, Del step");
         }
     }
     // SAFETY: a u32 in the game's data section.
@@ -581,8 +596,16 @@ const KEY_PREV: u8 = 1;
 const KEY_NEXT: u8 = 2;
 const KEY_HOME: u8 = 4;
 const KEY_FULL: u8 = 8;
+const KEY_FASTER: u8 = 16;
+const KEY_SLOWER: u8 = 32;
+const KEY_PAUSE: u8 = 64;
+const KEY_STEP: u8 = 128;
 /// `[`, `]`, Home and Insert.
-const WATCHED: [(u8, i32); 4] = [
+const WATCHED: [(u8, i32); 8] = [
+    (KEY_FASTER, 0x21),
+    (KEY_SLOWER, 0x22),
+    (KEY_PAUSE, 0x23),
+    (KEY_STEP, 0x2E),
     (KEY_PREV, 0xDB),
     (KEY_NEXT, 0xDD),
     (KEY_HOME, 0x24),
@@ -831,6 +854,93 @@ fn say(a: &Addrs, text: &str) {
     }
 }
 
+fn change_speed(by: i8) {
+    let now = SPEED.load(Ordering::Acquire) as i8;
+    let to = (now + by).clamp(0, SPEEDS.len() as i8 - 1);
+    SPEED.store(to as u8, Ordering::Release);
+}
+
+fn pace_text() -> String {
+    let speed = SPEEDS[SPEED.load(Ordering::Acquire) as usize];
+    let state = if PAUSED.load(Ordering::Acquire) {
+        "paused"
+    } else {
+        "playing"
+    };
+    let progress = ADDRS.get().and_then(|a| {
+        let total = PLAY.lock().ok()?.as_ref()?.replay.turns.len();
+        // SAFETY: a u32 in the game's data section.
+        let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
+        Some(progress_bar(turn, total))
+    });
+    match progress {
+        Some(p) => format!("Replay {state} {speed}x {p}"),
+        None => format!("Replay {state} {speed}x"),
+    }
+}
+
+/// `[#####-----] 50%`, with the turn it is at.
+fn progress_bar(turn: usize, total: usize) -> String {
+    let total = total.max(1);
+    let turn = turn.min(total);
+    let filled = turn * 20 / total;
+    format!(
+        "[{}{}] {}% (turn {turn}/{total})",
+        "#".repeat(filled),
+        "-".repeat(20 - filled),
+        turn * 100 / total
+    )
+}
+
+/// Called before each network turn: true means the turn is not run yet (paused). Otherwise the
+/// game's tick deadline is moved to run turns faster or slower than its own pace: the game adds
+/// one frame time after every turn, so each turn's share of that is stretched or squeezed here.
+pub fn hold_turn() -> bool {
+    if !is_active() {
+        return false;
+    }
+    if let Some(a) = ADDRS.get() {
+        let total = PLAY
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|p| p.replay.turns.len()));
+        // SAFETY: a u32 in the game's data section.
+        let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
+        if total.is_some_and(|n| turn >= n) {
+            // Nothing left to play: hold here (no live commands run) until the player leaves
+            // through the game menu.
+            if !ENDED.swap(true, Ordering::AcqRel) {
+                say(a, "Replay finished - open the menu to leave");
+            }
+            return true;
+        }
+    }
+    if PAUSED.load(Ordering::Acquire) && !STEP.swap(false, Ordering::AcqRel) {
+        return true;
+    }
+    let _ = guarded(|| {
+        let Some(a) = ADDRS.get() else { return };
+        let speed = SPEEDS[SPEED.load(Ordering::Acquire) as usize];
+        // SAFETY: a u32 in the game's data section, touched on the main thread between ticks.
+        unsafe {
+            let at = a.deadline as *mut u32;
+            let now = core::ptr::read_unaligned(at);
+            let last = LAST_DEADLINE.load(Ordering::Acquire);
+            let step = now.wrapping_sub(last) as i32;
+            // No earlier value, or the game reset its clock: leave this one alone.
+            let moved = if last != 0 && (1..=500).contains(&step) {
+                let shift = step as f32 * (1.0 / speed - 1.0);
+                now.wrapping_add(shift as i32 as u32)
+            } else {
+                now
+            };
+            core::ptr::write_unaligned(at, moved);
+            LAST_DEADLINE.store(moved, Ordering::Release);
+        }
+    });
+    false
+}
+
 fn announce(a: &Addrs) {
     let real = REAL.load(Ordering::Acquire);
     let viewed = VIEWED.load(Ordering::Acquire);
@@ -890,6 +1000,25 @@ fn poll_keys() {
     if pressed == 0 {
         return;
     }
+    if pressed & (KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP) != 0 {
+        if pressed & KEY_FASTER != 0 {
+            change_speed(1);
+        }
+        if pressed & KEY_SLOWER != 0 {
+            change_speed(-1);
+        }
+        if pressed & KEY_PAUSE != 0 {
+            PAUSED.fetch_xor(true, Ordering::AcqRel);
+        }
+        if pressed & KEY_STEP != 0 {
+            PAUSED.store(true, Ordering::Release);
+            STEP.store(true, Ordering::Release);
+        }
+        say(a, &pace_text());
+    }
+    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP) == 0 {
+        return;
+    }
     let list = players(a);
     let current = match VIEWED.load(Ordering::Acquire) {
         v if v < 8 => v,
@@ -934,6 +1063,11 @@ fn reset_view() {
     VIEWED.store(NONE, Ordering::Release);
     FULL_VISION.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
+    PAUSED.store(false, Ordering::Release);
+    STEP.store(false, Ordering::Release);
+    SPEED.store(NORMAL_SPEED, Ordering::Release);
+    ENDED.store(false, Ordering::Release);
+    LAST_DEADLINE.store(0, Ordering::Release);
     restore_view();
     REAL.store(NONE, Ordering::Release);
 }

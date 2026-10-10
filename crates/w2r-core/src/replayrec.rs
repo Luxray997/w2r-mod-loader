@@ -229,6 +229,9 @@ unsafe extern "C" fn detour() -> u32 {
             }
         }
     }
+    if crate::replayplay::hold_turn() {
+        return 0;
+    }
     let done = unsafe { original() };
     if done == 1 && (ARMED.load(Ordering::Acquire) || is_recording()) {
         if let Err(fault) = guarded(capture) {
