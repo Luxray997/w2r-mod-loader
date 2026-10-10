@@ -87,6 +87,12 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         recent: usize,
     },
+    /// Skill ratings worked out from the reports in the outbox (humans only, two teams).
+    Ratings {
+        /// Also rate computer players by name. For trying the maths on single-player games.
+        #[arg(long)]
+        with_computers: bool,
+    },
 }
 
 fn context(cli: &Cli) -> Result<Session, Error> {
@@ -219,6 +225,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
             return Ok(findings.is_empty());
         }
         Cmd::Stats { recent } => return stats(cli, *recent),
+        Cmd::Ratings { with_computers } => return ratings(cli, *with_computers),
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
             let ctx = context(cli)?;
@@ -378,6 +385,43 @@ Latest"
         );
     }
     Ok(loaded.rejected.is_empty())
+}
+
+fn ratings(cli: &Cli, with_computers: bool) -> Result<bool, Error> {
+    use w2r_stats::{history, rating};
+
+    let root = context_root(cli)?;
+    let loaded = history::load(&root.0.join("outbox"));
+    let ladder = rating::ladder(&loaded.matches, with_computers);
+    if ladder.players.is_empty() {
+        println!(
+            "no rated games yet (a rated game is a finished win or loss between two teams of humans)"
+        );
+    } else {
+        let mut rows: Vec<_> = ladder.players.iter().collect();
+        rows.sort_by(|a, b| {
+            b.1.rating
+                .conservative()
+                .total_cmp(&a.1.rating.conservative())
+        });
+        println!(
+            "{:<34} {:>6} {:>6} {:>7} {:>6}",
+            "player", "skill", "mu", "sigma", "games"
+        );
+        for (name, e) in rows {
+            println!(
+                "{name:<34} {:>6.1} {:>6.1} {:>7.2} {:>6}",
+                e.rating.conservative(),
+                e.rating.mu,
+                e.rating.sigma,
+                e.games
+            );
+        }
+    }
+    for (started, why) in &ladder.skipped {
+        println!("not rated: match at {started} ({why})");
+    }
+    Ok(true)
 }
 
 fn main() -> ExitCode {

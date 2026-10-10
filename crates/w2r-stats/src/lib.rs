@@ -7,6 +7,8 @@ pub mod envelope;
 pub mod hex;
 pub mod history;
 pub mod identity;
+pub mod inflight;
 pub mod queue;
+pub mod rating;
 pub mod report;
 pub mod slot;

@@ -14,13 +14,14 @@
 //! only go to the local outbox folder for now; nothing is uploaded.
 
 use core::ffi::c_void;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
 use w2r_stats::identity::{self, Identity};
+use w2r_stats::inflight::{self, Inflight};
 use w2r_stats::queue::Queue;
 use w2r_stats::report::{self, Outcome, Phase, Report, ResultInfo};
 use w2r_stats::slot::{self, Player};
@@ -99,6 +100,7 @@ pub fn note_frame() {
         if let Some(raw) = unsafe { read_raw() } {
             if raw.turns > 0 {
                 report_start(&raw);
+                touch_marker(&raw);
                 if let Ok(mut l) = LAST.lock() {
                     *l = Some(raw);
                 }
@@ -281,6 +283,9 @@ struct Reporter {
     client: String,
     fingerprint: String,
     ctx: Option<MatchCtx>,
+    /// The in-flight marker file (see `w2r_stats::inflight`) and when it was last written.
+    inflight: PathBuf,
+    marker_at: u64,
 }
 
 /// What was true when the match began, kept for its result report.
@@ -290,6 +295,8 @@ struct MatchCtx {
     players: Vec<Player>,
     me: u8,
     setup: [u8; 32],
+    /// The start report that was queued, for the in-flight marker.
+    start: Option<Report>,
 }
 
 fn now_secs() -> u64 {
@@ -350,14 +357,71 @@ pub fn init_reporter(root: &Path, fingerprint: [u8; 4], client: &str, log: &dyn 
             queue.list().len()
         ),
     );
+    let rep = Reporter {
+        identity,
+        queue,
+        client: client.to_string(),
+        fingerprint: hex::encode(&fingerprint),
+        ctx: None,
+        inflight: root.join("inflight.json"),
+        marker_at: 0,
+    };
+    recover_unfinished(&rep, log);
     if let Ok(mut r) = REPORTER.lock() {
-        *r = Some(Reporter {
-            identity,
-            queue,
-            client: client.to_string(),
-            fingerprint: hex::encode(&fingerprint),
-            ctx: None,
-        });
+        *r = Some(rep);
+    }
+}
+
+/// A marker left by an earlier run means that match was cut off (quit from the results screen,
+/// crash): report it as left, at the last turn seen.
+fn recover_unfinished(rep: &Reporter, log: &dyn Log) {
+    let Some(marker) = inflight::read(&rep.inflight) else {
+        return;
+    };
+    let rid = random32().map(|b| {
+        let mut r = [0u8; 8];
+        r.copy_from_slice(&b[..8]);
+        r
+    });
+    match rid.and_then(|rid| inflight::recover(&marker, rid)) {
+        Some(report) => {
+            seal_and_queue(rep, &report);
+            log.line(
+                W2R_LOG_INFO,
+                "stats",
+                &format!("recovered a match cut off at turn {}", marker.turns),
+            );
+        }
+        None => log.line(
+            W2R_LOG_INFO,
+            "stats",
+            "dropped an in-flight marker with no turns",
+        ),
+    }
+    inflight::clear(&rep.inflight);
+}
+
+fn write_marker(rep: &mut Reporter, raw: &Raw) {
+    let Some(start) = rep.ctx.as_ref().and_then(|c| c.start.clone()) else {
+        return;
+    };
+    let marker = Inflight {
+        start,
+        turns: raw.turns,
+        sync_mismatch: raw.mismatch,
+    };
+    let _ = inflight::write(&rep.inflight, &marker);
+    rep.marker_at = now_secs();
+}
+
+/// Called with every frame's tables: keeps the marker's turn count within 30 s of the truth.
+fn touch_marker(raw: &Raw) {
+    let Ok(mut guard) = REPORTER.lock() else {
+        return;
+    };
+    let Some(rep) = guard.as_mut() else { return };
+    if rep.ctx.is_some() && now_secs().saturating_sub(rep.marker_at) >= 30 {
+        write_marker(rep, raw);
     }
 }
 
@@ -411,6 +475,7 @@ fn context(raw: &Raw) -> Option<MatchCtx> {
         map,
         players,
         me: raw.local,
+        start: None,
     })
 }
 
@@ -424,10 +489,13 @@ fn report_start(raw: &Raw) {
         return;
     }
     let Some(ctx) = context(raw) else { return };
+    let mut ctx = ctx;
     if let Some(report) = build(rep, &ctx, Phase::Start, None) {
         seal_and_queue(rep, &report);
+        ctx.start = Some(report);
     }
     rep.ctx = Some(ctx);
+    write_marker(rep, raw);
 }
 
 /// The match ended for this player (or was left): queue the result report.
@@ -441,6 +509,7 @@ fn report_result(raw: &Raw) {
     }
     let code = raw.results[raw.local as usize];
     let Some(outcome) = Outcome::from_code(code, raw.turns) else {
+        inflight::clear(&rep.inflight);
         return;
     };
     let Some(ctx) = rep.ctx.take().or_else(|| context(raw)) else {
@@ -455,4 +524,5 @@ fn report_result(raw: &Raw) {
     if let Some(report) = build(rep, &ctx, Phase::Result, Some(info)) {
         seal_and_queue(rep, &report);
     }
+    inflight::clear(&rep.inflight);
 }
