@@ -29,6 +29,11 @@ const BUTTON_H: f32 = 100.0;
 const ALIGN_TITLE: i32 = 0x12;
 const ALIGN_ROW: i32 = 0x11;
 const WINDOW_NO_SCROLLBAR: u32 = 0x20;
+/// Nuklear's NK_WINDOW_NO_INPUT: the window never takes the mouse from what is under it.
+const WINDOW_NO_INPUT: u32 = 0x400;
+/// Nuklear's NK_WINDOW_BACKGROUND: kept behind every other window, so it never overlaps (and
+/// turns read-only) the game's own screen drawn before it.
+const WINDOW_BACKGROUND: u32 = 0x100;
 const GROUP_PLAIN: u32 = 0;
 /// A group without scrollbars, as the create screen's frames.
 const GROUP_CARD: u32 = 0x20;
@@ -572,7 +577,7 @@ fn draw_version(nk: &Nk) {
             VERSION_Y,
             VERSION_W.min(width),
             VERSION_H * lines.len() as f32,
-            WINDOW_NO_SCROLLBAR,
+            WINDOW_NO_SCROLLBAR | WINDOW_NO_INPUT | WINDOW_BACKGROUND,
         ) != 0
         {
             (nk.space_begin)(ctx, 1, 0.0, 1000);
