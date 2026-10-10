@@ -70,6 +70,17 @@ fn main() {
         println!("  slot {slot}: {n} packets, {bytes} bytes, {actions} non-idle commands");
     }
     println!("opcodes: {ops:02x?}");
+    println!("chat lines: {}", r.chats.len());
+    for c in &r.chats {
+        println!(
+            "  turn {} player {} mode {} ({} ms): {}",
+            c.turn,
+            c.who,
+            c.mode,
+            c.duration_ms,
+            String::from_utf8_lossy(&c.text)
+        );
+    }
     for (t, s, d) in sample_left {
         println!("  unparsed sample turn {t} slot {s}: {d:02x?}");
     }

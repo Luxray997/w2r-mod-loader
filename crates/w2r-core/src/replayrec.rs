@@ -192,6 +192,19 @@ pub fn note_lobby(block: Vec<u8>) {
     }
 }
 
+/// A chat line was shown (see `chatrec.rs`): keep it with the turn that is next to run.
+pub fn note_chat(who: u8, mode: u8, duration_ms: u32, text: &[u8]) {
+    let Some(a) = ADDRS.get() else { return };
+    let Ok(mut guard) = REC.lock() else { return };
+    let Some(rec) = guard.as_mut() else { return };
+    // SAFETY: `NetTurnCounter` is a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) };
+    if rec.writer.chat(turn, who, mode, duration_ms, text).is_err() {
+        log(W2R_LOG_ERROR, "recording stopped: could not write the replay file");
+        *guard = None;
+    }
+}
+
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
     end(None);

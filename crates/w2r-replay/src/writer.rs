@@ -5,7 +5,8 @@
 use std::io::{self, Write};
 
 use crate::format::{
-    Footer, Header, MAGIC, MAX_HEADER, MAX_PACKET, REC_FOOTER, REC_TURN, VERSION, put_varint,
+    Footer, Header, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, REC_CHAT, REC_FOOTER, REC_TURN,
+    VERSION, put_varint,
 };
 
 pub struct Writer<W: Write> {
@@ -61,6 +62,31 @@ impl<W: Write> Writer<W> {
         self.out.write_all(b)?;
         self.last_turn = Some(turn);
         Ok(())
+    }
+
+    /// One chat line that was shown on screen while `turn` was the next to run: who it is from
+    /// (a player index), the target mode (all, allies, ...), how long it stays, and its text.
+    /// Chat is not part of the turn packets (the game sends it straight between machines), so it
+    /// is kept in its own records. Text over 255 bytes is cut.
+    pub fn chat(
+        &mut self,
+        turn: u32,
+        who: u8,
+        mode: u8,
+        duration_ms: u32,
+        text: &[u8],
+    ) -> io::Result<()> {
+        let text = &text[..text.len().min(MAX_CHAT)];
+        let b = &mut self.scratch;
+        b.clear();
+        b.push(REC_CHAT);
+        put_varint(b, u64::from(turn));
+        b.push(who);
+        b.push(mode);
+        put_varint(b, u64::from(duration_ms));
+        put_varint(b, text.len() as u64);
+        b.extend_from_slice(text);
+        self.out.write_all(b)
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
@@ -169,6 +195,33 @@ mod tests {
         raw[6..10].copy_from_slice(&len.to_le_bytes());
         raw.remove(10 + len as usize);
         assert!(Replay::parse(&raw).unwrap().header.lobby.is_empty());
+    }
+
+    #[test]
+    fn chat_lines_round_trip_between_turns_and_survive_a_cut() {
+        let mut w = Writer::new(Vec::new(), &header()).unwrap();
+        w.turn(0, &[(0, &[5])]).unwrap();
+        w.chat(1, 0, 2, 40, b"hello team").unwrap();
+        w.turn(1, &[(0, &[5])]).unwrap();
+        w.chat(2, 3, 0, 0, &[b'x'; 400]).unwrap();
+        let full = w.out.clone();
+        let r = Replay::parse(&full).unwrap();
+        assert_eq!(r.turns.len(), 2);
+        assert_eq!(r.chats.len(), 2);
+        assert_eq!(
+            r.chats[0],
+            crate::Chat {
+                turn: 1,
+                who: 0,
+                mode: 2,
+                duration_ms: 40,
+                text: b"hello team".to_vec()
+            }
+        );
+        assert_eq!(r.chats[1].text.len(), 255, "long text is cut");
+        // a cut inside the last chat keeps everything before it
+        let r = Replay::parse(&full[..full.len() - 3]).unwrap();
+        assert_eq!((r.turns.len(), r.chats.len()), (2, 1));
     }
 
     #[test]

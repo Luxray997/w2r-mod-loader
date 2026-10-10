@@ -47,6 +47,7 @@ pub const MARKER: &str = "replay-play.txt";
 type StartFn = unsafe extern "C" fn(i32, *mut c_void, i32) -> u32;
 type SeedFn = unsafe extern "C" fn(u32);
 type VoidFn = unsafe extern "C" fn();
+type DisplayChatFn = unsafe extern "C" fn(*const u8, u8, u32, i8);
 type SimModeFn = unsafe extern "C" fn(u32) -> u32;
 type PushFn = unsafe extern "C" fn(*const u8, i32, u32);
 type GatherFn = unsafe extern "C" fn(i32, i32, *mut u32, *mut u32, *mut u32) -> u32;
@@ -85,6 +86,7 @@ struct Config {
 }
 
 struct Addrs {
+    display_chat: usize,
     recompute_hidden: usize,
     fog_vis: usize,
     fog_explored: usize,
@@ -110,6 +112,8 @@ struct Play {
     /// Owns the packet bytes the game reads for the current turn.
     bufs: [Vec<u8>; 8],
     checked_rng: bool,
+    /// The next recorded chat line to show.
+    next_chat: usize,
 }
 
 fn log(level: u32, text: &str) {
@@ -159,6 +163,10 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
+    let Some(display_chat) = get("DisplayChatOrGameMessage") else {
+        log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
+        return false;
+    };
     let (Some(recompute_hidden), Some(fog_vis)) = (get("RecomputeHidden"), get("FogVisibilityPtr"))
     else {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
@@ -189,6 +197,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         return false;
     };
     let _ = ADDRS.set(Addrs {
+        display_chat,
         recompute_hidden,
         fog_vis,
         fog_explored,
@@ -362,6 +371,7 @@ fn arm(a: &Addrs, live: Vec<u8>) {
                     name,
                     bufs: Default::default(),
                     checked_rng: false,
+                    next_chat: 0,
                 });
             }
             crate::fogmaps::arm();
@@ -534,8 +544,34 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
             }
         }
     }
+    // Chat is not in the packets (the game sends it between machines): the lines recorded for
+    // this turn or earlier are shown now, by the game's own display function.
+    let mut due: Vec<w2r_replay::Chat> = Vec::new();
+    while let Some(c) = play.replay.chats.get(play.next_chat) {
+        if c.turn > turn {
+            break;
+        }
+        due.push(c.clone());
+        play.next_chat += 1;
+    }
     if turn % 2000 == 0 {
         log(W2R_LOG_INFO, &format!("playing turn {turn}"));
+    }
+    drop(guard);
+    for c in &due {
+        show_chat(a, c);
+    }
+}
+
+/// Shows a recorded chat line as the game itself would have (the chat plugin's hook sees it too).
+fn show_chat(a: &Addrs, chat: &w2r_replay::Chat) {
+    let mut text = chat.text.clone();
+    text.push(0);
+    // SAFETY: `DisplayChatOrGameMessage` takes a NUL-terminated line, a player, a duration and a
+    // mode; called on the main thread outside the simulation.
+    unsafe {
+        let display: DisplayChatFn = core::mem::transmute(a.display_chat);
+        display(text.as_ptr(), chat.who, chat.duration_ms, chat.mode as i8);
     }
 }
 

@@ -942,6 +942,8 @@ fn start() -> Session {
         crate::replayrec::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::replayplay::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::chatrec::install(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {

@@ -4,8 +4,8 @@
 use w2r_stats::slot::{self, SLOT_LEN, SLOTS};
 
 use crate::format::{
-    Footer, Header, LOBBY_LEN, MAGIC, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN, OWNER_LEN,
-    REC_FOOTER, REC_TURN, VERSION,
+    Footer, Header, LOBBY_LEN, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN,
+    OWNER_LEN, REC_CHAT, REC_FOOTER, REC_TURN, VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,10 +14,23 @@ pub struct Turn {
     pub packets: Vec<(u8, Vec<u8>)>,
 }
 
+/// One chat line that was shown on screen (see `Writer::chat`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chat {
+    /// The turn that was next to run when the line appeared.
+    pub turn: u32,
+    pub who: u8,
+    pub mode: u8,
+    pub duration_ms: u32,
+    pub text: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replay {
     pub header: Header,
     pub turns: Vec<Turn>,
+    /// Chat lines in the order they appeared.
+    pub chats: Vec<Chat>,
     /// The last footer: present once the match produced a result or the recording was closed.
     pub footer: Option<Footer>,
 }
@@ -119,6 +132,21 @@ fn header(raw: &[u8]) -> Option<Header> {
     })
 }
 
+/// One chat record after its tag byte; `None` if it is cut off or invalid.
+fn chat_record(r: &mut Cur) -> Option<Chat> {
+    let turn = u32::try_from(r.varint()?).ok()?;
+    let (who, mode) = (r.u8()?, r.u8()?);
+    let duration_ms = u32::try_from(r.varint()?).ok()?;
+    let n = r.len(MAX_CHAT)?;
+    Some(Chat {
+        turn,
+        who,
+        mode,
+        duration_ms,
+        text: r.take(n)?.to_vec(),
+    })
+}
+
 /// One turn record after its tag byte; `None` if it is cut off or invalid.
 fn turn_record(r: &mut Cur, after: Option<u32>) -> Option<Turn> {
     let turn = u32::try_from(r.varint()?).ok()?;
@@ -158,6 +186,7 @@ impl Replay {
         let header = header(c.take(len).ok_or(Error::BadHeader)?).ok_or(Error::BadHeader)?;
         let mut turns: Vec<Turn> = Vec::new();
         let mut footer = None;
+        let mut chats: Vec<Chat> = Vec::new();
         // Each record is read from a copy of the cursor, so a cut-off one is dropped whole.
         loop {
             let mut r = c;
@@ -178,6 +207,10 @@ impl Replay {
                         sync_mismatch: m,
                     });
                 }
+                Some(REC_CHAT) => match chat_record(&mut r) {
+                    Some(chat) => chats.push(chat),
+                    None => break,
+                },
                 _ => break,
             }
             c = r;
@@ -185,6 +218,7 @@ impl Replay {
         Ok(Replay {
             header,
             turns,
+            chats,
             footer,
         })
     }
