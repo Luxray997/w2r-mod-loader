@@ -431,7 +431,7 @@ impl Screen {
             previewdraw::draw(&self.preview, k, &r);
         }
 
-        unsafe { self.draw_marks(&slots, &downloads) };
+        unsafe { self.draw_marks(window, &slots, &downloads) };
 
         // The game's own popups (kicked, host left, ...) belong to this window.
         let previous = k.push_skin(unsafe { *self.skin_popup });
@@ -613,15 +613,18 @@ impl Screen {
         }
     }
 
-    /// The crown beside the host, a green dot beside players running the mod, and, when starting
+    /// The crown beside the host, a dot beside players running the mod (green when their
+    /// simulation plugins match ours, amber when not; hovering it says which), and, when starting
     /// locations are fixed, a colour swatch per slot: drawn on the window's canvas over the rows.
-    unsafe fn draw_marks(&self, rects: &SlotRects, dl: &LobbyDownloads) {
+    unsafe fn draw_marks(&self, window: Rect, rects: &SlotRects, dl: &LobbyDownloads) {
         let k = &self.kit;
         let gutters = &rects.gutter;
         let clock = k.clock_ms().max(0) as u64;
         let present: [bool; SLOT_COUNT] = core::array::from_fn(|i| self.slot_present(i));
         let names: [String; SLOT_COUNT] = core::array::from_fn(|i| unsafe { self.slot_name(i) });
-        let (seat0, mods) = crate::session::lobby_roles();
+        let (seat0, mods, versions) = crate::session::lobby_roles();
+        let mouse = k.mouse();
+        let mut tip = None;
         let host_name = unsafe { str_data_c(self.host_name) };
         let host = geo::host_slot(seat0, &present, &names, &host_name);
         let fixed = unsafe { *self.fixed_start } == 1;
@@ -660,6 +663,10 @@ impl Screen {
                 let ring = geo::MOD_BADGE_RING_WIDTH;
                 let inner = Rect::new(b.x + ring, b.y + ring, b.w - ring * 2.0, b.h - ring * 2.0);
                 k.fill_round(inner, inner.w * 0.5, colour);
+                let reach = Rect::new(b.x - 4.0, b.y - 4.0, b.w + 8.0, b.h + 8.0);
+                if geo::contains(reach, mouse) {
+                    tip = geo::mod_tip(mods[i], &versions[i]);
+                }
             }
             if dl.bars[i] != geo::BarKind::None
                 && let Some(track) = geo::bar_track(rects.name[i])
@@ -672,6 +679,9 @@ impl Screen {
             if fixed {
                 k.fill_rect(geo::swatch_rect(*g, marks), geo::TEAM_COLOURS[i]);
             }
+        }
+        if let Some(text) = tip {
+            self.draw_tip(window, mouse, &text);
         }
     }
 
@@ -741,10 +751,15 @@ impl Screen {
         if names.is_empty() {
             return;
         }
-        let text = geo::pending_text(&names);
+        self.draw_tip(window, mouse, &geo::pending_text(&names));
+    }
+
+    /// A framed tooltip with `text` up and to the right of `mouse`.
+    fn draw_tip(&self, window: Rect, mouse: (f32, f32), text: &str) {
+        let k = &self.kit;
         let (pad, border) = (26.0, 4.0);
         let w = 1100.0f32.min(window.w);
-        let lines = k.count_lines(&text, w - pad * 2.0).max(1);
+        let lines = k.count_lines(text, w - pad * 2.0).max(1);
         let h = lines as f32 * k.font_height() + pad * 2.0;
         let (x, y) = geo::tooltip_origin(mouse, (w, h), window);
         k.fill_round(Rect::new(x, y, w, h), 6.0, geo::pack(120, 96, 48, 255));
@@ -754,7 +769,7 @@ impl Screen {
             geo::pack(12, 10, 8, 244),
         );
         k.set_rect(Rect::new(x + pad, y + pad, w - pad * 2.0, h - pad * 2.0));
-        k.wrapped_label(&text, geo::pack(255, 255, 255, 255));
+        k.wrapped_label(text, geo::pack(255, 255, 255, 255));
     }
 
     fn players_heading(&self) -> String {

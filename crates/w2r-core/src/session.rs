@@ -852,25 +852,36 @@ pub fn enhanced_lobby_screen() -> bool {
 
 /// For the lobby screen's marks: the lobby seat of the host (net slot 0), and which lobby seats
 /// hold a player running the mod (announced in the handshake, or ourselves). Empty off a lobby.
-pub fn lobby_roles() -> (Option<u8>, [ModMark; 8]) {
+/// The third value is the version text each such player announced (ours for ourselves).
+pub fn lobby_roles() -> (Option<u8>, [ModMark; 8], [String; 8]) {
     SESSION.with(|cell| {
+        let none = || (None, [ModMark::None; 8], Default::default());
         let Ok(slot) = cell.try_borrow() else {
-            return (None, [ModMark::None; 8]);
+            return none();
         };
         let Some(s) = slot.as_ref() else {
-            return (None, [ModMark::None; 8]);
+            return none();
         };
         let (Some(table), Ok(h)) = (s.net.transport.lobby_slots(), s.net.handshake.try_borrow())
         else {
-            return (None, [ModMark::None; 8]);
+            return none();
         };
         if !h.in_lobby() {
-            return (table[0], [ModMark::None; 8]);
+            return (table[0], [ModMark::None; 8], Default::default());
         }
-        (
-            table[0],
-            lobbylayout::mod_slots(&table, |n| h.peer_matches(n), h.self_slot()),
-        )
+        let marks = lobbylayout::mod_slots(&table, |n| h.peer_matches(n), h.self_slot());
+        let mut versions: [String; 8] = Default::default();
+        for (net, lobby) in table.iter().enumerate() {
+            let Some(l) = lobby.filter(|&l| (l as usize) < 8) else {
+                continue;
+            };
+            versions[l as usize] = if h.self_slot() == Some(net as u32) {
+                handshake::VERSION_TEXT.to_owned()
+            } else {
+                h.peer(net as u32).map(|p| p.version.clone()).unwrap_or_default()
+            };
+        }
+        (table[0], marks, versions)
     })
 }
 

@@ -577,6 +577,22 @@ pub fn pending_text(names: &[String]) -> String {
     format!("Pending map download from: {list}")
 }
 
+/// The tooltip over a seat's mod dot: the announced version and whether the simulation plugins
+/// match. `None` for a seat without a dot.
+pub fn mod_tip(mark: ModMark, version: &str) -> Option<String> {
+    let version = match clean_text(version) {
+        v if v.is_empty() => "w2rpm".to_owned(),
+        v => v,
+    };
+    match mark {
+        ModMark::None => None,
+        ModMark::Match => Some(format!("Runs {version}. Same simulation plugins as yours.")),
+        ModMark::Differs => Some(format!(
+            "Runs {version}. Different simulation plugins from yours: the game may desync."
+        )),
+    }
+}
+
 /// Where a tooltip of `size` goes for a mouse at `(mx, my)` inside `window`: up and to the right
 /// of the cursor, pulled back inside the window.
 pub fn tooltip_origin(mouse: (f32, f32), size: (f32, f32), window: Rect) -> (f32, f32) {
@@ -1097,6 +1113,15 @@ mod tests {
         assert_eq!(size, "2 KB");
         assert_eq!(left, "15 seconds remaining");
         assert_eq!(ask_texts("m", 0, 0).1, "0 KB");
+    }
+
+    #[test]
+    fn the_mod_dot_tooltip_names_the_version_and_the_match() {
+        assert_eq!(mod_tip(ModMark::None, "w2rpm 0.1.0"), None);
+        let same = mod_tip(ModMark::Match, "w2rpm 0.1.0").unwrap();
+        assert!(same.contains("w2rpm 0.1.0") && same.contains("Same"));
+        let differs = mod_tip(ModMark::Differs, "").unwrap();
+        assert!(differs.starts_with("Runs w2rpm.") && differs.contains("Different"));
     }
 
     #[test]
