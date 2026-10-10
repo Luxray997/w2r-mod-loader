@@ -65,6 +65,9 @@ pub struct Header {
     /// `LOBBY_LEN` bytes captured when `StartGame` was entered, or empty (older recordings, which
     /// cannot be played back).
     pub lobby: Vec<u8>,
+    /// SHA-256 of the map file the match was played on, or `None` if it could not be found when
+    /// recording began (older recordings). Written only when present, after the lobby block.
+    pub map_sha: Option<[u8; 32]>,
 }
 
 impl Header {
@@ -134,6 +137,10 @@ impl Header {
         let lobby = &self.lobby[..self.lobby.len().min(LOBBY_LEN)];
         put_varint(&mut o, lobby.len() as u64);
         o.extend_from_slice(lobby);
+        if let Some(sha) = &self.map_sha {
+            put_varint(&mut o, sha.len() as u64);
+            o.extend_from_slice(sha);
+        }
         o
     }
 }

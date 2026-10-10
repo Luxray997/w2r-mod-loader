@@ -549,6 +549,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             lobby_screen: session.config.enhanced_lobby_screen,
             map_sharing: session.config.map_sharing,
             auto_download: session.config.auto_download,
+            record_replays: session.config.record_replays,
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -628,6 +629,26 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 }
                 if let Ok(mut h) = session.net.handshake.try_borrow_mut() {
                     h.set_map_sharing(host.map_sharing);
+                }
+            }
+            Action::ToggleRecording => {
+                session.config.record_replays = host.record_replays;
+                #[cfg(target_arch = "x86")]
+                crate::replayrec::set_enabled(host.record_replays);
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "record_replays {}",
+                            if host.record_replays { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
                 }
             }
             Action::ToggleLobbyScreen => {
@@ -995,6 +1016,7 @@ fn start() -> Session {
             crate::handshake::VERSION_TEXT,
             &*host_log,
         );
+        crate::replayrec::set_enabled(config.record_replays);
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
     let authors = plugins::authors(&startup.root, &loaded.state);

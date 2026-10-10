@@ -14,7 +14,13 @@ use w2r_abi::{W2rStr, W2rUi};
 pub const MAX_TEXT: usize = 128;
 /// Row height in the game's UI space (2160 high), the options screen's value.
 pub const ROW_H: f32 = 90.0;
-pub const HEADING_H: f32 = 120.0;
+pub const HEADING_H: f32 = 160.0;
+/// The gap the plugin screen puts between rows (set on the game's layout context).
+pub const ROW_GAP: f32 = 24.0;
+/// What a plugin's card needs beyond its rows: the frame's own padding, top and bottom.
+pub const CARD_PAD: f32 = 20.0;
+/// The empty row at the top of a card, under the frame's border.
+pub const CARD_TOP_H: f32 = 70.0;
 /// An edit row. The game's edit box pads its text, and the plugin screen's font is 80 high, so a
 /// 90-high row clips the text away and leaves only the caret (seen in game).
 pub const EDIT_ROW_H: f32 = 150.0;
@@ -36,6 +42,53 @@ pub trait Widgets {
     /// Greys out everything until `disable_end`.
     fn disable_begin(&self) {}
     fn disable_end(&self) {}
+    /// Starts a framed card `height` tall (its own row) for the plugin at `key`; false when it
+    /// is not shown (scrolled out of view), in which case nothing is drawn or ended.
+    fn card_begin(&self, _key: usize, _height: f32) -> bool {
+        true
+    }
+    fn card_end(&self) {}
+}
+
+/// Forwards to `inner` and adds up the height of the rows drawn through it, so a card can be
+/// sized to its content (the frame needs its height before the content is drawn).
+struct Measured<'a> {
+    inner: &'a dyn Widgets,
+    height: Cell<f32>,
+}
+
+impl Widgets for Measured<'_> {
+    fn row(&self, height: f32, cols: i32) {
+        self.height.set(self.height.get() + height + ROW_GAP);
+        self.inner.row(height, cols);
+    }
+    fn label(&self, text: &str) {
+        self.inner.label(text);
+    }
+    fn button(&self, text: &str) -> bool {
+        self.inner.button(text)
+    }
+    fn checkbox(&self, text: &str, value: &mut bool) -> bool {
+        self.inner.checkbox(text, value)
+    }
+    fn slider(&self, text: &str, value: &mut i32, min: i32, max: i32) -> bool {
+        self.inner.slider(text, value, min, max)
+    }
+    fn text_edit(&self, text: &str, buf: &mut [u8]) -> bool {
+        self.inner.text_edit(text, buf)
+    }
+    fn disable_begin(&self) {
+        self.inner.disable_begin();
+    }
+    fn disable_end(&self) {
+        self.inner.disable_end();
+    }
+}
+
+thread_local! {
+    /// Each plugin card's height as last measured, by plugin id (the first frame guesses).
+    static CARD_HEIGHTS: std::cell::RefCell<std::collections::HashMap<String, f32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// What a plugin's `on_ui` call sees behind `W2rUi.ctx`.
@@ -264,6 +317,8 @@ pub struct HostRow {
     /// `map_sharing` and `auto_download` (`host.json`); sharing takes effect at once.
     pub map_sharing: bool,
     pub auto_download: bool,
+    /// `record_replays` (`host.json`); takes effect from the next match.
+    pub record_replays: bool,
     /// The handshake's current lobby warnings, if any.
     pub lobby: Vec<String>,
 }
@@ -275,6 +330,7 @@ pub const CREATE_SCREEN_LABEL: &str = "Use the w2rpm Create Multiplayer Game scr
 pub const LOBBY_SCREEN_LABEL: &str = "Use the w2rpm multiplayer lobby screen";
 pub const MAP_SHARING_LABEL: &str = "Share maps with other players (send and receive)";
 pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
+pub const RECORD_REPLAYS_LABEL: &str = "Save a replay of each game I play";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -292,6 +348,8 @@ pub enum Action {
     ToggleLobbyScreen,
     /// The user flipped `map_sharing` or `auto_download`.
     ToggleMapSharing,
+    /// The user flipped `record_replays`.
+    ToggleRecording,
 }
 
 /// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
@@ -357,6 +415,12 @@ pub fn draw_plugin_screen(
         host.auto_download = auto_download;
         action = Action::ToggleMapSharing;
     }
+    w.row(ROW_H, 1);
+    let mut record_replays = host.record_replays;
+    if w.checkbox(RECORD_REPLAYS_LABEL, &mut record_replays) {
+        host.record_replays = record_replays;
+        action = Action::ToggleRecording;
+    }
     for line in &host.lobby {
         w.row(ROW_H, 1);
         w.label(&format!("Lobby: {line}"));
@@ -368,29 +432,42 @@ pub fn draw_plugin_screen(
         w.label("No plugins installed. Use the w2rpm manager to add some.");
     }
     for (i, row) in rows.iter_mut().enumerate() {
-        w.row(ROW_H, 2);
-        w.label(&format!("{} {}", row.id, row.version));
+        // Each plugin sits in its own framed card, sized from the last frame's measurement.
+        let guess = 6.0 * (ROW_H + ROW_GAP) + CARD_PAD;
+        let height = CARD_HEIGHTS.with(|h| h.borrow().get(&row.id).copied().unwrap_or(guess));
+        if !w.card_begin(i, height) {
+            continue;
+        }
+        let m = Measured {
+            inner: w,
+            height: Cell::new(CARD_TOP_H + ROW_GAP),
+        };
+        m.row(ROW_H, 2);
+        m.label(&format!("{} {}", row.id, row.version));
         let mut enabled = row.enabled;
-        if w.checkbox("Enabled (next launch)", &mut enabled) {
+        if m.checkbox("Enabled (next launch)", &mut enabled) {
             row.enabled = enabled;
             action = Action::Toggle(i);
         }
-        w.row(ROW_H, 1);
-        w.label(&format!(
+        m.row(ROW_H, 1);
+        m.label(&format!(
             "Author: {}",
             row.author.as_deref().unwrap_or("unknown")
         ));
-        w.row(ROW_H, 1);
+        m.row(ROW_H, 1);
         let status = match &row.status {
             Status::Active if row.slow => "Status: running (slow callbacks)".to_owned(),
             Status::Active => "Status: running".to_owned(),
             Status::Disabled(reason) => format!("Status: disabled, {reason}"),
             Status::NotLoaded => "Status: not loaded this session (w2r.log says why)".to_owned(),
         };
-        w.label(&status);
+        m.label(&status);
         if row.status == Status::Active {
-            draw_section(w, i);
+            draw_section(&m, i);
         }
+        w.card_end();
+        let needed = m.height.get() + CARD_PAD;
+        CARD_HEIGHTS.with(|h| h.borrow_mut().insert(row.id.clone(), needed));
     }
     w.row(HEADING_H, 1);
     if w.button("Back") {
@@ -606,6 +683,7 @@ mod tests {
             lobby_screen: false,
             map_sharing: false,
             auto_download: false,
+            record_replays: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
@@ -628,11 +706,12 @@ mod tests {
         assert_eq!(calls[13], format!("checkbox {LOBBY_SCREEN_LABEL:?} false"));
         assert_eq!(calls[15], format!("checkbox {MAP_SHARING_LABEL:?} false"));
         assert_eq!(calls[17], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
+        assert_eq!(calls[19], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
         assert_eq!(
-            calls[19],
+            calls[21],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[21], "label \"Plugins (3)\"");
+        assert_eq!(calls[23], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -660,6 +739,7 @@ mod tests {
             lobby_screen: false,
             map_sharing: false,
             auto_download: false,
+            record_replays: false,
             lobby: Vec::new(),
         };
         assert_eq!(
@@ -719,6 +799,15 @@ mod tests {
             Action::ToggleMapSharing
         );
         assert!(host.auto_download && !host.map_sharing);
+
+        // And the recording switch.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(RECORD_REPLAYS_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleRecording
+        );
+        assert!(host.record_replays);
     }
 
     #[test]

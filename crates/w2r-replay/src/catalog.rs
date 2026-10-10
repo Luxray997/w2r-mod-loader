@@ -42,6 +42,8 @@ pub struct Entry {
     pub fingerprint: [u8; 4],
     /// Recorded with a start state (older recordings have none and cannot be played).
     pub has_start_state: bool,
+    /// SHA-256 of the map the game was played on, when it was recorded.
+    pub map_sha: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +102,7 @@ pub fn entry_from_bytes(file: &str, raw: &[u8]) -> Option<Entry> {
         outcome,
         fingerprint: r.header.fingerprint,
         has_start_state: !r.header.lobby.is_empty(),
+        map_sha: r.header.map_sha,
     })
 }
 
@@ -148,6 +151,7 @@ mod tests {
             } else {
                 Vec::new()
             },
+            map_sha: Some([5; 32]),
         }
     }
 
@@ -186,6 +190,7 @@ mod tests {
         assert_eq!(cut.turns, 2);
         assert_eq!(cut.map, "Map.pud");
         assert!(cut.has_start_state);
+        assert_eq!(cut.map_sha, Some([5; 32]));
     }
 
     #[test]

@@ -17,6 +17,17 @@ const LIST_FRACTION: f32 = 0.56;
 /// The newest this many recordings are listed.
 const LIST_LIMIT: usize = 200;
 
+/// Whether the installed map is the one a recording was played on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MapCheck {
+    /// Same bytes as when it was recorded.
+    Same,
+    /// A file of that name, but different bytes: the replay would desync.
+    Differs,
+    /// Nothing to compare (the recording has no hash, or the file cannot be read).
+    Unknown,
+}
+
 #[derive(Default)]
 pub struct Picker {
     open: bool,
@@ -28,6 +39,9 @@ pub struct Picker {
     auto_for: Option<String>,
     /// The map file of the queued recording, once read.
     auto_map: Option<String>,
+    /// The last map comparison, for the recording and map file it was made for (hashing reads
+    /// the whole file, so it is done once, not every frame).
+    checked: Option<(String, String, MapCheck)>,
 }
 
 impl Picker {
@@ -110,6 +124,26 @@ impl Picker {
             );
         }
         self.auto_for = Some(file);
+    }
+
+    /// Compares the installed map file with the hash the recording was made with.
+    fn check_map(&mut self, entry: &Entry, path: &str) -> MapCheck {
+        if let Some((file, p, check)) = &self.checked
+            && *file == entry.file
+            && p == path
+        {
+            return *check;
+        }
+        let check = match (
+            entry.map_sha,
+            crate::mapindex::hash_file(std::path::Path::new(path)),
+        ) {
+            (Some(want), Some(have)) if want == have => MapCheck::Same,
+            (Some(_), Some(_)) => MapCheck::Differs,
+            _ => MapCheck::Unknown,
+        };
+        self.checked = Some((entry.file.clone(), path.to_owned(), check));
+        check
     }
 
     fn entry(&self) -> Option<&Entry> {
@@ -268,6 +302,10 @@ impl Picker {
         let dw = right_w - FRAME_PAD * 2.0;
         let entry = self.entry().cloned();
         let found = entry.as_ref().and_then(|e| find_map(browser, e).cloned());
+        let check = match (&entry, &found) {
+            (Some(e), Some(m)) => self.check_map(e, &m.path),
+            _ => MapCheck::Unknown,
+        };
         let mut preview = None;
         if let Some(e) = &entry {
             k.heading_at(
@@ -285,7 +323,11 @@ impl Picker {
             line(&e.versus());
             line(&format!("{}, {} turns", e.outcome.text(), e.turns));
             let map_state = if found.is_some() {
-                "Map found"
+                match check {
+                    MapCheck::Same => "Map found, verified",
+                    MapCheck::Differs => "Map differs from recording",
+                    MapCheck::Unknown => "Map found",
+                }
             } else if browser.index_ready() {
                 "This map is not installed"
             } else {
@@ -313,7 +355,9 @@ impl Picker {
             browser.cancel_walk();
             self.open = false;
         }
-        let can_watch = entry.as_ref().is_some_and(|e| problem(e).is_none()) && found.is_some();
+        let can_watch = entry.as_ref().is_some_and(|e| problem(e).is_none())
+            && found.is_some()
+            && check != MapCheck::Differs;
         if k.button_at(
             Rect::new(right_x + half + GAP, buttons_y, right_w - half - GAP, ROW_H),
             "Watch",

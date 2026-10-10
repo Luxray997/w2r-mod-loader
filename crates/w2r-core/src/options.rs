@@ -30,10 +30,40 @@ const ALIGN_TITLE: i32 = 0x12;
 const ALIGN_ROW: i32 = 0x11;
 const WINDOW_NO_SCROLLBAR: u32 = 0x20;
 const GROUP_PLAIN: u32 = 0;
+/// A group without scrollbars, as the create screen's frames.
+const GROUP_CARD: u32 = 0x20;
 /// The edit box's flags and the row spacing offset in the game's Nuklear context, as the other
 /// screens use them (`screenkit.rs`, wc2r-plus `struct_offsets.h`).
 const TEXT_EDIT_FLAGS: u32 = 0x260;
 const CTX_SPACING_Y: usize = 0x2004;
+/// The plugin screen's breathing room: a left margin (a fraction of the row, taken by an empty
+/// first cell) and the gap between rows (the context's item spacing, in UI units).
+const ROW_INSET: f32 = 0.02;
+const CARD_INSET: f32 = 0.05;
+const ROW_GAP: f32 = crate::ui::ROW_GAP;
+
+/// Column ratios for rows of 1 to 8 widgets after the margin cell. The game's layout keeps the
+/// pointer it is given and reads it as each widget of the row is placed, so these must outlive
+/// the call (a stack array was freed by then and the next widget faulted).
+const fn ratio_table(inset: f32) -> [[f32; 10]; 8] {
+    let mut table = [[0.0; 10]; 8];
+    let mut i = 0;
+    while i < 8 {
+        let cols = i + 1;
+        table[i][0] = inset;
+        let mut c = 1;
+        while c <= cols {
+            table[i][c] = (1.0 - 2.0 * inset) / cols as f32;
+            c += 1;
+        }
+        table[i][cols + 1] = inset;
+        i += 1;
+    }
+    table
+}
+static ROW_RATIOS: [[f32; 10]; 8] = ratio_table(ROW_INSET);
+/// Inside a plugin card the frame's border is drawn over the content, so the margin is wider.
+static CARD_RATIOS: [[f32; 10]; 8] = ratio_table(CARD_INSET);
 /// After this long without the options screen being built, the next build is a fresh entry.
 const REENTRY_GAP_MS: u64 = 250;
 
@@ -46,6 +76,7 @@ type RectFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32);
 type SpaceBeginFn = unsafe extern "C" fn(*mut c_void, i32, f32, i32);
 type BeginGroupFn = unsafe extern "C" fn(*mut c_void, *const c_char, u32) -> i32;
 type RowFn = unsafe extern "C" fn(*mut c_void, f32, i32);
+type RowRatiosFn = unsafe extern "C" fn(*mut c_void, i32, f32, i32, *const f32);
 type LabelFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32);
 type MenuButtonFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i8;
 type CheckboxFn = unsafe extern "C" fn(*const c_char, *mut u32, u32) -> u8;
@@ -67,6 +98,8 @@ pub struct Nk {
     begin_group: BeginGroupFn,
     end_group: CtxFn,
     row: RowFn,
+    row_ratios: RowRatiosFn,
+    spacing: CtxFn,
     label: LabelFn,
     button: MenuButtonFn,
     checkbox: CheckboxFn,
@@ -82,6 +115,7 @@ pub struct Nk {
     skin_window_alt: *const u32,
     skin_alt_flag: *const u8,
     skin_content: *const u32,
+    skin_card: *const u32,
 }
 
 macro_rules! sym {
@@ -103,6 +137,8 @@ impl Nk {
             begin_group: sym!(symbols, "BeginNamedGroup", BeginGroupFn),
             end_group: sym!(symbols, "EndGroup", CtxFn),
             row: sym!(symbols, "LayoutRowDynamic", RowFn),
+            row_ratios: sym!(symbols, "LayoutRowRatios", RowRatiosFn),
+            spacing: sym!(symbols, "Spacing", CtxFn),
             label: sym!(symbols, "DrawLabel", LabelFn),
             button: sym!(symbols, "DrawMenuButton", MenuButtonFn),
             checkbox: sym!(symbols, "FlagCheckbox", CheckboxFn),
@@ -118,6 +154,7 @@ impl Nk {
             skin_window_alt: symbols.address("SkinWindowAlt")? as *const u32,
             skin_alt_flag: symbols.address("SkinAltFlag")? as *const u8,
             skin_content: symbols.address("SkinContentPanel")? as *const u32,
+            skin_card: symbols.address("SkinLobbyCreationLeft")? as *const u32,
         })
     }
 
@@ -154,6 +191,8 @@ fn cstr(text: &str) -> Vec<u8> {
 pub struct GameWidgets<'a> {
     nk: &'a Nk,
     ctx: *mut c_void,
+    /// Inside a plugin card (wider margins).
+    in_card: Cell<bool>,
 }
 
 impl<'a> GameWidgets<'a> {
@@ -170,8 +209,21 @@ impl<'a> GameWidgets<'a> {
 
 impl Widgets for GameWidgets<'_> {
     fn row(&self, height: f32, cols: i32) {
-        Self::call("LayoutRowDynamic", || unsafe {
-            (self.nk.row)(self.ctx, height, cols)
+        if !(1..=8).contains(&cols) {
+            return Self::call("LayoutRowDynamic", || unsafe {
+                (self.nk.row)(self.ctx, height, cols)
+            });
+        }
+        // An empty first cell is the left margin; the widgets share the rest.
+        let table = if self.in_card.get() {
+            &CARD_RATIOS
+        } else {
+            &ROW_RATIOS
+        };
+        let ratios = table[cols as usize - 1].as_ptr();
+        Self::call("LayoutRowRatios", || unsafe {
+            (self.nk.row_ratios)(self.ctx, 0, height, cols + 2, ratios);
+            (self.nk.spacing)(self.ctx);
         })
     }
     fn label(&self, text: &str) {
@@ -187,7 +239,8 @@ impl Widgets for GameWidgets<'_> {
         })
     }
     fn checkbox(&self, text: &str, value: &mut bool) -> bool {
-        let t = cstr(text);
+        // A space keeps the text off the box.
+        let t = cstr(&format!(" {text}"));
         let mut flags: u32 = *value as u32;
         let changed = Self::call("FlagCheckbox", || unsafe {
             (self.nk.checkbox)(t.as_ptr().cast(), &mut flags, 1) != 0
@@ -237,6 +290,26 @@ impl Widgets for GameWidgets<'_> {
         });
         let _ = typing;
         before != *buf
+    }
+    fn card_begin(&self, key: usize, height: f32) -> bool {
+        self.row(height, 1);
+        let name = cstr(&format!("w2rpm_plugin_card_{key}"));
+        let previous = self.nk.push_skin(unsafe { *self.nk.skin_card });
+        let opened = Self::call("BeginNamedGroup", || unsafe {
+            (self.nk.begin_group)(self.ctx, name.as_ptr().cast(), GROUP_CARD) != 0
+        });
+        self.nk.push_skin(previous);
+        if opened {
+            self.in_card.set(true);
+            // The frame's top border covers the first row: start below it.
+            self.row(crate::ui::CARD_TOP_H, 1);
+            self.label("");
+        }
+        opened
+    }
+    fn card_end(&self) {
+        self.in_card.set(false);
+        Self::call("EndGroup", || unsafe { (self.nk.end_group)(self.ctx) })
     }
     fn disable_begin(&self) {
         Self::call("DisableBegin", || unsafe {
@@ -348,7 +421,11 @@ fn draw_button(nk: &Nk) {
         ) != 0
         {
             (nk.row)(ctx, BUTTON_H - 20.0, 1);
-            let w = GameWidgets { nk, ctx };
+            let w = GameWidgets {
+                nk,
+                ctx,
+                in_card: Cell::new(false),
+            };
             if w.button("Plugins") {
                 MODE.with(|m| m.set(Mode::Plugins));
             }
@@ -391,13 +468,21 @@ fn draw_screen(nk: &Nk) {
         (nk.rect)(ctx, panel_x, PANEL_TOP, panel_w, PANEL_HEIGHT);
         let prev_content = nk.push_skin(*nk.skin_content);
         let group = c"w2rpm_plugins_list";
+        let gap_at = (ctx as *mut u8).add(CTX_SPACING_Y).cast::<f32>();
+        let gap_before = gap_at.read_unaligned();
+        gap_at.write_unaligned(ROW_GAP);
         if (nk.begin_group)(ctx, group.as_ptr(), GROUP_PLAIN) != 0 {
-            let w = GameWidgets { nk, ctx };
+            let w = GameWidgets {
+                nk,
+                ctx,
+                in_card: Cell::new(false),
+            };
             if crate::session::draw_plugin_screen(&w) == crate::ui::Action::Back {
                 MODE.with(|m| m.set(Mode::Game));
             }
             (nk.end_group)(ctx);
         }
+        gap_at.write_unaligned(gap_before);
         nk.push_skin(prev_content);
         (nk.space_end)(ctx);
         (nk.end_window)(ctx);

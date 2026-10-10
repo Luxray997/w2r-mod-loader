@@ -27,6 +27,8 @@ pub struct HostConfig {
     pub map_sharing: bool,
     /// Download a missing map without asking first.
     pub auto_download: bool,
+    /// Record each match played as a replay (docs/replay-research.md).
+    pub record_replays: bool,
 }
 
 impl Default for HostConfig {
@@ -42,6 +44,7 @@ impl Default for HostConfig {
             enhanced_lobby_screen: true,
             map_sharing: true,
             auto_download: false,
+            record_replays: true,
         }
     }
 }
@@ -72,6 +75,7 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
             "map_sharing" => cfg.map_sharing = value.as_bool().ok_or("bad_field")?,
             "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
+            "record_replays" => cfg.record_replays = value.as_bool().ok_or("bad_field")?,
             "enhanced_lobby_screen" => {
                 cfg.enhanced_lobby_screen = value.as_bool().ok_or("bad_field")?;
             }
@@ -116,6 +120,10 @@ impl HostConfig {
             ),
             ("map_sharing".to_owned(), Value::Bool(self.map_sharing)),
             ("auto_download".to_owned(), Value::Bool(self.auto_download)),
+            (
+                "record_replays".to_owned(),
+                Value::Bool(self.record_replays),
+            ),
         ])
         .to_json()
     }
@@ -174,6 +182,7 @@ mod tests {
             enhanced_lobby_screen: true,
             map_sharing: false,
             auto_download: true,
+            record_replays: false,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -192,6 +201,14 @@ mod tests {
         assert!(
             HostConfig::default().enhanced_lobby_screen,
             "the lobby screen is on unless the file says otherwise"
+        );
+        assert!(
+            HostConfig::default().record_replays,
+            "matches are recorded unless the file says otherwise"
+        );
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"record_replays\": false}").map(|c| c.record_replays),
+            Ok(false)
         );
         assert_eq!(
             parse(b"{\"schema\": 1, \"enhanced_create_screen\": false}")
@@ -234,6 +251,7 @@ mod tests {
             enhanced_lobby_screen: false,
             map_sharing: true,
             auto_download: false,
+            record_replays: true,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

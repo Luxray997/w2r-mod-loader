@@ -117,6 +117,13 @@ fn header(raw: &[u8]) -> Option<Header> {
         let n = c.len(LOBBY_LEN)?;
         c.take(n)?.to_vec()
     };
+    // Added after the lobby block: absent in older files.
+    let map_sha = if c.0.is_empty() {
+        None
+    } else {
+        let n = c.len(32)?;
+        c.take(n)?.try_into().ok()
+    };
     Some(Header {
         build,
         client,
@@ -129,6 +136,7 @@ fn header(raw: &[u8]) -> Option<Header> {
         names,
         seed,
         lobby,
+        map_sha,
     })
 }
 

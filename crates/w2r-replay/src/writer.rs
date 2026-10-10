@@ -135,6 +135,7 @@ mod tests {
             names: [3; crate::format::NAMES_LEN],
             seed: Header::seed_bytes(0xdead_beef, 0x1234_5678),
             lobby: (0..crate::format::LOBBY_LEN).map(|i| i as u8).collect(),
+            map_sha: Some([9; 32]),
         }
     }
 
@@ -203,9 +204,24 @@ mod tests {
     }
 
     #[test]
+    fn a_header_without_a_map_hash_reads_as_an_old_recording() {
+        let mut h = header();
+        h.map_sha = None;
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        let r = Replay::parse(&w.out).unwrap();
+        assert_eq!(r.header.map_sha, None);
+        assert_eq!(r.header.lobby.len(), crate::format::LOBBY_LEN);
+        assert_eq!(r.header, h);
+        // the hash survives a round trip next to the lobby block
+        let w = Writer::new(Vec::new(), &header()).unwrap();
+        assert_eq!(Replay::parse(&w.out).unwrap().header.map_sha, Some([9; 32]));
+    }
+
+    #[test]
     fn a_header_without_a_lobby_block_reads_as_an_old_recording() {
         let mut h = header();
         h.lobby = Vec::new();
+        h.map_sha = None;
         let w = Writer::new(Vec::new(), &h).unwrap();
         let r = Replay::parse(&w.out).unwrap();
         assert!(r.header.lobby.is_empty());

@@ -160,6 +160,31 @@ pub fn maps_root_string() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// SHA-256 of the map file `name` (the map text of a match): the file the lobby selected if it
+/// has that name, else the first file of that name under the maps folder. `None` if neither is
+/// found or readable.
+pub fn played_map_sha(name: &str) -> Option<[u8; 32]> {
+    if name.is_empty() {
+        return None;
+    }
+    let game = GAME.get().copied()?;
+    let named = |p: &Path| {
+        p.file_name()
+            .is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(name))
+    };
+    let selected = read_cstr(game.selected_path, MAX_GAME_PATH)
+        .map(PathBuf::from)
+        .filter(|p| named(p));
+    let path = selected.or_else(|| {
+        let root = game.maps_root()?;
+        mapindex::walk(&root)
+            .into_iter()
+            .map(|(p, ..)| p)
+            .find(|p| named(p))
+    })?;
+    mapindex::hash_file(&path)
+}
+
 /// The create screen browser's reload button: the game rescans the whole maps folder into its
 /// registry, so a map copied in while the game runs is found. Logged; false if it could not.
 pub fn rescan_maps() -> bool {

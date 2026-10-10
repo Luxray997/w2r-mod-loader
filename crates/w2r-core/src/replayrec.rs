@@ -41,6 +41,8 @@ type TurnFn = unsafe extern "C" fn() -> u32;
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 /// A match began and no recording has been started for it yet.
 static ARMED: AtomicBool = AtomicBool::new(false);
+/// The `record_replays` setting: matches are recorded unless it is off (read at each match start).
+static ENABLED: AtomicBool = AtomicBool::new(true);
 static ADDRS: OnceLock<Addrs> = OnceLock::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
 /// `SimRngState` read just before the latest call of the turn function while no recording has
@@ -205,6 +207,11 @@ pub fn note_chat(who: u8, mode: u8, duration_ms: u32, text: &[u8]) {
     }
 }
 
+/// The `record_replays` setting changed; it applies from the next match.
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::Release);
+}
+
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
     end(None);
@@ -212,10 +219,14 @@ pub fn rearm() {
         *r = None;
     }
     // A replay being played is not recorded again.
-    ARMED.store(
-        CONFIG.get().is_some() && ADDRS.get().is_some() && !crate::replayplay::is_active(),
-        Ordering::Release,
-    );
+    let armed = CONFIG.get().is_some()
+        && ADDRS.get().is_some()
+        && !crate::replayplay::is_active()
+        && ENABLED.load(Ordering::Acquire);
+    if !armed && !ENABLED.load(Ordering::Acquire) && !crate::replayplay::is_active() {
+        log(W2R_LOG_INFO, "recording is off in the settings; this match is not saved");
+    }
+    ARMED.store(armed, Ordering::Release);
 }
 
 unsafe extern "C" fn detour() -> u32 {
@@ -313,11 +324,13 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
         *s = unsafe { core::ptr::read((a.slots + i * SLOT_LEN) as *const [u8; SLOT_LEN]) };
     }
     let started = crate::matchend::now_secs();
+    let map = crate::matchend::read_map();
+    let map_sha = crate::mapdownload::played_map_sha(&map);
     let header = Header {
         build: BUILD.to_string(),
         client: cfg.client.clone(),
         fingerprint: cfg.fingerprint,
-        map: crate::matchend::read_map(),
+        map,
         started,
         local: unsafe { *(a.local as *const u8) },
         slots,
@@ -328,6 +341,7 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
             RNG_BEFORE.load(Ordering::Acquire),
         ),
         lobby: PRE_LOBBY.lock().map(|l| l.clone()).unwrap_or_default(),
+        map_sha,
     };
     let name = format::file_name(started, &header.map);
     let (path, file) = match create_new(&cfg.dir, &name) {
