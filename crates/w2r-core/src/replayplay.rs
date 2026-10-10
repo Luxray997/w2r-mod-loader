@@ -59,6 +59,8 @@ static ORIG_DRAW_LIST: AtomicUsize = AtomicUsize::new(0);
 /// A sync mismatch was already logged for this replay.
 static SYNC_LOGGED: AtomicBool = AtomicBool::new(false);
 /// The game's real fog shade map while an all-visible one is swapped in for drawing.
+/// The units' real "hidden from" bits while they are recomputed for a computer player's view.
+static HIDDEN_SAVED: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static FOG_SAVED: Mutex<Option<(Vec<u8>, Vec<u8>)>> = Mutex::new(None);
 /// The fog shade maps are at most 128 x 128 bytes.
 const FOG_LEN: usize = 0x4000;
@@ -83,6 +85,8 @@ struct Config {
 }
 
 struct Addrs {
+    recompute_hidden: usize,
+    fog_vis: usize,
     fog_explored: usize,
     relations: usize,
     fog: usize,
@@ -155,6 +159,11 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
+    let (Some(recompute_hidden), Some(fog_vis)) = (get("RecomputeHidden"), get("FogVisibilityPtr"))
+    else {
+        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
+        return false;
+    };
     let Some(fog_explored) = get("FogExploredPtr") else {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
@@ -180,6 +189,8 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         return false;
     };
     let _ = ADDRS.set(Addrs {
+        recompute_hidden,
+        fog_vis,
         fog_explored,
         relations,
         fog,
@@ -242,6 +253,10 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         );
     }
     ok &= crate::fogtrack::install(image, symbols, log);
+    if !crate::viewmem::init(symbols) {
+        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
+        ok = false;
+    }
     ok
 }
 
@@ -556,6 +571,8 @@ fn restore_view() {
     let real = REAL.load(Ordering::Acquire);
     let Some(a) = ADDRS.get() else { return };
     restore_fog(a);
+    restore_hidden();
+    crate::viewmem::leave();
     if real < 8 {
         // SAFETY: symbol-table addresses of single bytes in the game's data section.
         unsafe { write_view(a, real, 1 << real) };
@@ -626,6 +643,43 @@ fn swap_in_player_fog(a: &Addrs, player: u8) {
     });
 }
 
+/// The game never hides anything from a computer player. To watch one as a person would see,
+/// the units' hidden-from bits are made again with the human rule (a unit is seen if a tile under
+/// it is lit for that player) from that player's own dark map, by the game's own routine with
+/// the slot briefly marked human. The real bits come back in `restore_hidden`.
+fn hide_like_a_human(a: &Addrs, player: u8) {
+    // SAFETY: the owner table is in the game's data section.
+    let owner = (a.owner + usize::from(player)) as *mut u8;
+    if unsafe { *owner } != 1 {
+        return;
+    }
+    let Some(dark) = crate::fogmaps::dark_ptr(player) else {
+        return;
+    };
+    if let Ok(mut saved) = HIDDEN_SAVED.lock() {
+        if saved.is_none() {
+            *saved = Some(crate::viewmem::save_hidden());
+        }
+    }
+    // SAFETY: the game's globals; the private map outlives the call; `RecomputeHidden` takes no
+    // arguments. Both are put back straight after.
+    unsafe {
+        let old_dark = core::ptr::read_unaligned(a.fog_vis as *const usize);
+        *owner = 0;
+        core::ptr::write_unaligned(a.fog_vis as *mut usize, dark);
+        let recompute: VoidFn = core::mem::transmute(a.recompute_hidden);
+        recompute();
+        core::ptr::write_unaligned(a.fog_vis as *mut usize, old_dark);
+        *owner = 1;
+    }
+}
+
+fn restore_hidden() {
+    if let Some(saved) = HIDDEN_SAVED.lock().ok().and_then(|mut s| s.take()) {
+        crate::viewmem::restore_hidden(&saved);
+    }
+}
+
 fn apply_view() {
     let real = REAL.load(Ordering::Acquire);
     let Some(a) = ADDRS.get() else { return };
@@ -634,11 +688,18 @@ fn apply_view() {
     }
     // Always start from the real map, so a view that changed since the last time is rebuilt.
     restore_fog(a);
+    restore_hidden();
     let viewed = VIEWED.load(Ordering::Acquire);
     if FULL_VISION.load(Ordering::Acquire) {
         swap_in_clear_fog(a);
+        // What the draw pass remembers while it draws goes to this view, not the real player.
+        crate::viewmem::enter(crate::viewmemory::FULL_VISION_SLOT);
     } else if viewed < 8 && viewed != real {
         swap_in_player_fog(a, viewed);
+        crate::viewmem::enter(usize::from(viewed));
+        hide_like_a_human(a, viewed);
+    } else {
+        crate::viewmem::leave();
     }
     let player = if viewed < 8 { viewed } else { real };
     // The mask hides objects whose own "hidden from" bits include it: 0 hides nothing.
@@ -833,6 +894,7 @@ fn poll_keys() {
 fn reset_view() {
     SYNC_LOGGED.store(false, Ordering::Release);
     crate::fogmaps::disarm();
+    crate::viewmem::reset();
     VIEWED.store(NONE, Ordering::Release);
     FULL_VISION.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);

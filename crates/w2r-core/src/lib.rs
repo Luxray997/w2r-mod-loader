@@ -41,6 +41,7 @@ pub mod store;
 pub mod symbols;
 pub mod target;
 pub mod ui;
+pub mod viewmemory;
 #[cfg(windows)]
 pub mod watchdog;
 
@@ -56,6 +57,8 @@ pub mod frame;
 pub mod loader;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod fogtrack;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod viewmem;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod lobbycreate;
 #[cfg(all(windows, target_arch = "x86"))]

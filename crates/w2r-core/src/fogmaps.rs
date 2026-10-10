@@ -70,6 +70,13 @@ pub fn copy_into(player: u8, current: &mut [u8], remembered: &mut [u8]) -> bool 
     true
 }
 
+/// The address of `player`'s private "dark" map (valid until `disarm`), if armed.
+pub fn dark_ptr(player: u8) -> Option<usize> {
+    let guard = MAPS.lock().ok()?;
+    let maps = guard.as_ref()?.get(usize::from(player))?;
+    Some(maps.dark.as_ptr() as usize)
+}
+
 /// The players whose private maps should follow a game call, with the addresses of their three
 /// maps `[current, remembered, dark]`: everyone but `local` (whose maps are the real ones) in a
 /// slot that is not empty. The addresses stay valid until `disarm`.
@@ -117,6 +124,7 @@ mod tests {
         assert!(copy_into(3, &mut cur, &mut rem));
         assert!(cur.iter().chain(&rem).all(|&v| v == BLACK));
         assert!(!copy_into(8, &mut cur, &mut rem), "there is no player 8");
+        assert!(dark_ptr(2).is_some() && dark_ptr(8).is_none());
 
         // not the local player, not empty slots
         let t = targets(0, |p| p >= 3);
@@ -134,5 +142,6 @@ mod tests {
         assert!(!armed());
         assert!(!copy_into(3, &mut cur, &mut rem));
         assert!(targets(0, |_| false).is_empty());
+        assert!(dark_ptr(2).is_none());
     }
 }
