@@ -225,8 +225,14 @@ pub mod game {
 
     impl Kit {
         pub fn new(symbols: &Symbols) -> Option<Kit> {
+            Kit::new_in(symbols, "NkContextMenus")
+        }
+
+        /// A kit that draws into another Nuklear context (`ctx_symbol` is the global holding it),
+        /// such as the in-match HUD's (`HudCtx`).
+        pub fn new_in(symbols: &Symbols, ctx_symbol: &str) -> Option<Kit> {
             Some(Kit {
-                ctx_slot: symbols.address("NkContextMenus")? as *const *mut c_void,
+                ctx_slot: symbols.address(ctx_symbol)? as *const *mut c_void,
                 rect: sym!(symbols, "OverrideNextRect", RectFn),
                 label: sym!(symbols, "DrawLabel", LabelFn),
                 wrapped_label: sym!(symbols, "DrawWrappedLabel", WrappedLabelFn),

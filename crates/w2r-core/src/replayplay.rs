@@ -854,6 +854,32 @@ fn say(a: &Addrs, text: &str) {
     }
 }
 
+/// What the on-screen panel shows (`hudpanel.rs`).
+pub struct Pace {
+    pub paused: bool,
+    pub ended: bool,
+    pub speed: f32,
+    pub turn: usize,
+    pub total: usize,
+}
+
+pub fn pace() -> Option<Pace> {
+    if !is_active() {
+        return None;
+    }
+    let a = ADDRS.get()?;
+    let total = PLAY.lock().ok()?.as_ref()?.replay.turns.len();
+    // SAFETY: a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
+    Some(Pace {
+        paused: PAUSED.load(Ordering::Acquire),
+        ended: ENDED.load(Ordering::Acquire),
+        speed: SPEEDS[SPEED.load(Ordering::Acquire) as usize],
+        turn: turn.min(total),
+        total,
+    })
+}
+
 fn change_speed(by: i8) {
     let now = SPEED.load(Ordering::Acquire) as i8;
     let to = (now + by).clamp(0, SPEEDS.len() as i8 - 1);
