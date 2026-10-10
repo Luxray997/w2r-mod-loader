@@ -26,6 +26,12 @@ pub const OWNER_LEN: usize = 0x20;
 /// Bytes of the game's `PlayerNames` table that are stored.
 pub const NAMES_LEN: usize = 0x100;
 
+/// The game's lobby block (`MpLobbySlots` 0x916260 up to 0x9166a0): slot table, game name, speed,
+/// resources, match flags, map text, fixed start. `StartGame` builds every in-game table from it
+/// (docs/replay-research.md, "Playback design"), so it is the complete start state.
+pub const LOBBY_AT: u32 = 0x0091_6260;
+pub const LOBBY_LEN: usize = 0x440;
+
 /// Limits that keep a hostile or damaged file from allocating without bound.
 pub const MAX_HEADER: usize = 64 * 1024;
 pub const MAX_PACKET: usize = 64 * 1024;
@@ -52,6 +58,9 @@ pub struct Header {
     /// u32; the host sets it from the clock and clients get it in the start packet, op 0x23) then
     /// the simulation RNG state just before turn 0 (a cross-check for playback).
     pub seed: Vec<u8>,
+    /// `LOBBY_LEN` bytes captured when `StartGame` was entered, or empty (older recordings, which
+    /// cannot be played back).
+    pub lobby: Vec<u8>,
 }
 
 impl Header {
@@ -118,6 +127,9 @@ impl Header {
         let seed = &self.seed[..self.seed.len().min(MAX_TEXT)];
         put_varint(&mut o, seed.len() as u64);
         o.extend_from_slice(seed);
+        let lobby = &self.lobby[..self.lobby.len().min(LOBBY_LEN)];
+        put_varint(&mut o, lobby.len() as u64);
+        o.extend_from_slice(lobby);
         o
     }
 }

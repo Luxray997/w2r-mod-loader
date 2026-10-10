@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 w2rpm-lib = { path = "../w2rpm-lib" }
 w2r-formats.workspace = true
+w2r-replay.workspace = true
 w2r-stats.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 

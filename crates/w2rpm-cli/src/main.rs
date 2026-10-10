@@ -87,6 +87,12 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         recent: usize,
     },
+    /// Recorded games: list them, or queue one to play back in the next custom game.
+    Replays {
+        /// Queue this replay (its file name, or any part of it that is unique) for the next game.
+        #[arg(long)]
+        play: Option<String>,
+    },
     /// Skill ratings worked out from the reports in the outbox (humans only, two teams).
     Ratings {
         /// Also rate computer players by name. For trying the maths on single-player games.
@@ -225,6 +231,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
             return Ok(findings.is_empty());
         }
         Cmd::Stats { recent } => return stats(cli, *recent),
+        Cmd::Replays { play } => return replays(cli, play.as_deref()),
         Cmd::Ratings { with_computers } => return ratings(cli, *with_computers),
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
@@ -385,6 +392,84 @@ Latest"
         );
     }
     Ok(loaded.rejected.is_empty())
+}
+
+fn replays(cli: &Cli, play: Option<&str>) -> Result<bool, Error> {
+    use w2r_replay::Replay;
+
+    let root = context_root(cli)?;
+    let dir = root.0.join("replays");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".w2rr"))
+        .collect();
+    // The names start with the date, so this is oldest first.
+    files.sort();
+    if let Some(want) = play {
+        let hits: Vec<&String> = files.iter().filter(|n| n.contains(want)).collect();
+        let name = match hits.as_slice() {
+            [one] => (*one).clone(),
+            [] => return Err(Error::new("no_replay", format!("no replay matches {want:?}"))),
+            many => {
+                let list: Vec<&str> = many.iter().map(|n| n.as_str()).collect();
+                return Err(Error::new(
+                    "ambiguous_replay",
+                    format!("{want:?} matches {} replays: {}", many.len(), list.join(", ")),
+                ));
+            }
+        };
+        let raw = std::fs::read(dir.join(&name))?;
+        let replay = Replay::parse(&raw).map_err(|e| Error::new("bad_replay", e.to_string()))?;
+        if replay.header.lobby.is_empty() {
+            return Err(Error::new(
+                "not_playable",
+                "that replay was recorded before playback was supported (it has no start state)"
+                    .to_owned(),
+            ));
+        }
+        std::fs::write(root.0.join("replay-play.txt"), format!("{name}
+"))?;
+        println!("queued {name}");
+        println!(
+            "Start a custom game against the computer on {:?} (any races), with the same plugins as then; it plays the replay instead.",
+            replay.header.map
+        );
+        return Ok(true);
+    }
+    if files.is_empty() {
+        println!("no replays yet ({})", dir.display());
+        return Ok(true);
+    }
+    for name in files.iter().rev() {
+        let line = match std::fs::read(dir.join(name))
+            .ok()
+            .and_then(|raw| Replay::parse(&raw).ok())
+        {
+            Some(r) => {
+                let local = usize::from(r.header.local).min(7);
+                let outcome = match r.footer.map(|f| f.results[local]) {
+                    Some(3) => "won",
+                    Some(2) => "lost",
+                    Some(_) => "left",
+                    None => "cut off",
+                };
+                let players: Vec<String> = r.players().iter().map(|p| p.name.clone()).collect();
+                format!(
+                    "{outcome:<8} {:<16} {:>6} turns  {}{}",
+                    r.header.map,
+                    r.last_turn() + 1,
+                    players.join(" v "),
+                    if r.header.lobby.is_empty() { "  (not playable)" } else { "" }
+                )
+            }
+            None => "unreadable".to_owned(),
+        };
+        println!("{name}  {line}");
+    }
+    Ok(true)
 }
 
 fn ratings(cli: &Cli, with_computers: bool) -> Result<bool, Error> {

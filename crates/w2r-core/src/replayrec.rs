@@ -46,6 +46,8 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// `SimRngState` read just before the latest call of the turn function while no recording has
 /// started: the value before the first turn is the last one stored.
 static RNG_BEFORE: AtomicU32 = AtomicU32::new(0);
+/// The lobby block as it was when `StartGame` was entered (before the game normalised it).
+static PRE_LOBBY: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
 /// Final `(results, sync_mismatch)` from `CheckMatchEnd`, repeated in the closing footer.
 static RESULT: Mutex<Option<([u8; 8], u32)>> = Mutex::new(None);
@@ -183,14 +185,22 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
     }
 }
 
+/// `StartGame` was entered: remember the lobby block for the header of this match's recording.
+pub fn note_lobby(block: Vec<u8>) {
+    if let Ok(mut l) = PRE_LOBBY.lock() {
+        *l = block;
+    }
+}
+
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
     end(None);
     if let Ok(mut r) = RESULT.lock() {
         *r = None;
     }
+    // A replay being played is not recorded again.
     ARMED.store(
-        CONFIG.get().is_some() && ADDRS.get().is_some(),
+        CONFIG.get().is_some() && ADDRS.get().is_some() && !crate::replayplay::is_active(),
         Ordering::Release,
     );
 }
@@ -301,6 +311,7 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
             unsafe { read_u32(a.seed) },
             RNG_BEFORE.load(Ordering::Acquire),
         ),
+        lobby: PRE_LOBBY.lock().map(|l| l.clone()).unwrap_or_default(),
     };
     let name = format::file_name(started, &header.map);
     let (path, file) = match create_new(&cfg.dir, &name) {

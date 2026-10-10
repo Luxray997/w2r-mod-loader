@@ -60,8 +60,10 @@ struct Addrs {
 
 /// A new match: allow one more snapshot.
 pub fn rearm() {
-    REPORTED.store(false, Ordering::Release);
-    OPEN.store(true, Ordering::Release);
+    // A replay being played is not a game: nothing is reported for it.
+    let playing = crate::replayplay::is_active();
+    REPORTED.store(playing, Ordering::Release);
+    OPEN.store(!playing, Ordering::Release);
     if let Ok(mut l) = LAST.lock() {
         *l = None;
     }
@@ -168,6 +170,7 @@ pub fn install_run_game(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool
 unsafe extern "C" fn run_game_detour() -> u32 {
     let original: RunGameFn = unsafe { core::mem::transmute(RUN_ORIGINAL.load(Ordering::Acquire)) };
     let next_state = unsafe { original() };
+    crate::replayplay::on_run_game_return();
     if let Err(fault) = guarded(|| {
         // The tables are still the match's own: keep this state for `conclude`.
         // SAFETY: as in `check`.

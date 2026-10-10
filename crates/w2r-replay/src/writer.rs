@@ -103,6 +103,7 @@ mod tests {
             owner: [2; crate::format::OWNER_LEN],
             names: [3; crate::format::NAMES_LEN],
             seed: Header::seed_bytes(0xdead_beef, 0x1234_5678),
+            lobby: (0..crate::format::LOBBY_LEN).map(|i| i as u8).collect(),
         }
     }
 
@@ -153,6 +154,21 @@ mod tests {
         let r = Replay::parse(&bytes).unwrap();
         assert_eq!(r.turns.len(), 2);
         assert_eq!(r.footer, Some(footer()));
+    }
+
+    #[test]
+    fn a_header_without_a_lobby_block_reads_as_an_old_recording() {
+        let mut h = header();
+        h.lobby = Vec::new();
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        let r = Replay::parse(&w.out).unwrap();
+        assert!(r.header.lobby.is_empty());
+        // and a header that ends right after the seed (the first file version) parses too
+        let mut raw = w.out.clone();
+        let len = u32::from_le_bytes(raw[6..10].try_into().unwrap()) - 1;
+        raw[6..10].copy_from_slice(&len.to_le_bytes());
+        raw.remove(10 + len as usize);
+        assert!(Replay::parse(&raw).unwrap().header.lobby.is_empty());
     }
 
     #[test]

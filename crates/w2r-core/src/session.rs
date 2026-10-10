@@ -937,6 +937,8 @@ fn start() -> Session {
         crate::matchend::install_run_game(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::replayrec::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::replayplay::install(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {
@@ -982,6 +984,7 @@ fn start() -> Session {
             crate::handshake::VERSION_TEXT,
             &*host_log,
         );
+        crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
     let authors = plugins::authors(&startup.root, &loaded.state);
     Session {

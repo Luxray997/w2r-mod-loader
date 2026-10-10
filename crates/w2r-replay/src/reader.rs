@@ -4,8 +4,8 @@
 use w2r_stats::slot::{self, SLOT_LEN, SLOTS};
 
 use crate::format::{
-    Footer, Header, MAGIC, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN, OWNER_LEN, REC_FOOTER,
-    REC_TURN, VERSION,
+    Footer, Header, LOBBY_LEN, MAGIC, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN, OWNER_LEN,
+    REC_FOOTER, REC_TURN, VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +97,13 @@ fn header(raw: &[u8]) -> Option<Header> {
     let names = c.take(NAMES_LEN)?.try_into().ok()?;
     let n = c.len(MAX_TEXT)?;
     let seed = c.take(n)?.to_vec();
+    // Added after the first version of the header: absent in older files.
+    let lobby = if c.0.is_empty() {
+        Vec::new()
+    } else {
+        let n = c.len(LOBBY_LEN)?;
+        c.take(n)?.to_vec()
+    };
     Some(Header {
         build,
         client,
@@ -108,6 +115,7 @@ fn header(raw: &[u8]) -> Option<Header> {
         owner,
         names,
         seed,
+        lobby,
     })
 }
 
