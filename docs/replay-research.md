@@ -111,6 +111,59 @@ Three generators; only one is simulation state.
   turn"); saved-game loads would record from mid-game; what the vs-AI path (`0x49e7b0`) packets look
   like; confirm `ProcessNetworkTurn` really returns 1 once per turn.
 
+## Playback design (research 2026-10-10)
+
+How a match starts: `FUN_004d0f90` (the in-game state handler) calls `StartGame` **0x4c4280**
+`(a, mapBuf, mapLen)` -> `RunGame` 0x4c57f0 -> `FUN_004c4190`/`FUN_004d6480` cleanup. A custom game
+vs AI passes `a = 0` and loads the map itself (`FUN_004d2670(DAT_009190e0, &DAT_009196d0, ...)`).
+Inside `StartGame` the networked branch runs `FUN_0049c9f0`, which converts the **lobby block**
+into every in-game table: player kinds (`0x918cac..`), races (`0x9191b0..`), per-player records
+(`0x91ad90`, stride 0x38, name at +0x18), flags (`0x91af58` from `MpLobbyMatchFlags 0x916560`),
+resources/speed bytes (`0x916550/555/556`), map name (`0x91657d`), and `0x91af53 = GameSeed` (low
+byte, used by the cosmetic palette shuffle). So **the lobby block is the complete start state**:
+`0x916260..0x9166a0` (slot table 0x26 x 8, game name 0x916534, speed, flags, map text, fixed start
+`0x91668a`, `0x916686`, ...). Our recording currently stores only the slot table, the owner table
+and the names; it must store the whole block, captured at `StartGame` entry (before `0x49c9f0`
+normalises it: it rewrites empty slots to kind 8 and ORs bits into the match flags).
+
+Playback as "a normal game with overrides" (no lobby/network emulation needed). The user starts any
+custom game vs AI on the same map (as War2BNE InSight made you do), with replay armed; the host:
+1. **StartGame entry:** copy the recorded lobby block over the live one (restore the live one when
+   `RunGame` returns). Refuse (log, play a normal game) if the live map text differs from the header.
+2. **Seed:** hook `SetGameSeed` (0x4a01f0, called by `StartGame` after `time(0)`) to substitute the
+   recorded seed. `0x4a0220` then seeds the sim RNG from it. Cross-check: the sim RNG before turn 0
+   must equal the header's `rng_at_start`; a mismatch means something else differs.
+3. **Packets:** wrap `0x49d130` (turn gather). Call the original (the loopback net layer keeps
+   pacing, the turn queue and `TurnPlayerStatus`), and when it returns 1 overwrite
+   `TurnPacketPtrs/Lens/Status` for the slots with recorded packets (set `0x20000`; clear it for
+   slots with none). The live player's own packet is thereby replaced by the recorded one. Past
+   the last recorded turn: stop injecting and end the replay.
+4. **Check:** compare the recorded `0x18` sync records against the live game's own (`0x4a1810`
+   verifies them; a mismatch sets `TurnSyncMismatch`), and the final result/turn count against the
+   footer.
+
+Later: speed control (return 0 from the gather to wait, or call it more often), pause, jump (needs
+snapshots or re-simulation), full-vision / follow-player view by reusing `w2r-observer`'s team 9
+approach, a replay browser (CLI `w2rpm replays`, then an in-game screen next to the create screen),
+bundling or fetching the map (the host already has peer map download) and a map hash in the header.
+
+Comparison with War2BNE InSight (its documented limits):
+| InSight | Here |
+|---|---|
+| cannot record games vs computers | recorded (AI is simulated locally from the seed; playback proves it) |
+| Battle.net games only | any game that runs `ProcessNetworkTurn` (verified: custom vs AI) |
+| cannot start recording mid-game | same: needs turn 0 |
+| map not stored | same at first; map hash + download later |
+| chat not recorded | ops 06/07 carry text; to be checked in a game with several humans |
+| replay needs a private game plus placeholder computers | any custom game on the map; slots are overwritten |
+| cannot watch with other players | possible later: each client plays the same file |
+
+Risks / unknowns: `StartGame` calling convention and arguments for custom games (read from the
+disassembly before hooking); whether anything outside the lobby block feeds the sim (AI strength,
+cheats, campaign flags); the loopback net layer's turn pacing when its packets are replaced; the
+saved-game path (`a != 0`) is not covered; `DAT_00922f5b` semantics (host/client flag) were
+contradictory in the decompile and need a look at the disassembly.
+
 ## Staged plan
 
 1. **Record (no game changes):** hook `0x49e260` (or tap after `0x49d130`), append
