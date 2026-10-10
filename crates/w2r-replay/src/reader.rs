@@ -227,6 +227,23 @@ impl Replay {
         self.footer.is_some()
     }
 
+    /// Running totals of what each slot did on purpose (see `packet::player_actions`): entry `i`
+    /// is the count over the first `i + 1` recorded turns.
+    pub fn action_totals(&self) -> Vec<[u32; 8]> {
+        let mut total = [0u32; 8];
+        self.turns
+            .iter()
+            .map(|t| {
+                for (slot, data) in &t.packets {
+                    if let Some(n) = total.get_mut(usize::from(*slot)) {
+                        *n += crate::packet::player_actions(data) as u32;
+                    }
+                }
+                total
+            })
+            .collect()
+    }
+
     /// The last recorded turn number.
     pub fn last_turn(&self) -> u32 {
         self.turns.last().map_or(0, |t| t.turn)

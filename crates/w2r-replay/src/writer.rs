@@ -163,6 +163,21 @@ mod tests {
     }
 
     #[test]
+    fn action_totals_count_commands_but_not_idle_or_sync_records() {
+        let mut w = Writer::new(Vec::new(), &header()).unwrap();
+        w.turn(0, &[(0, &[5, 0x19, 1, 2, 3, 4][..5]), (1, &[0x08, 2, 1, 2, 3, 4])])
+            .unwrap();
+        w.turn(1, &[(0, &[0x08, 2, 1, 2, 3, 4]), (1, &[5])]).unwrap();
+        let bytes = w.finish(&footer()).unwrap();
+        let r = Replay::parse(&bytes).unwrap();
+        let totals = r.action_totals();
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals[0][1], 1);
+        assert_eq!(totals[1][0], totals[0][0] + 1);
+        assert_eq!(totals[1][1], 1);
+    }
+
+    #[test]
     fn turns_after_an_interim_footer_are_kept_and_the_last_footer_wins() {
         let mut w = Writer::new(Vec::new(), &header()).unwrap();
         w.turn(0, &[(0, &[5])]).unwrap();

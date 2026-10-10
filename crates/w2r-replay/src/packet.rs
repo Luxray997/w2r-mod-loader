@@ -54,9 +54,29 @@ pub fn actions(data: &[u8]) -> usize {
         .count()
 }
 
+/// What a player did on purpose: every record except the idle op 05 and the per-turn sync
+/// record 18, which every packet carries.
+pub fn player_actions(data: &[u8]) -> usize {
+    commands(data)
+        .0
+        .iter()
+        .filter(|(op, _)| *op != 0x05 && *op != 0x18)
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_actions_skip_idle_and_sync_records() {
+        let mut p = vec![0x05, 0x19, 1, 2, 3, 4];
+        p.extend_from_slice(&[0x08, 2, 1, 2, 3, 4]);
+        let (cmds, rest) = commands(&p);
+        assert_eq!(rest, 0);
+        assert!(cmds.iter().any(|(op, _)| *op == 0x08));
+        assert_eq!(player_actions(&p), 1 + cmds.iter().filter(|(op, _)| *op == 0x19).count());
+    }
 
     #[test]
     fn fixed_and_variable_records() {

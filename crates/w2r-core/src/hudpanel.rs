@@ -5,14 +5,14 @@
 //! `BeginNamedWindow` hook opens just before the game begins `game_hud`. x86 only (`cdecl`).
 
 use core::ffi::c_void;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
 
 use crate::guard::guarded;
 use crate::host::Log;
 use crate::replayplay::{self, Member, Pace};
-use crate::scoreboard::{self, Counts};
+use crate::scoreboard::{self, Counts, History};
 use crate::screenkit::game::{Kit, rgba};
 use crate::screenkit::{ALIGN_CENTRE, ALIGN_LEFT, ALIGN_RIGHT, Rect};
 use crate::symbols::Symbols;
@@ -23,6 +23,7 @@ pub type BeginFn =
     unsafe extern "C" fn(*mut c_void, *const core::ffi::c_char, f32, f32, f32, f32, u32) -> i32;
 
 static PANEL: OnceLock<Panel> = OnceLock::new();
+static HISTORY: Mutex<Option<History>> = Mutex::new(None);
 
 /// Where the game keeps what the scoreboard shows (all indexed by player).
 struct Game {
@@ -93,6 +94,14 @@ const TOTAL_COLUMNS: [(f32, f32, &str); 7] = [
     (258.0, 36.0, "Gold+"),
     (296.0, 32.0, "Wood+"),
     (330.0, 28.0, "Oil+"),
+];
+
+/// The rates page: left edge, width, heading.
+const RATE_COLUMNS: [(f32, f32, &str); 4] = [
+    (112.0, 58.0, "Gold/m"),
+    (172.0, 58.0, "Wood/m"),
+    (232.0, 58.0, "Oil/m"),
+    (292.0, 44.0, "APM"),
 ];
 
 /// The current page: left edge, width, heading.
@@ -196,11 +205,17 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
     let Some(panel) = PANEL.get() else { return };
     let result = guarded(|| unsafe {
         let mode = replayplay::board_mode();
-        let board = if mode < 2 {
-            Some(read_board(&panel.game))
-        } else {
-            None
-        };
+        // Read every frame, whatever page is up, so income has a history when its page opens.
+        let rows = read_board(&panel.game);
+        let mut mined = [[0u32; 3]; 8];
+        for row in &rows {
+            mined[usize::from(row.member.slot) % 8] = row.mined;
+        }
+        if let Ok(mut h) = HISTORY.lock() {
+            h.get_or_insert_with(History::default)
+                .record(pace.game_ms, mined);
+        }
+        let board = (mode < 3).then_some(rows);
         let height = match &board {
             Some(rows) => HEADER_HEIGHT + ROW_HEIGHT * (rows.len() as f32 + 1.0) + 4.0,
             None => HEADER_HEIGHT,
@@ -232,6 +247,8 @@ struct Row {
     razed: u16,
     buildings_lost: u16,
     mined: [u32; 3],
+    /// Actions per minute; only for people, and only once there is something to measure.
+    apm: Option<u32>,
 }
 
 /// # Safety
@@ -274,6 +291,11 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
                     razed: u16_at(g.razed),
                     buildings_lost: u16_at(g.buildings_lost),
                     mined: [u32_at(g.mined_gold), u32_at(g.mined_lumber), u32_at(g.mined_oil)],
+                    apm: if member.human {
+                        replayplay::actions_per_minute(member.slot)
+                    } else {
+                        None
+                    },
                     member,
                 }
             }
@@ -330,7 +352,11 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     let Some(rows) = board else { return };
     let watching = replayplay::watching();
     let top = HEADER_HEIGHT;
-    let columns = if mode == 1 { &TOTAL_COLUMNS } else { &COLUMNS };
+    let columns: &[(f32, f32, &str)] = match mode {
+        1 => &TOTAL_COLUMNS,
+        2 => &RATE_COLUMNS,
+        _ => &COLUMNS,
+    };
     for &(rect_x, rect_w, title) in columns {
         kit.label_coloured_at(
             Rect::new(rect_x, top, rect_w, ROW_HEIGHT),
@@ -374,8 +400,8 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
         } else {
             kit.label_at(name, &row.member.name, ALIGN_LEFT);
         }
-        let values: [String; 7] = if mode == 1 {
-            [
+        let values: Vec<String> = match mode {
+            1 => vec![
                 row.kills.to_string(),
                 row.lost.to_string(),
                 row.razed.to_string(),
@@ -383,9 +409,25 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
                 row.mined[0].to_string(),
                 row.mined[1].to_string(),
                 row.mined[2].to_string(),
-            ]
-        } else {
-            [
+            ],
+            2 => {
+                let slot = usize::from(row.member.slot);
+                let history = HISTORY.lock().ok();
+                let rate = |kind: usize| {
+                    history
+                        .as_ref()
+                        .and_then(|h| h.as_ref())
+                        .and_then(|h| h.per_minute(slot, kind))
+                        .map_or_else(|| "-".to_string(), |v| v.to_string())
+                };
+                vec![
+                    rate(0),
+                    rate(1),
+                    rate(2),
+                    row.apm.map_or_else(|| "-".to_string(), |v| v.to_string()),
+                ]
+            }
+            _ => vec![
                 row.gold.to_string(),
                 row.lumber.to_string(),
                 row.oil.to_string(),
@@ -393,7 +435,7 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
                 row.counts.army.to_string(),
                 row.counts.workers.to_string(),
                 row.counts.buildings.to_string(),
-            ]
+            ],
         };
         for (column, value) in values.into_iter().enumerate() {
             text(value, column);

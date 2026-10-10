@@ -46,6 +46,50 @@ pub fn count(slot: &[u8], type_flags: impl Fn(u8) -> u32, counts: &mut [Counts; 
     }
 }
 
+/// Recent readings of what each player has mined (gold, lumber, oil), for income per minute.
+#[derive(Default)]
+pub struct History {
+    samples: Vec<(u32, [[u32; 3]; 8])>,
+}
+
+/// How far back readings are kept, and the longest window a rate is taken over (game ms).
+const KEEP_MS: u32 = 90_000;
+const WINDOW_MS: u32 = 60_000;
+/// Readings closer together than this are skipped.
+const EVERY_MS: u32 = 1_000;
+/// A rate needs at least this much game time behind it.
+const MIN_SPAN_MS: u32 = 5_000;
+
+impl History {
+    /// Adds a reading taken at game time `ms`. Going back in time (a new replay) starts over.
+    pub fn record(&mut self, ms: u32, mined: [[u32; 3]; 8]) {
+        match self.samples.last() {
+            Some(&(last, _)) if ms < last => self.samples.clear(),
+            Some(&(last, _)) if ms - last < EVERY_MS => return,
+            _ => {}
+        }
+        self.samples.push((ms, mined));
+        let cutoff = ms.saturating_sub(KEEP_MS);
+        self.samples.retain(|&(t, _)| t >= cutoff);
+    }
+
+    /// Mined per game minute by `slot` (`kind`: 0 gold, 1 lumber, 2 oil) over the last minute,
+    /// or `None` until there is enough history.
+    pub fn per_minute(&self, slot: usize, kind: usize) -> Option<u32> {
+        let &(now, latest) = self.samples.last()?;
+        let &(then, earlier) = self
+            .samples
+            .iter()
+            .find(|&&(t, _)| t >= now.saturating_sub(WINDOW_MS))?;
+        let span = now - then;
+        if span < MIN_SPAN_MS {
+            return None;
+        }
+        let gained = latest.get(slot)?.get(kind)?.saturating_sub(*earlier.get(slot)?.get(kind)?);
+        Some((u64::from(gained) * 60_000 / u64::from(span)) as u32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +136,36 @@ mod tests {
         assert!(c[0].is_empty());
         count(&slot(0x08, 3, 0), flags_of, &mut c);
         assert_eq!(c[0].workers, 1);
+    }
+
+    fn mined(gold: u32) -> [[u32; 3]; 8] {
+        let mut m = [[0; 3]; 8];
+        m[1][0] = gold;
+        m
+    }
+
+    #[test]
+    fn income_is_the_gain_over_the_last_minute() {
+        let mut h = History::default();
+        assert_eq!(h.per_minute(1, 0), None);
+        for s in 0..=90u32 {
+            h.record(s * 1000, mined(s * 50));
+        }
+        // 50 gold a second is 3000 a minute, whatever the window.
+        assert_eq!(h.per_minute(1, 0), Some(3000));
+        assert_eq!(h.per_minute(0, 0), Some(0));
+    }
+
+    #[test]
+    fn income_waits_for_enough_history_and_restarts_with_a_new_replay() {
+        let mut h = History::default();
+        h.record(0, mined(0));
+        h.record(2000, mined(100));
+        assert_eq!(h.per_minute(1, 0), None);
+        h.record(10_000, mined(500));
+        assert_eq!(h.per_minute(1, 0), Some(3000));
+        h.record(500, mined(0));
+        assert_eq!(h.per_minute(1, 0), None);
     }
 
     #[test]

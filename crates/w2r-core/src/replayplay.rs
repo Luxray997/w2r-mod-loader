@@ -73,7 +73,7 @@ static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// Which watched keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
-/// The scoreboard under the panel: 0 now, 1 totals, 2 hidden.
+/// The scoreboard under the panel: 0 now, 1 totals, 2 rates, 3 hidden.
 static BOARD: AtomicU8 = AtomicU8::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 /// Let one turn through while paused.
@@ -83,6 +83,8 @@ static ENDED: AtomicBool = AtomicBool::new(false);
 static SPEED: AtomicU8 = AtomicU8::new(NORMAL_SPEED);
 /// The tick deadline as playback left it, to tell how far the game moved it on.
 static LAST_DEADLINE: AtomicU32 = AtomicU32::new(0);
+/// Game time played so far (ms at the game's own pace, whatever the playback speed).
+static GAME_MS: AtomicU32 = AtomicU32::new(0);
 
 /// Playback speeds, as multiples of the game's own pace.
 const SPEEDS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
@@ -129,6 +131,8 @@ struct Play {
     checked_rng: bool,
     /// The next recorded chat line to show.
     next_chat: usize,
+    /// Running totals of what each slot did on purpose, by turn.
+    actions: Vec<[u32; 8]>,
 }
 
 fn log(level: u32, text: &str) {
@@ -383,6 +387,7 @@ fn arm(a: &Addrs, live: Vec<u8>) {
             }
             if let Ok(mut p) = PLAY.lock() {
                 *p = Some(Play {
+                    actions: replay.action_totals(),
                     replay,
                     name,
                     bufs: Default::default(),
@@ -863,6 +868,8 @@ pub struct Pace {
     pub paused: bool,
     pub ended: bool,
     pub speed: f32,
+    /// Game time played, in ms.
+    pub game_ms: u32,
     pub turn: usize,
     pub total: usize,
 }
@@ -879,6 +886,7 @@ pub fn pace() -> Option<Pace> {
         paused: PAUSED.load(Ordering::Acquire),
         ended: ENDED.load(Ordering::Acquire),
         speed: SPEEDS[SPEED.load(Ordering::Acquire) as usize],
+        game_ms: GAME_MS.load(Ordering::Acquire),
         turn: turn.min(total),
         total,
     })
@@ -887,6 +895,8 @@ pub fn pace() -> Option<Pace> {
 /// A player in the match, for the scoreboard.
 pub struct Member {
     pub slot: u8,
+    /// A person (rather than the computer): only people send commands.
+    pub human: bool,
     pub name: String,
 }
 
@@ -899,9 +909,35 @@ pub fn roster() -> Vec<Member> {
         .into_iter()
         .map(|slot| Member {
             slot,
+            // SAFETY: the owner table is 0x20 bytes of the game's data section.
+            human: unsafe { *((a.owner + usize::from(slot)) as *const u8) } == 0,
             name: player_name(a, slot),
         })
         .collect()
+}
+
+/// What `slot` did on purpose per game minute, over the last minute played (or all of it, if
+/// shorter). `None` before there is anything to measure.
+pub fn actions_per_minute(slot: u8) -> Option<u32> {
+    let a = ADDRS.get()?;
+    // SAFETY: a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
+    let game_ms = GAME_MS.load(Ordering::Acquire);
+    if turn < 2 || game_ms == 0 {
+        return None;
+    }
+    let per_turn_ms = (game_ms as usize / turn).max(1);
+    let window = (60_000 / per_turn_ms).clamp(1, turn);
+    let guard = PLAY.lock().ok()?;
+    let play = guard.as_ref()?;
+    let slot = usize::from(slot);
+    let now = play.actions.get(turn - 1)?.get(slot).copied()?;
+    let before = if turn > window {
+        play.actions.get(turn - 1 - window)?.get(slot).copied()?
+    } else {
+        0
+    };
+    Some((u64::from(now - before) * 60_000 / (window as u64 * per_turn_ms as u64)) as u32)
 }
 
 /// The player whose view is on screen, once the replay has started.
@@ -914,7 +950,8 @@ pub fn watching() -> Option<u8> {
     }
 }
 
-/// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 none.
+/// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 rates,
+/// 3 none.
 pub fn board_mode() -> u8 {
     BOARD.load(Ordering::Acquire)
 }
@@ -993,6 +1030,9 @@ pub fn hold_turn() -> bool {
             let last = LAST_DEADLINE.load(Ordering::Acquire);
             let step = now.wrapping_sub(last) as i32;
             // No earlier value, or the game reset its clock: leave this one alone.
+            if last != 0 && (1..=500).contains(&step) {
+                GAME_MS.fetch_add(step as u32, Ordering::AcqRel);
+            }
             let moved = if last != 0 && (1..=500).contains(&step) {
                 let shift = step as f32 * (1.0 / speed - 1.0);
                 now.wrapping_add(shift as i32 as u32)
@@ -1082,7 +1122,7 @@ fn poll_keys() {
         say(a, &pace_text());
     }
     if pressed & KEY_BOARD != 0 {
-        let next = (BOARD.load(Ordering::Acquire) + 1) % 3;
+        let next = (BOARD.load(Ordering::Acquire) + 1) % 4;
         BOARD.store(next, Ordering::Release);
     }
     if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD) == 0 {
@@ -1138,6 +1178,7 @@ fn reset_view() {
     SPEED.store(NORMAL_SPEED, Ordering::Release);
     ENDED.store(false, Ordering::Release);
     LAST_DEADLINE.store(0, Ordering::Release);
+    GAME_MS.store(0, Ordering::Release);
     restore_view();
     REAL.store(NONE, Ordering::Release);
 }
