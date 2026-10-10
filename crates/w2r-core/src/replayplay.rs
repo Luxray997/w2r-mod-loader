@@ -23,7 +23,7 @@
 use core::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
@@ -72,7 +72,9 @@ static REAL: AtomicU8 = AtomicU8::new(NONE);
 static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// Which watched keys were down on the previous frame.
-static KEYS_DOWN: AtomicU8 = AtomicU8::new(0);
+static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
+/// The scoreboard under the panel is shown.
+static BOARD: AtomicBool = AtomicBool::new(true);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 /// Let one turn through while paused.
 static STEP: AtomicBool = AtomicBool::new(false);
@@ -592,16 +594,18 @@ fn show_chat(a: &Addrs, chat: &w2r_replay::Chat) {
 
 // ---- Viewing -------------------------------------------------------------------------------
 
-const KEY_PREV: u8 = 1;
-const KEY_NEXT: u8 = 2;
-const KEY_HOME: u8 = 4;
-const KEY_FULL: u8 = 8;
-const KEY_FASTER: u8 = 16;
-const KEY_SLOWER: u8 = 32;
-const KEY_PAUSE: u8 = 64;
-const KEY_STEP: u8 = 128;
+const KEY_PREV: u16 = 1;
+const KEY_NEXT: u16 = 2;
+const KEY_HOME: u16 = 4;
+const KEY_FULL: u16 = 8;
+const KEY_FASTER: u16 = 16;
+const KEY_SLOWER: u16 = 32;
+const KEY_PAUSE: u16 = 64;
+const KEY_STEP: u16 = 128;
+const KEY_BOARD: u16 = 256;
 /// `[`, `]`, Home and Insert.
-const WATCHED: [(u8, i32); 8] = [
+const WATCHED: [(u16, i32); 9] = [
+    (KEY_BOARD, 0xC0),
     (KEY_FASTER, 0x21),
     (KEY_SLOWER, 0x22),
     (KEY_PAUSE, 0x23),
@@ -880,6 +884,41 @@ pub fn pace() -> Option<Pace> {
     })
 }
 
+/// A player in the match, for the scoreboard.
+pub struct Member {
+    pub slot: u8,
+    pub name: String,
+}
+
+/// The players in the match (a human or a computer), in slot order. Empty off a replay.
+pub fn roster() -> Vec<Member> {
+    let Some(a) = ADDRS.get().filter(|_| is_active()) else {
+        return Vec::new();
+    };
+    players(a)
+        .into_iter()
+        .map(|slot| Member {
+            slot,
+            name: player_name(a, slot),
+        })
+        .collect()
+}
+
+/// The player whose view is on screen, once the replay has started.
+pub fn watching() -> Option<u8> {
+    let (viewed, real) = (VIEWED.load(Ordering::Acquire), REAL.load(Ordering::Acquire));
+    match (viewed < 8, real < 8) {
+        (true, _) => Some(viewed),
+        (false, true) => Some(real),
+        _ => None,
+    }
+}
+
+/// The scoreboard is shown (the backtick key turns it off for a bare panel).
+pub fn board_shown() -> bool {
+    BOARD.load(Ordering::Acquire)
+}
+
 fn change_speed(by: i8) {
     let now = SPEED.load(Ordering::Acquire) as i8;
     let to = (now + by).clamp(0, SPEEDS.len() as i8 - 1);
@@ -1015,7 +1054,7 @@ fn poll_keys() {
         KEYS_DOWN.store(0, Ordering::Release);
         return;
     }
-    let mut down = 0u8;
+    let mut down = 0u16;
     for (bit, vk) in WATCHED {
         // SAFETY: a plain key-state query.
         if unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0 {
@@ -1042,7 +1081,10 @@ fn poll_keys() {
         }
         say(a, &pace_text());
     }
-    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP) == 0 {
+    if pressed & KEY_BOARD != 0 {
+        BOARD.fetch_xor(true, Ordering::AcqRel);
+    }
+    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD) == 0 {
         return;
     }
     let list = players(a);
@@ -1090,6 +1132,7 @@ fn reset_view() {
     FULL_VISION.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
+    BOARD.store(true, Ordering::Release);
     STEP.store(false, Ordering::Release);
     SPEED.store(NORMAL_SPEED, Ordering::Release);
     ENDED.store(false, Ordering::Release);

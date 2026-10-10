@@ -36,6 +36,7 @@ pub mod pe;
 pub mod peer;
 pub use w2r_preview::pud;
 pub mod pudvalidate;
+pub mod scoreboard;
 pub mod screenkit;
 pub mod store;
 pub mod symbols;

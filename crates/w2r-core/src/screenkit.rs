@@ -795,6 +795,14 @@ pub mod game {
             }
         }
 
+        /// A label in `colour` (the context's text colour is put back afterwards).
+        pub fn label_coloured_at(&self, r: Rect, text: &str, align: i32, colour: u32) {
+            let previous = self.text_colour();
+            self.set_text_colour(colour);
+            self.label_at(r, text, align);
+            self.set_text_colour(previous);
+        }
+
         pub fn wrapped_label_at(&self, r: Rect, text: &str) {
             if text.is_empty() {
                 return;
