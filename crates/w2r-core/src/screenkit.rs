@@ -96,6 +96,10 @@ pub mod game {
     const FOLDER_COLOUR: u32 = rgba(226, 184, 68, 255);
     const MAP_COLOUR: u32 = rgba(96, 186, 108, 255);
     const ICON_HOLE: u32 = rgba(18, 14, 10, 220);
+    /// The selected list row: a gold wash over it and a solid bar at its left edge.
+    const SELECT_WASH: u32 = rgba(226, 184, 68, 70);
+    const SELECT_BAR: u32 = rgba(226, 184, 68, 255);
+    const SELECT_BAR_W: f32 = 8.0;
     const PLACEHOLDER_COLOUR: u32 = rgba(150, 142, 128, 200);
     const PANEL_CLIP: usize = 0x3c;
     const GROUP_FLAGS: u32 = 0x20;
@@ -604,6 +608,26 @@ pub mod game {
                     ICON_HOLE,
                 );
             }
+        }
+
+        /// Marks the row that began at `row_top` as selected, `width` wide from the group's left
+        /// edge. Call after the row's own widget so the wash sits over it.
+        pub fn highlight_row(&self, row_top: f32, width: f32) {
+            let p = self.panel();
+            let canvas = self.canvas();
+            if p.is_null() || canvas.is_null() {
+                return;
+            }
+            let (bounds_x, scroll) = unsafe {
+                let sp = p.add(PANEL_OFFSET_Y).cast::<*const u32>().read_unaligned();
+                (
+                    p.add(PANEL_BOUNDS_X).cast::<f32>().read_unaligned(),
+                    if sp.is_null() { 0.0 } else { *sp as f32 },
+                )
+            };
+            let y = row_top - scroll;
+            self.fill(canvas, bounds_x, y, width, ROW_H, 0.0, SELECT_WASH);
+            self.fill(canvas, bounds_x, y, SELECT_BAR_W, ROW_H, 0.0, SELECT_BAR);
         }
 
         /// A text field with a dim placeholder while it is empty and unfocused.

@@ -14,6 +14,8 @@ use crate::screenkit::*;
 const PANEL_W_FRACTION: f32 = 0.80;
 const PANEL_H_FRACTION: f32 = 0.88;
 const LIST_FRACTION: f32 = 0.56;
+/// Room the list's scrollbar takes at the right, which the selection wash leaves free.
+const LIST_SCROLLBAR_W: f32 = 90.0;
 /// The newest this many recordings are listed.
 const LIST_LIMIT: usize = 200;
 
@@ -205,10 +207,9 @@ fn shorten(text: &str, max: usize) -> String {
 }
 
 /// One list row: the date, the map and who played, cut to fit; the rest is in the details.
-fn row_label(entry: &Entry, utc_offset: i32, chosen: bool, budget: usize) -> String {
+fn row_label(entry: &Entry, utc_offset: i32, budget: usize) -> String {
     let head = format!(
-        "{}{}  {}  ",
-        if chosen { "> " } else { "  " },
+        "  {}  {}  ",
         entry.when(utc_offset),
         entry.map.trim_end_matches(".pud").trim_end_matches(".PUD"),
     );
@@ -273,9 +274,13 @@ impl Picker {
             let budget = row_budget(left_w);
             let mut picked = None;
             for (i, e) in self.entries.iter().enumerate() {
-                let label = row_label(e, self.utc_offset, self.chosen == Some(i), budget);
+                let label = row_label(e, self.utc_offset, budget);
+                let row_top = k.next_row_top();
                 if k.list_row_button(&label) {
                     picked = Some(i);
+                }
+                if self.chosen == Some(i) {
+                    k.highlight_row(row_top, left_w - LIST_SCROLLBAR_W);
                 }
             }
             if picked.is_some() {
