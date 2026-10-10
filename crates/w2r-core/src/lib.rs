@@ -71,6 +71,8 @@ pub mod paths;
 pub mod plugins;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod previewdraw;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod replayrec;
 #[cfg(all(windows, target_arch = "x86", target_env = "msvc"))]
 pub mod proxy;
 #[cfg(windows)]

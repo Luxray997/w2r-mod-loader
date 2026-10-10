@@ -2557,6 +2557,7 @@ dependencies = [
  "w2r-abi",
  "w2r-formats",
  "w2r-preview",
+ "w2r-replay",
  "w2r-stats",
  "windows-sys 0.61.2",
 ]
@@ -2568,6 +2569,13 @@ version = "0.1.0"
 [[package]]
 name = "w2r-preview"
 version = "0.1.0"
+
+[[package]]
+name = "w2r-replay"
+version = "0.1.0"
+dependencies = [
+ "w2r-stats",
+]
 
 [[package]]
 name = "w2r-stats"

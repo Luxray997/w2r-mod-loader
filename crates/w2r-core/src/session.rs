@@ -177,6 +177,8 @@ pub fn on_match_start() {
     }
     #[cfg(target_arch = "x86")]
     crate::matchend::rearm();
+    #[cfg(target_arch = "x86")]
+    crate::replayrec::rearm();
     SESSION.with(|cell| {
         // Busy means a plugin callback is on the stack and drew something; the event is lost
         // rather than delivered into a half-finished callback.
@@ -931,6 +933,10 @@ fn start() -> Session {
         crate::matchstart::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::matchend::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::matchend::install_run_game(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::replayrec::install(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {
@@ -963,12 +969,20 @@ fn start() -> Session {
         .borrow_mut()
         .set_fingerprint(loaded.fingerprint);
     #[cfg(target_arch = "x86")]
-    crate::matchend::init_reporter(
-        &startup.root,
-        loaded.fingerprint,
-        crate::handshake::VERSION_TEXT,
-        &*host_log,
-    );
+    {
+        crate::matchend::init_reporter(
+            &startup.root,
+            loaded.fingerprint,
+            crate::handshake::VERSION_TEXT,
+            &*host_log,
+        );
+        crate::replayrec::init(
+            &startup.root,
+            loaded.fingerprint,
+            crate::handshake::VERSION_TEXT,
+            &*host_log,
+        );
+    }
     let authors = plugins::authors(&startup.root, &loaded.state);
     Session {
         registry: loaded.registry,

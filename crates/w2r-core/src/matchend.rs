@@ -72,10 +72,17 @@ pub fn rearm() {
     }
 }
 
-/// Back in a lobby: a match that began but never produced a result (surrender, quit) is logged
-/// once, from the last state seen while the match or its results screen was up (the lobby has
-/// already reset the tables by now), and reported as `left`.
+/// Back in a lobby. `RunGame` returning is the real end of a match; this stays as a fallback for a
+/// match whose end was not seen.
 pub fn on_lobby_enter() {
+    conclude();
+}
+
+/// The match is over for this machine, however it ended. One that began but never produced a
+/// result (surrender, quit) is logged once, from the last state seen, and reported as `left`; the
+/// replay recording is closed with the final result.
+fn conclude() {
+    let mut left = None;
     if OPEN.swap(false, Ordering::AcqRel) && !REPORTED.swap(true, Ordering::AcqRel) {
         let last = LAST.lock().ok().and_then(|mut l| l.take());
         let text = match &last {
@@ -84,9 +91,11 @@ pub fn on_lobby_enter() {
         };
         crate::session::StartupLog.line(W2R_LOG_INFO, "host", &text);
         if let Some(raw) = last {
+            left = Some((raw.results, raw.mismatch));
             let _ = guarded(|| report_result(&raw));
         }
     }
+    crate::replayrec::end(left);
 }
 
 /// Called on every game window/frame: while a match is open, remember its tables so the last
@@ -107,6 +116,71 @@ pub fn note_frame() {
             }
         }
     });
+}
+
+pub const RUN_GAME: &str = "RunGame";
+
+type RunGameFn = unsafe extern "C" fn() -> u32;
+
+static RUN_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+/// `RunGame` (0x4c57f0) sets up the match, waits for the first turn, runs the match loop until a
+/// win, a loss, a surrender or a quit clears `MatchLoopActive` (0x91c6c5), tears down and returns
+/// the next game state. Its return is the one signal that the match is over whatever the way,
+/// with the tables still intact (a lobby only wipes them later). x86 only (`cdecl`).
+pub fn install_run_game(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
+    let Some(target) = symbols.address(RUN_GAME) else {
+        log.line(W2R_LOG_ERROR, "host", "RunGame is not in the symbol table");
+        return false;
+    };
+    // SAFETY: `run_game_detour` matches RunGame's cdecl no-argument signature (Ghidra, build 2818);
+    // it returns the full EAX unchanged, so the game's 16-bit return value is untouched.
+    let result = unsafe {
+        hooks::global().install(
+            Owner::Host,
+            image,
+            target,
+            run_game_detour as *mut c_void,
+            &format!("host:{RUN_GAME}"),
+            |original| RUN_ORIGINAL.store(original as usize, Ordering::Release),
+        )
+    };
+    match result {
+        Ok(_) => {
+            log.line(
+                W2R_LOG_INFO,
+                "host",
+                &format!("hooked {RUN_GAME} @ {target:#010x} (match concluded)"),
+            );
+            true
+        }
+        Err(e) => {
+            log.line(
+                W2R_LOG_ERROR,
+                "host",
+                &format!("could not hook {RUN_GAME}: {e:?}"),
+            );
+            false
+        }
+    }
+}
+
+unsafe extern "C" fn run_game_detour() -> u32 {
+    let original: RunGameFn = unsafe { core::mem::transmute(RUN_ORIGINAL.load(Ordering::Acquire)) };
+    let next_state = unsafe { original() };
+    if let Err(fault) = guarded(|| {
+        // The tables are still the match's own: keep this state for `conclude`.
+        // SAFETY: as in `check`.
+        if let Some(raw) = unsafe { read_raw() }.filter(|r| r.turns > 0) {
+            if let Ok(mut l) = LAST.lock() {
+                *l = Some(raw);
+            }
+        }
+        conclude();
+    }) {
+        crate::session::host_fault("match concluded", &fault);
+    }
+    next_state
 }
 
 pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
@@ -201,6 +275,7 @@ fn check() {
     if let Some(raw) = raw {
         crate::session::StartupLog.line(W2R_LOG_INFO, "host", &raw.format("match end"));
         report_result(&raw);
+        crate::replayrec::note_result(raw.results, raw.mismatch);
     }
     OPEN.store(false, Ordering::Release);
     crate::session::on_match_end();
@@ -240,7 +315,7 @@ unsafe fn read_raw() -> Option<Raw> {
 }
 
 /// The lobby's map name text. Safe to call inside `guarded` only.
-fn read_map() -> String {
+pub(crate) fn read_map() -> String {
     let Some(a) = ADDRS.get() else {
         return String::new();
     };
@@ -299,7 +374,7 @@ struct MatchCtx {
     start: Option<Report>,
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

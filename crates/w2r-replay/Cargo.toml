@@ -1,0 +1,9 @@
+[package]
+name = "w2r-replay"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Replay files for Warcraft II Remastered: the .w2rr format, writer, reader and command packet scanner (docs/replay-research.md)"
+
+[dependencies]
+w2r-stats.workspace = true
