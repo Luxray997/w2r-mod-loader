@@ -13,6 +13,7 @@ crate-type = ["rlib", "cdylib"]
 w2r-abi.workspace = true
 w2r-formats.workspace = true
 w2r-preview.workspace = true
+w2r-stats.workspace = true
 # DLL pins, peer tags and the simulation fingerprint.
 sha2 = "0.10"
 

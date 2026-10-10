@@ -10,3 +10,4 @@ rust-version = "1.85"
 w2r-abi = { path = "crates/w2r-abi" }
 w2r-formats = { path = "crates/w2r-formats" }
 w2r-preview = { path = "crates/w2r-preview" }
+w2r-stats = { path = "crates/w2r-stats" }

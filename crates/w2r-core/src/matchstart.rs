@@ -2,7 +2,7 @@
 //! wc2r-plus hooks that call as its match-start signal (`core/match_start.cpp`); so do we. Like
 //! wc2r-plus the handlers run before the game's own function. x86 only (`fastcall`).
 //!
-//! `W2R_EVT_MATCH_END` has no proven source in wc2r-plus and is not fired yet (docs/abi.md).
+//! `W2R_EVT_MATCH_END` is fired by `matchend.rs`.
 
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};

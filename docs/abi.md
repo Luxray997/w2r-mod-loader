@@ -134,7 +134,7 @@ messages per second has the excess dropped before any plugin sees them.
 | `W2R_EVT_CHAT_RECEIVED` 5 | `W2rEvtChat` | `chat.read` | a chat line arrives |
 | `W2R_EVT_PEER_MESSAGE` 6 | `W2rEvtPeerMessage` | `net.send` | a plugin message with this plugin's tag arrives |
 | `W2R_EVT_MATCH_START` 7 | none | none | a match begins (the game resets its map-message slots, as wc2r-plus detects it); delivered before the game's own reset runs |
-| `W2R_EVT_MATCH_END` 8 | none | none | reserved: **not fired yet**, no proven source for it |
+| `W2R_EVT_MATCH_END` 8 | none | none | the local player's `PlayerMatchResult` became non-zero (victory, defeat or leaving), once per match; fired from a host hook on `CheckMatchEnd` after the game's own function ran |
 | `W2R_EVT_SETTINGS_CHANGED` 9 | none | none | the user changed this plugin's settings in the UI |
 | `W2R_EVT_SHUTDOWN` 10 | none | none | the game is exiting |
 

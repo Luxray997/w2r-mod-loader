@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use w2r_abi::{
-    W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_EVT_MATCH_START, W2R_LOG_ERROR, W2R_LOG_INFO,
-    W2R_LOG_WARN,
+    W2R_EVT_LOBBY_ENTER, W2R_EVT_LOBBY_LEAVE, W2R_EVT_MATCH_END, W2R_EVT_MATCH_START,
+    W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN,
 };
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
@@ -175,6 +175,8 @@ pub fn on_match_start() {
     if !on_main_thread() {
         return;
     }
+    #[cfg(target_arch = "x86")]
+    crate::matchend::rearm();
     SESSION.with(|cell| {
         // Busy means a plugin callback is on the stack and drew something; the event is lost
         // rather than delivered into a half-finished callback.
@@ -189,9 +191,29 @@ pub fn on_match_start() {
     });
 }
 
+/// The local player's match is over (`CheckMatchEnd` wrote their result): tell the plugins that
+/// subscribed.
+pub fn on_match_end() {
+    if !on_main_thread() {
+        return;
+    }
+    SESSION.with(|cell| {
+        let Ok(slot) = cell.try_borrow() else {
+            return;
+        };
+        if let Some(session) = slot.as_ref() {
+            session
+                .registry
+                .dispatch(W2R_EVT_MATCH_END, core::ptr::null());
+        }
+    });
+}
+
 /// One `BeginNamedWindow` call on the main thread. `name` is the window the game is starting,
 /// if it gave one.
 pub fn on_window(name: Option<&str>) {
+    #[cfg(target_arch = "x86")]
+    crate::matchend::note_frame();
     let now = chat::now_ms();
     ensure_started();
     // Queued messages first, at the top level only: a nested call (a plugin callback made the
@@ -217,6 +239,8 @@ pub fn on_window(name: Option<&str>) {
         match event {
             Some(Event::Enter) => {
                 session.net.handshake.borrow_mut().enter(nonce());
+                #[cfg(target_arch = "x86")]
+                crate::matchend::on_lobby_enter();
                 session
                     .registry
                     .dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
@@ -291,10 +315,7 @@ pub fn on_window(name: Option<&str>) {
             net.run(outs);
             #[cfg(target_arch = "x86")]
             {
-                let everyone = net
-                    .handshake
-                    .try_borrow()
-                    .is_ok_and(|h| h.everyone_has());
+                let everyone = net.handshake.try_borrow().is_ok_and(|h| h.everyone_has());
                 crate::observer::frame(
                     everyone,
                     net.transport.is_host() && net.transport.connected(),
@@ -908,6 +929,8 @@ fn start() -> Session {
         crate::mapdownload::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::matchstart::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::matchend::install(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {
@@ -939,6 +962,13 @@ fn start() -> Session {
     net.handshake
         .borrow_mut()
         .set_fingerprint(loaded.fingerprint);
+    #[cfg(target_arch = "x86")]
+    crate::matchend::init_reporter(
+        &startup.root,
+        loaded.fingerprint,
+        crate::handshake::VERSION_TEXT,
+        &*host_log,
+    );
     let authors = plugins::authors(&startup.root, &loaded.state);
     Session {
         registry: loaded.registry,
