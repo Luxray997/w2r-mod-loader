@@ -72,6 +72,8 @@ pub mod fogtrack;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod viewmem;
 #[cfg(all(windows, target_arch = "x86"))]
+pub mod joinpassword;
+#[cfg(all(windows, target_arch = "x86"))]
 pub mod lobbycreate;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod lobbyscreen;

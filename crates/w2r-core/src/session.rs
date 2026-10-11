@@ -1039,6 +1039,7 @@ fn start() -> Session {
                 options::install(image, &symbols, &*log);
                 options::install_main_menu(image, &symbols, &*log);
                 crate::lobbycreate::install(image, &symbols, &*log);
+                crate::joinpassword::install(image, &symbols, &*log);
                 crate::createscreen::install(&symbols, &*log);
                 crate::lobbyscreen::install(image, &symbols, &*log);
             }
