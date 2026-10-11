@@ -46,6 +46,8 @@ pub struct Picker {
     /// The last map comparison, for the recording and map file it was made for (hashing reads
     /// the whole file, so it is done once, not every frame).
     checked: Option<(String, String, MapCheck)>,
+    /// The recording whose Delete button has been pressed once.
+    confirm_delete: Option<String>,
 }
 
 impl Picker {
@@ -187,6 +189,28 @@ impl Picker {
         check
     }
 
+    /// Deletes a recording's file and drops it from the list, taking it out of the queue first
+    /// if it was the queued one.
+    fn delete_chosen(&mut self, file: &str) {
+        self.confirm_delete = None;
+        let Some(dir) = crate::replayplay::replays_dir() else { return };
+        match catalog::delete(&dir, file) {
+            Ok(()) => {
+                crate::session::log_info("replaypicker", &format!("deleted {file}"));
+                if crate::replayplay::queued().as_deref() == Some(file) {
+                    crate::replayplay::unqueue();
+                }
+                self.entries.retain(|e| e.file != file);
+                self.chosen = (!self.entries.is_empty())
+                    .then(|| self.chosen.unwrap_or(0).min(self.entries.len() - 1));
+                self.checked = None;
+            }
+            Err(err) => {
+                crate::session::log_error("replaypicker", &format!("could not delete {file}: {err}"))
+            }
+        }
+    }
+
     fn entry(&self) -> Option<&Entry> {
         self.chosen.and_then(|i| self.entries.get(i))
     }
@@ -255,15 +279,65 @@ fn shorten(text: &str, max: usize) -> String {
     format!("{kept}..")
 }
 
-/// One list row: the date, the map and who played, cut to fit; the rest is in the details.
+/// The map's name without its file extension.
+fn map_title(map: &str) -> &str {
+    map.trim_end_matches(".pud").trim_end_matches(".PUD")
+}
+
+/// The race name for a slot's race byte, when it is one of the two known.
+fn race_name(race: u8) -> Option<&'static str> {
+    match race {
+        0 => Some("Human"),
+        1 => Some("Orc"),
+        _ => None,
+    }
+}
+
+/// One list row, most important first: the result, the map, who it was against, then the short
+/// date. The map and the opponents are cut to fit; the rest is in the details.
 fn row_label(entry: &Entry, utc_offset: i32, budget: usize) -> String {
-    let head = format!(
-        "  {}  {}  ",
-        entry.when(utc_offset),
-        entry.map.trim_end_matches(".pud").trim_end_matches(".PUD"),
-    );
-    let room = budget.saturating_sub(head.chars().count());
-    format!("{head}{}", shorten(&entry.versus(), room))
+    let when = entry.when_short(utc_offset);
+    let result = capitalised(entry.outcome.text());
+    let map = shorten(map_title(&entry.map), 24);
+    let head = format!("  {result}  {map}  ");
+    let tail = format!("  {when}");
+    let room = budget.saturating_sub(head.chars().count() + tail.chars().count() + 3);
+    let opponents = entry.opponents();
+    if opponents.is_empty() {
+        return format!("{head}{when}");
+    }
+    format!("{head}vs {}{tail}", shorten(&opponents, room))
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// "1.2 MB" / "340 KB".
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else {
+        format!("{} KB", (bytes / 1000).max(1))
+    }
+}
+
+/// A player's line in the details: "Beau - Orc, team 1" (computers marked).
+fn player_text(p: &w2r_replay::catalog::PlayerLine, is_recorder: bool) -> String {
+    let mut parts = Vec::new();
+    if let Some(r) = race_name(p.race) {
+        parts.push(r.to_owned());
+    }
+    parts.push(format!("team {}", p.team));
+    if !p.human {
+        parts.push("computer".to_owned());
+    }
+    let you = if is_recorder { " (recorder)" } else { "" };
+    format!("{}{you} - {}", p.name, parts.join(", "))
 }
 
 impl Picker {
@@ -333,6 +407,9 @@ impl Picker {
                 }
             }
             if picked.is_some() {
+                if picked != self.chosen {
+                    self.confirm_delete = None;
+                }
                 self.chosen = picked;
             }
             k.end_list();
@@ -373,9 +450,16 @@ impl Picker {
                 k.label_at(Rect::new(dx, y, dw, CAPTION_H), text, ALIGN_LEFT);
                 y += CAPTION_H;
             };
-            line(&e.when(self.utc_offset));
-            line(&e.versus());
-            line(&format!("{}, {} turns", e.outcome.text(), e.turns));
+            let fit = row_budget(dw);
+            line(&format!("{} - {}", capitalised(e.outcome.text()), e.when(self.utc_offset)));
+            line(&format!("{} turns, {}", e.turns, size_text(e.bytes)));
+            let shown = 4;
+            for p in e.players.iter().take(shown) {
+                line(&shorten(&player_text(p, p.slot == e.local), fit));
+            }
+            if e.players.len() > shown {
+                line(&format!("and {} more", e.players.len() - shown));
+            }
             let map_state = if found.is_some() {
                 match check {
                     MapCheck::Same => "Map found, verified",
@@ -408,8 +492,24 @@ impl Picker {
             }
         }
 
-        let half = fl((right_w - GAP) * 0.5);
-        if k.button_at(Rect::new(right_x, buttons_y, half, ROW_H), "Cancel", false) {
+        let third = fl((right_w - GAP * 2.0) / 3.0);
+        // Delete takes two presses: the first arms it for the highlighted recording.
+        let armed = entry
+            .as_ref()
+            .is_some_and(|e| self.confirm_delete.as_deref() == Some(e.file.as_str()));
+        if k.button_at(
+            Rect::new(right_x, buttons_y, third, ROW_H),
+            if armed { "Sure?" } else { "Delete" },
+            entry.is_none(),
+        ) && let Some(e) = &entry
+        {
+            if armed {
+                self.delete_chosen(&e.file);
+            } else {
+                self.confirm_delete = Some(e.file.clone());
+            }
+        }
+        if k.button_at(Rect::new(right_x + third + GAP, buttons_y, third, ROW_H), "Cancel", false) {
             browser.cancel_walk();
             self.open = false;
         }
@@ -417,7 +517,7 @@ impl Picker {
             && found.is_some()
             && check != MapCheck::Differs;
         if k.button_at(
-            Rect::new(right_x + half + GAP, buttons_y, right_w - half - GAP, ROW_H),
+            Rect::new(right_x + (third + GAP) * 2.0, buttons_y, right_w - (third + GAP) * 2.0, ROW_H),
             "Watch",
             !can_watch,
         ) && let (Some(e), Some(m)) = (&entry, &found)

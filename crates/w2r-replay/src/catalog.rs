@@ -37,6 +37,10 @@ pub struct Entry {
     pub map: String,
     pub started: u64,
     pub players: Vec<PlayerLine>,
+    /// The slot the recorder played in.
+    pub local: u8,
+    /// Size of the file in bytes.
+    pub bytes: u64,
     pub turns: u32,
     pub outcome: Outcome,
     pub fingerprint: [u8; 4],
@@ -48,6 +52,7 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerLine {
+    pub slot: u8,
     pub name: String,
     pub team: u8,
     pub race: u8,
@@ -59,6 +64,27 @@ impl Entry {
     pub fn versus(&self) -> String {
         let names: Vec<&str> = self.players.iter().map(|p| p.name.as_str()).collect();
         names.join(" v ")
+    }
+
+    /// The other players, "Stormreaver Clan, Grunt" (everyone when the recorder is not listed).
+    pub fn opponents(&self) -> String {
+        let names: Vec<&str> = self
+            .players
+            .iter()
+            .filter(|p| p.slot != self.local)
+            .map(|p| p.name.as_str())
+            .collect();
+        names.join(", ")
+    }
+
+    /// The recorder's own line, if the recording lists their slot.
+    pub fn recorder(&self) -> Option<&PlayerLine> {
+        self.players.iter().find(|p| p.slot == self.local)
+    }
+
+    /// The start time without the year, `MM-DD HH:MM`, for crowded lists.
+    pub fn when_short(&self, utc_offset_minutes: i32) -> String {
+        self.when(utc_offset_minutes)[5..].to_owned()
     }
 
     /// The start time as `YYYY-MM-DD HH:MM` shifted by `utc_offset_minutes` (the viewer's zone).
@@ -83,6 +109,7 @@ pub fn entry_from_bytes(file: &str, raw: &[u8]) -> Option<Entry> {
         .players()
         .iter()
         .map(|p| PlayerLine {
+            slot: p.slot,
             name: p.name.clone(),
             team: p.team,
             race: p.race,
@@ -94,6 +121,8 @@ pub fn entry_from_bytes(file: &str, raw: &[u8]) -> Option<Entry> {
         map: r.header.map.clone(),
         started: r.header.started,
         players,
+        local: local as u8,
+        bytes: raw.len() as u64,
         turns: if r.turns.is_empty() {
             0
         } else {
@@ -104,6 +133,19 @@ pub fn entry_from_bytes(file: &str, raw: &[u8]) -> Option<Entry> {
         has_start_state: !r.header.lobby.is_empty(),
         map_sha: r.header.map_sha,
     })
+}
+
+/// Deletes the recording `file` from `dir`. Only a plain `.w2rr` file name is accepted, so a
+/// path can never reach outside the folder.
+pub fn delete(dir: &Path, file: &str) -> std::io::Result<()> {
+    let plain = !file.is_empty() && !file.contains(['/', '\\', ':']) && file != "..";
+    if !plain || !file.ends_with(".w2rr") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a recording file name",
+        ));
+    }
+    std::fs::remove_file(dir.join(file))
 }
 
 /// The recordings in `dir`, newest first (the names start with the date), at most `limit`.
@@ -198,6 +240,29 @@ mod tests {
     fn old_recordings_have_no_start_state() {
         let e = entry_from_bytes("a.w2rr", &recording("Map.pud", 1_700_000_000, false, Some(3)));
         assert!(!e.unwrap().has_start_state);
+    }
+
+    #[test]
+    fn short_date_drops_the_year_and_size_is_the_file_length() {
+        let raw = recording("Map.pud", 1_700_000_000, true, Some(3));
+        let e = entry_from_bytes("a.w2rr", &raw).unwrap();
+        assert_eq!(e.when_short(0), "11-14 22:13");
+        assert_eq!(e.bytes, raw.len() as u64);
+    }
+
+    #[test]
+    fn delete_removes_only_plain_recording_names() {
+        let dir = std::env::temp_dir().join(format!("w2r-catalog-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.w2rr"), b"x").unwrap();
+        std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+        assert!(delete(&dir, "keep.txt").is_err());
+        assert!(delete(&dir, "..\\a.w2rr").is_err());
+        assert!(delete(&dir, "sub/a.w2rr").is_err());
+        assert!(dir.join("keep.txt").exists());
+        delete(&dir, "a.w2rr").unwrap();
+        assert!(!dir.join("a.w2rr").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
