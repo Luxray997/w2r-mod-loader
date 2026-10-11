@@ -31,6 +31,8 @@ type ExtentFn = unsafe extern "C" fn() -> f32;
 type DropFn = unsafe extern "C" fn(u32, *const u8, u32);
 /// `SendToNetSlot(netSlot, message, length)`: one reliable message to one peer.
 type SendFn = unsafe extern "C" fn(u32, *const u8, u32);
+/// `DisplayChatOrGameMessage(text, player, durationMs, mode)`: a line on the local screen.
+type ShowFn = unsafe extern "C" fn(*const u8, u8, u32, u8);
 /// `NetPeerLeft(netSlot)`: the game's "peer left" notification.
 type PeerLeftFn = unsafe extern "C" fn(i32);
 /// `AlliancesFooter(ctx, x, y, w, h, a, b)`: the Cancel/OK strip of the Alliances dialog.
@@ -53,6 +55,8 @@ const NAME_MAX: usize = 0x19;
 /// What the kicked player reads: the drop sends them nothing, so without this they only see the
 /// game's "Waiting for other players" screen.
 const KICK_NOTICE: &str = "The host removed you from this game.";
+/// How long the local copy of the announcement stays up (what the game's own chat echo uses).
+const ECHO_MS: u32 = 0x28;
 /// How long to wait for the transport to remove the player on the host before doing it.
 const SETTLE_MS: u64 = 1000;
 const GIVE_UP_MS: u64 = 4000;
@@ -96,6 +100,8 @@ struct Game {
     mismatch: usize,
     drop: DropFn,
     send: SendFn,
+    show: ShowFn,
+    local_player: usize,
     chat_mode: usize,
     peer_left: PeerLeftFn,
     ui_width: ExtentFn,
@@ -144,6 +150,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         Some(mismatch),
         Some(drop),
         Some(send),
+        Some(show),
+        Some(local_player),
         Some(chat_mode),
         Some(peer_left),
         Some(ui_width),
@@ -161,6 +169,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         get("TurnSyncMismatch"),
         get("DropNetPeer"),
         get("SendToNetSlot"),
+        get("DisplayChatOrGameMessage"),
+        get("LocalPlayer"),
         get("ChatTargetMode"),
         get("NetPeerLeft"),
         get("HudUiWidth"),
@@ -193,6 +203,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
             mismatch,
             drop: core::mem::transmute::<usize, DropFn>(drop),
             send: core::mem::transmute::<usize, SendFn>(send),
+            show: core::mem::transmute::<usize, ShowFn>(show),
+            local_player,
             chat_mode,
             peer_left: core::mem::transmute::<usize, PeerLeftFn>(peer_left),
             ui_width: core::mem::transmute::<usize, ExtentFn>(ui_width),
@@ -401,6 +413,27 @@ impl Game {
         unsafe { (self.send)(u32::from(slot), msg.as_ptr(), msg.len() as u32) };
     }
 
+    /// A public line to everyone else still in the match, and on the host's own screen, saying who
+    /// was removed. Sent before the drop, from the same list the panel shows.
+    fn announce_kick(&self, victim: u8, name: &str) {
+        let text = format!("{name} was removed from the game by the host.");
+        // SAFETY: the mode is a byte in the game's data section.
+        let mode = unsafe { *(self.chat_mode as *const u8) };
+        let mut msg = vec![0u8, mode];
+        msg.extend_from_slice(text.as_bytes());
+        msg.push(0);
+        for c in self.candidates().iter().filter(|c| c.net_slot != victim) {
+            // SAFETY: the game's own send, a reliable message to one connected peer.
+            unsafe { (self.send)(u32::from(c.net_slot), msg.as_ptr(), msg.len() as u32) };
+        }
+        // SAFETY: the game's own local display; the text is NUL-terminated and the player byte a
+        // data-section global.
+        unsafe {
+            let me = *(self.local_player as *const u8);
+            (self.show)(msg[2..].as_ptr(), me, ECHO_MS, mode);
+        }
+    }
+
     /// Every filter input for net slots 1..8, for working out why nobody is listed.
     fn slot_dump(&self) -> String {
         (1..8usize)
@@ -516,6 +549,7 @@ fn kick(g: &Game, slot: u8, name: String, now: u64) {
         ),
     );
     g.tell_kicked(slot);
+    g.announce_kick(slot, &name);
     // SAFETY: the game's own drop; a null message shows no chat line. The host is the only caller.
     unsafe { (g.drop)(u32::from(slot), core::ptr::null(), REASON_KICKED) };
     if let Ok(mut p) = PENDING.lock() {
