@@ -36,6 +36,11 @@ the black player pink or cyan on your screen only, and is a "dangerous" plugin (
 memory writes). Pass it together with -WithChat to install both: the state file lists only what
 the run installs.
 
+.PARAMETER WithAllPlugins
+Builds and installs every plugin under plugins\ in the w2r-plugins repository (see -PluginsRepo),
+each with its own plugin.json and the capabilities that manifest asks for approved. Covers
+-WithChat and -WithBlackRecolor, which need not be passed with it.
+
 .PARAMETER Simulation
 Marks the hello_plugin fixture affects_simulation, so the session's simulation fingerprint is
 non-zero and the handshake (Phase 3) has something to compare: the log shows the fingerprint,
@@ -55,6 +60,7 @@ param(
     [switch]$WithHostCheck,
     [switch]$WithChat,
     [switch]$WithBlackRecolor,
+    [switch]$WithAllPlugins,
     [switch]$Simulation,
     [string]$PluginsRepo = "",
     [string]$GameDir = "D:\Games\Warcraft II Remastered\x86"
@@ -128,6 +134,22 @@ if ($WithBlackRecolor) {
     }
 }
 
+$allPlugins = @()
+if ($WithAllPlugins) {
+    $allPlugins = @(Get-ChildItem (Join-Path $PluginsRepo "plugins") -Directory | Where-Object { $_.Name -notin @("w2r-chat", "w2r-black-recolor") } | ForEach-Object { $_.Name })
+    if (-not $WithChat) { $allPlugins += "w2r-chat" }
+    if (-not $WithBlackRecolor) { $allPlugins += "w2r-black-recolor" }
+    Push-Location $PluginsRepo
+    try {
+        foreach ($id in $allPlugins) {
+            cargo build --release -p $id --target i686-pc-windows-msvc
+            if ($LASTEXITCODE -ne 0) { throw "$id build failed" }
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 $dll = Join-Path $repo "target\i686-pc-windows-msvc\release\w2r_core.dll"
 $examples = Join-Path $repo "target\i686-pc-windows-msvc\release\examples"
 if ((Test-Path $target) -and -not (Test-OurDll $target)) {
@@ -194,6 +216,25 @@ if ($WithChat) {
 if ($WithBlackRecolor) {
     $release = Join-Path $PluginsRepo "target\i686-pc-windows-msvc\release"
     $entries += Install-Fixture "w2r-black-recolor" "w2r_black_recolor" @("game.read", "hooks.raw") $false $release "Beau Hastings" "Draws the black player pink or cyan on your screen (port of the Black2Pink option of wc2r-plus by Luxray997)."
+}
+foreach ($id in $allPlugins) {
+    # The plugin's own manifest goes in unchanged; only the pin and approvals are written here.
+    $source = Join-Path $PluginsRepo "plugins\$id"
+    $manifest = Get-Content (Join-Path $source "plugin.json") -Raw | ConvertFrom-Json
+    $folder = Join-Path $root "plugins\$id"
+    New-Item -ItemType Directory -Force $folder | Out-Null
+    Copy-Item (Join-Path $source "plugin.json") (Join-Path $folder "plugin.json") -Force
+    Copy-Item (Join-Path $PluginsRepo ("target\i686-pc-windows-msvc\release\" + $manifest.entry)) (Join-Path $folder $manifest.entry) -Force
+    $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $folder $manifest.entry)).Hash.ToLower()
+    $capsJson = ($manifest.capabilities | ForEach-Object { '"' + $_ + '"' }) -join ", "
+    $entries += @"
+    "$id": {
+      "version": "$($manifest.version)",
+      "enabled": true,
+      "sha256": "$hash",
+      "approved_capabilities": [$capsJson]
+    }
+"@
 }
 if ($WithHostCheck) { $entries += Install-Fixture "host-check" "hostcheck_plugin" @("game.read", "hooks.raw") }
 $state = "{`n  `"schema`": 1,`n  `"plugins`": {`n" + ($entries -join ",`n") + "`n  }`n}`n"
