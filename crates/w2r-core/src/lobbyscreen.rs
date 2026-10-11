@@ -646,6 +646,8 @@ impl Screen {
         let host_name = unsafe { str_data_c(self.host_name) };
         let host = geo::host_slot(seat0, &present, &names, &host_name);
         let fixed = unsafe { *self.fixed_start } == 1;
+        // The host's rows carry the game's dropdown arrow at the right end of the name cell.
+        let host_view = self.is_host();
         for (i, g) in gutters.iter().enumerate() {
             if g.w <= 0.0 || !present[i] {
                 continue;
@@ -698,7 +700,7 @@ impl Screen {
                 k.fill_rect(geo::swatch_rect(*g, marks), geo::TEAM_COLOURS[i]);
             }
             if let Some(m) = &quality[i]
-                && let Some(q) = quality_marks(k, rects.name[i], m, mouse)
+                && let Some(q) = quality_marks(k, rects.name[i], m, mouse, host_view)
             {
                 tip = Some(q);
             }
@@ -959,16 +961,17 @@ fn quality_marks(
     cell: Rect,
     m: &crate::netquality::Metrics,
     mouse: (f32, f32),
+    dropdown: bool,
 ) -> Option<String> {
     use crate::netquality as nq;
-    let marks = nq::marks(cell)?;
+    let marks = nq::marks(cell, dropdown)?;
     let q = nq::quality(m);
     for (i, bar) in marks.bars.iter().enumerate() {
         k.fill_rect(*bar, if i < q.bars() { q.colour() } else { nq::DIM });
     }
     let label = nq::label(m);
     if !label.is_empty() {
-        k.label_at(marks.label, &label, ALIGN_RIGHT);
+        k.label_coloured_at(marks.label, &label, ALIGN_RIGHT, nq::LABEL_COLOUR);
     }
     geo::contains(marks.hover, mouse).then(|| nq::tip(m))
 }

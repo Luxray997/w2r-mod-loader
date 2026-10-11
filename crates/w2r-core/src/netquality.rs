@@ -244,6 +244,8 @@ impl Quality {
 }
 
 pub const DIM: u32 = pack(90, 84, 72, 200);
+/// The ping number is a soft white, so it sits below the player name.
+pub const LABEL_COLOUR: u32 = pack(235, 228, 215, 255);
 
 /// Ping decides, loss and silence pull it down.
 pub fn quality(m: &Metrics) -> Quality {
@@ -317,6 +319,8 @@ const AREA_WIDTH: f32 = 0.9;
 const AREA_HEIGHT: f32 = 0.5;
 const SIDE_INSET: f32 = 0.2;
 const LABEL_WIDTH: f32 = 2.6;
+/// Space between the number and the bars, as a fraction of the row height.
+const LABEL_GAP: f32 = 0.3;
 
 /// Where a slot's quality marks go, from its name cell: four rising bars at the right end and a
 /// number to their left. `None` when the cell is too small to show them.
@@ -328,7 +332,12 @@ pub struct Marks {
     pub hover: Rect,
 }
 
-pub fn marks(cell: Rect) -> Option<Marks> {
+/// Width of the game's dropdown arrow at the right of a row the host can open, as a fraction of
+/// the row height.
+const ARROW_RESERVE: f32 = 1.3;
+
+/// `dropdown`: the row has the game's dropdown arrow at its right end, so the marks stop short of it.
+pub fn marks(cell: Rect, dropdown: bool) -> Option<Marks> {
     if cell.w <= 0.0 || cell.h <= 0.0 {
         return None;
     }
@@ -337,10 +346,11 @@ pub fn marks(cell: Rect) -> Option<Marks> {
     let label_w = fl(cell.h * LABEL_WIDTH);
     let side = fl(cell.h * SIDE_INSET);
     // Leave most of the cell to the name.
-    if area_w < 8.0 || area_h < 6.0 || cell.w < (area_w + label_w + side) * 2.5 {
+    if area_w < 8.0 || area_h < 6.0 || cell.w < (area_w + label_w + side) * 1.8 {
         return None;
     }
-    let x0 = fl(cell.x + cell.w - side - area_w);
+    let reserve = if dropdown { fl(cell.h * ARROW_RESERVE) } else { 0.0 };
+    let x0 = fl(cell.x + cell.w - reserve - side - area_w);
     let y1 = fl(cell.y + (cell.h + area_h) * 0.5);
     let step = area_w / BAR_COUNT as f32;
     let bar_w = fl(step * 0.7);
@@ -349,7 +359,7 @@ pub fn marks(cell: Rect) -> Option<Marks> {
         let h = fl(area_h * (i + 1) as f32 / BAR_COUNT as f32);
         *bar = Rect::new(fl(x0 + step * i as f32), fl(y1 - h), bar_w, h);
     }
-    let label = Rect::new(fl(x0 - label_w), cell.y, label_w, cell.h);
+    let label = Rect::new(fl(x0 - label_w - cell.h * LABEL_GAP), cell.y, label_w, cell.h);
     let hover = Rect::new(label.x, cell.y, fl(cell.x + cell.w - label.x), cell.h);
     Some(Marks { bars, label, hover })
 }
@@ -478,7 +488,12 @@ pub mod game {
                 state.trackers[net].feed(now, *counters);
                 let lobby = (table[net] & 0xff) as usize;
                 if lobby < NET_SLOTS {
-                    out[lobby] = Some(state.trackers[net].metrics(now));
+                    let m = state.trackers[net].metrics(now);
+                    // Our own record never sends or hears anything: not a link to rate.
+                    if counters.sent == 0 && m.silent_ms >= super::SILENT_MS {
+                        continue;
+                    }
+                    out[lobby] = Some(m);
                 }
             }
             out
@@ -686,7 +701,7 @@ mod tests {
     #[test]
     fn marks_sit_inside_the_right_end_of_the_name_cell() {
         let cell = Rect::new(100.0, 50.0, 600.0, 40.0);
-        let m = marks(cell).unwrap();
+        let m = marks(cell, false).unwrap();
         for bar in m.bars {
             assert!(bar.x >= cell.x && bar.x + bar.w <= cell.x + cell.w);
             assert!(bar.y >= cell.y && bar.y + bar.h <= cell.y + cell.h);
@@ -701,8 +716,8 @@ mod tests {
 
     #[test]
     fn a_cramped_cell_gets_no_marks() {
-        assert_eq!(marks(Rect::new(0.0, 0.0, 80.0, 40.0)), None);
-        assert_eq!(marks(Rect::new(0.0, 0.0, 0.0, 40.0)), None);
-        assert_eq!(marks(Rect::new(0.0, 0.0, 600.0, 6.0)), None);
+        assert_eq!(marks(Rect::new(0.0, 0.0, 80.0, 40.0), false), None);
+        assert_eq!(marks(Rect::new(0.0, 0.0, 0.0, 40.0), false), None);
+        assert_eq!(marks(Rect::new(0.0, 0.0, 600.0, 6.0), false), None);
     }
 }
