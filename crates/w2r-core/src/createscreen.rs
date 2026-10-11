@@ -575,6 +575,8 @@ impl Screen {
             ALIGN_CAPTION,
         );
         let buffer = unsafe { *self.name_buffer };
+        // Tab walks the keyboard through the text fields: each one's id and the text it holds.
+        let mut fields: Vec<(u32, *const u8)> = Vec::with_capacity(2);
         if !buffer.is_null() {
             let max = (unsafe { *self.name_capacity } & 0x7fff_ffff) as i32;
             // A queued replay names the game and sets a password, once per visit.
@@ -590,6 +592,7 @@ impl Screen {
                 unsafe { self.auto_fill_name(buffer, max) };
             }
             let button_w = ROW_H * 1.6;
+            fields.push((k.edit_seq(), buffer));
             unsafe {
                 k.text_edit_at(
                     Rect::new(column.x, column.y + CAPTION_H, col_w - button_w - GAP * 0.5, ROW_H),
@@ -626,6 +629,7 @@ impl Screen {
             "Password (Optional)",
             ALIGN_CAPTION,
         );
+        fields.push((k.edit_seq(), self.password));
         unsafe {
             k.text_edit_at(
                 Rect::new(right_x, column.y + CAPTION_H, col_w, ROW_H),
@@ -634,6 +638,12 @@ impl Screen {
                 text_skin,
             )
         };
+        let lengths: Vec<(u32, usize)> = fields
+            .iter()
+            // SAFETY: both are the NUL-terminated buffers just edited.
+            .map(|&(id, text)| (id, unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes().len()))
+            .collect();
+        k.tab_between(&lengths);
 
         for (i, d) in self.options.iter().enumerate() {
             let x = column.x + (i % 2) as f32 * (col_w + GAP);

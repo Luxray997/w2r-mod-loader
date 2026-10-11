@@ -86,6 +86,13 @@ pub mod game {
     const CTX_SPACING_Y: usize = 0x2004;
     const WINDOW_PANEL: usize = 0x8c;
     const WINDOW_BUFFER: usize = 0x64;
+    // The window's Nuklear edit state (`TextEdit` -> FUN_005b1e20): which field has the keyboard.
+    const WINDOW_EDIT_NAME: usize = 0x140;
+    const WINDOW_EDIT_SEQ: usize = 0x144;
+    const WINDOW_EDIT_ACTIVE: usize = 0x14c;
+    const WINDOW_EDIT_CURSOR: usize = 0x154;
+    const WINDOW_EDIT_SELECT_START: usize = 0x158;
+    const WINDOW_EDIT_SELECT_END: usize = 0x15c;
     const PANEL_BOUNDS_X: usize = 0x08;
     const PANEL_OFFSET_Y: usize = 0x1c;
     const PANEL_AT_Y: usize = 0x24;
@@ -150,6 +157,24 @@ pub mod game {
     const FONT_HEIGHT: usize = 0x04;
     const PANEL_ROW_INDEX: usize = 0x68;
     const PANEL_ROW_ITEM_OFFSET: usize = 0x84;
+
+    /// True once per press of Tab, while the game window is the focused one.
+    fn tab_pressed() -> bool {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_TAB};
+        static WAS_DOWN: AtomicBool = AtomicBool::new(false);
+        let down = crate::replayplay::game_has_focus()
+            // SAFETY: a plain key-state query.
+            && unsafe { GetAsyncKeyState(VK_TAB as i32) } as u16 & 0x8000 != 0;
+        let was_down = WAS_DOWN.swap(down, Ordering::AcqRel);
+        down && !was_down
+    }
+
+    fn shift_down() -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
+        // SAFETY: a plain key-state query.
+        (unsafe { GetAsyncKeyState(VK_SHIFT as i32) }) as u16 & 0x8000 != 0
+    }
 
     /// NUL-terminated copy for the game's C-string widgets.
     pub fn cstr(text: &str) -> Vec<u8> {
@@ -357,6 +382,72 @@ pub mod game {
                 return 0;
             }
             unsafe { ctx.add(CTX_SEQ).cast::<u32>().read_unaligned() }
+        }
+
+        fn current_window(&self) -> *mut u8 {
+            let ctx = self.ctx() as *const u8;
+            if ctx.is_null() {
+                return core::ptr::null_mut();
+            }
+            unsafe {
+                ctx.add(CTX_CURRENT_WINDOW)
+                    .cast::<*mut u8>()
+                    .read_unaligned()
+            }
+        }
+
+        /// The id the next text field in this window will get (its place in the frame's order).
+        pub fn edit_seq(&self) -> u32 {
+            let win = self.current_window();
+            if win.is_null() {
+                return u32::MAX;
+            }
+            unsafe { win.add(WINDOW_EDIT_SEQ).cast::<u32>().read_unaligned() }
+        }
+
+        /// The id of the text field that has the keyboard, if any.
+        pub fn edit_focus(&self) -> Option<u32> {
+            let win = self.current_window();
+            if win.is_null() {
+                return None;
+            }
+            unsafe {
+                let active = win.add(WINDOW_EDIT_ACTIVE).cast::<i32>().read_unaligned();
+                (active != 0).then(|| win.add(WINDOW_EDIT_NAME).cast::<u32>().read_unaligned())
+            }
+        }
+
+        /// Gives the keyboard to the text field `id`, with the cursor after its `len` bytes.
+        pub fn focus_edit(&self, id: u32, len: usize) {
+            let win = self.current_window();
+            if win.is_null() {
+                return;
+            }
+            unsafe {
+                win.add(WINDOW_EDIT_NAME).cast::<u32>().write_unaligned(id);
+                win.add(WINDOW_EDIT_ACTIVE).cast::<i32>().write_unaligned(1);
+                for at in [WINDOW_EDIT_CURSOR, WINDOW_EDIT_SELECT_START, WINDOW_EDIT_SELECT_END] {
+                    win.add(at).cast::<i32>().write_unaligned(len as i32);
+                }
+            }
+        }
+
+        /// Tab (Shift+Tab backwards) moves the keyboard through `fields` (id, text length), in
+        /// order; with none focused it goes to the first. Call once per frame after drawing them.
+        pub fn tab_between(&self, fields: &[(u32, usize)]) {
+            if fields.is_empty() || !tab_pressed() {
+                return;
+            }
+            let n = fields.len();
+            let at = self
+                .edit_focus()
+                .and_then(|id| fields.iter().position(|f| f.0 == id));
+            let next = match at {
+                Some(i) if shift_down() => (i + n - 1) % n,
+                Some(i) => (i + 1) % n,
+                None => 0,
+            };
+            self.focus_edit(fields[next].0, fields[next].1);
         }
 
         /// The height of the font the game is drawing with.
