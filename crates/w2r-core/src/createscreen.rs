@@ -531,6 +531,15 @@ impl Screen {
         let buffer = unsafe { *self.name_buffer };
         if !buffer.is_null() {
             let max = (unsafe { *self.name_capacity } & 0x7fff_ffff) as i32;
+            // A queued replay names the game and sets a password, once per visit.
+            unsafe {
+                self.picker().fill_lobby_text(
+                    buffer,
+                    max.max(0) as usize,
+                    self.password,
+                    PASSWORD_CAPACITY as usize,
+                )
+            };
             unsafe {
                 k.text_edit_at(
                     Rect::new(column.x, column.y + CAPTION_H, col_w, ROW_H),

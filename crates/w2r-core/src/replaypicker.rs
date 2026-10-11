@@ -41,6 +41,8 @@ pub struct Picker {
     auto_for: Option<String>,
     /// The map file of the queued recording, once read.
     auto_map: Option<String>,
+    /// The queued recording whose game name and password have been filled on this visit.
+    filled_for: Option<String>,
     /// The last map comparison, for the recording and map file it was made for (hashing reads
     /// the whole file, so it is done once, not every frame).
     checked: Option<(String, String, MapCheck)>,
@@ -69,6 +71,43 @@ impl Picker {
     pub fn forget_auto(&mut self) {
         self.auto_for = None;
         self.auto_map = None;
+        self.filled_for = None;
+    }
+
+    /// While a replay is queued, fills the game name and password once per queued recording per
+    /// visit, so what is typed afterwards stays. Both are NUL-terminated C buffers.
+    ///
+    /// # Safety
+    /// `name` must be valid for `name_cap` bytes (or null) and `password` for `password_cap`.
+    pub unsafe fn fill_lobby_text(
+        &mut self,
+        name: *mut u8,
+        name_cap: usize,
+        password: *mut u8,
+        password_cap: usize,
+    ) {
+        let Some(file) = crate::replayplay::queued() else {
+            self.filled_for = None;
+            return;
+        };
+        if self.filled_for.as_deref() == Some(file.as_str()) {
+            return;
+        }
+        let stem = file.rsplit_once('.').map_or(file.as_str(), |(s, _)| s);
+        let put = |buf: *mut u8, cap: usize, text: &str| {
+            if buf.is_null() || cap == 0 {
+                return;
+            }
+            let n = text.len().min(cap - 1);
+            // SAFETY: the caller guarantees `cap` bytes; the text is cut to leave room for the NUL.
+            unsafe {
+                core::ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
+                *buf.add(n) = 0;
+            }
+        };
+        put(name, name_cap, &format!("Replay {stem}"));
+        put(password, password_cap, &random_password());
+        self.filled_for = Some(file);
     }
 
     /// While a replay is queued, makes its map the screen's selected map (once per queued
@@ -154,6 +193,13 @@ impl Picker {
 }
 
 /// Minutes east of UTC in the viewer's time zone right now (0 if Windows will not say).
+/// Six random digits, from the standard library's randomly keyed hasher (no extra dependency).
+fn random_password() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let n = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    format!("{:06}", n % 1_000_000)
+}
+
 fn local_utc_offset_minutes() -> i32 {
     use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
     // SAFETY: a plain query into a zeroed out-structure of the documented type.
