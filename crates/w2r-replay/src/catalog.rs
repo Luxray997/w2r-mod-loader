@@ -152,6 +152,7 @@ mod tests {
                 Vec::new()
             },
             map_sha: Some([5; 32]),
+            slot_backup: Vec::new(),
         }
     }
 

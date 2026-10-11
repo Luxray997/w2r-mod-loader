@@ -28,9 +28,9 @@ use std::sync::atomic::{
 };
 use std::sync::{Mutex, OnceLock};
 
-use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
+use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
 use w2r_replay::Replay;
-use w2r_replay::format::{LOBBY_LEN, MAX_PACKET};
+use w2r_replay::format::{LOBBY_LEN, MAX_PACKET, SLOT_BACKUP_LEN};
 
 use crate::guard::guarded;
 use crate::hooks::{self, Owner};
@@ -53,6 +53,7 @@ type SlotRequestFn = unsafe extern "C" fn(*const u8, i32);
 type DisplayChatFn = unsafe extern "C" fn(*const u8, u8, u32, i8);
 type SimModeFn = unsafe extern "C" fn(u32) -> u32;
 type PushFn = unsafe extern "C" fn(*const u8, i32, u32);
+type SyncCheckFn = unsafe extern "C" fn(*const u8) -> u8;
 type GatherFn = unsafe extern "C" fn(i32, i32, *mut u32, *mut u32, *mut u32) -> u32;
 
 static ORIG_START: AtomicUsize = AtomicUsize::new(0);
@@ -60,8 +61,9 @@ static ORIG_SEED: AtomicUsize = AtomicUsize::new(0);
 static ORIG_GATHER: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SIM_MODE: AtomicUsize = AtomicUsize::new(0);
 static ORIG_DRAW_LIST: AtomicUsize = AtomicUsize::new(0);
-/// A sync mismatch was already logged for this replay.
-static SYNC_LOGGED: AtomicBool = AtomicBool::new(false);
+static ORIG_SYNC_CHECK: AtomicUsize = AtomicUsize::new(0);
+/// Sync records that disagreed with the game's own hashes during this replay.
+static SYNC_BAD: AtomicU32 = AtomicU32::new(0);
 /// The game's real fog shade map while an all-visible one is swapped in for drawing.
 /// The units' real "hidden from" bits while they are recomputed for a computer player's view.
 static HIDDEN_SAVED: Mutex<Option<Vec<u8>>> = Mutex::new(None);
@@ -73,6 +75,8 @@ const NONE: u8 = 0xff;
 static REAL: AtomicU8 = AtomicU8::new(NONE);
 /// The player being watched; `NONE` means the recorded one.
 static VIEWED: AtomicU8 = AtomicU8::new(NONE);
+/// The player the recording was made as; the view starts there and Home returns to it.
+static HOME: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// Which watched keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
@@ -115,7 +119,6 @@ struct Addrs {
     relations: usize,
     fog: usize,
     refresh: usize,
-    sync: usize,
     local: usize,
     view_player: usize,
     view_mask: usize,
@@ -126,6 +129,12 @@ struct Addrs {
     lobby: usize,
     turns: usize,
     rng: usize,
+    backup: usize,
+    sync_init: usize,
+    /// `SkinAltFlag`: the local player's race (0 human, 1 orc), which the UI skin and sounds follow.
+    race_flag: usize,
+    /// `PlayerRaces`: each player's race.
+    races: usize,
 }
 
 struct Play {
@@ -229,7 +238,12 @@ fn prefill_lobby() {
     if block.len() != LOBBY_LEN {
         return;
     }
-    let local = usize::from(replay.header.local).min(7);
+    // `header.local` is the position after the game's random start positions; the block is the
+    // entry order, so find the recording player's entry there.
+    let local = replay
+        .local_entry()
+        .unwrap_or_else(|| usize::from(replay.header.local))
+        .min(7);
     // The recording's other players, in slot order: each becomes a computer in the next slot.
     let others: Vec<u8> = (0..8usize)
         .filter(|&i| i != local)
@@ -237,6 +251,19 @@ fn prefill_lobby() {
         .map(|i| block[i * SLOT_STRIDE + SLOT_TEAM])
         .collect();
     let mut changed = false;
+    // The host's own seat takes the recorded player's team, so the lobby shows the same sides.
+    let own_team = block[local * SLOT_STRIDE + SLOT_TEAM];
+    // SAFETY: the live lobby block is a fixed region of the game's data section; the handler reads
+    // its three packet bytes and the sender (0: the host).
+    unsafe {
+        let live_team = *((a.lobby + SLOT_TEAM) as *const u8);
+        if live_team != own_team {
+            let side = [TEAM_PACKET, 0, own_team];
+            let set_team: SlotRequestFn = core::mem::transmute(a.team_change);
+            set_team(side.as_ptr(), 0);
+            changed = true;
+        }
+    }
     for (n, team) in others.iter().enumerate().take(7) {
         let slot = n as u8 + 1;
         if before[usize::from(slot)] == STATE_COMPUTER {
@@ -325,11 +352,16 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay playback: symbols missing");
         return false;
     };
-    let (Some(seed_at), Some(lobby), Some(turns), Some(rng)) = (
+    let (Some(seed_at), Some(lobby), Some(turns), Some(rng), Some(backup), Some(sync_init), Some(sync_check), Some(race_flag), Some(races)) = (
         get("GameSeed"),
         get("MpLobbySlots"),
         get("NetTurnCounter"),
         get("SimRngState"),
+        get("SlotBackup"),
+        get("SyncRingInit"),
+        get("SyncCheck"),
+        get("SkinAltFlag"),
+        get("PlayerRaces"),
     ) else {
         log.line(W2R_LOG_ERROR, "host", "replay playback: symbols missing");
         return false;
@@ -365,7 +397,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
-    let (Some(refresh), Some(draw_list), Some(sync)) = (
+    let (Some(refresh), Some(draw_list), Some(_sync)) = (
         get("RefreshView"),
         get("BuildDrawList"),
         get("TurnSyncMismatch"),
@@ -392,7 +424,6 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         relations,
         fog,
         refresh,
-        sync,
         local,
         view_player,
         view_mask,
@@ -403,6 +434,10 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         lobby,
         turns,
         rng,
+        backup,
+        sync_init,
+        race_flag,
+        races,
     });
     let mut ok = true;
     // SAFETY: each detour matches its target's cdecl signature (Ghidra, build 2818; the call
@@ -446,6 +481,14 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
             gather_detour as *mut c_void,
             "TurnGather",
             &ORIG_GATHER,
+            log,
+        );
+        ok &= hook(
+            image,
+            sync_check,
+            sync_check_detour as *mut c_void,
+            "SyncCheck",
+            &ORIG_SYNC_CHECK,
             log,
         );
     }
@@ -510,7 +553,9 @@ fn prepare(loaded: i32) {
     let Some(a) = ADDRS.get() else { return };
     // SAFETY: the lobby block is a fixed region of the game's data section.
     let live = unsafe { core::slice::from_raw_parts(a.lobby as *const u8, LOBBY_LEN) }.to_vec();
-    crate::replayrec::note_lobby(live.clone());
+    // SAFETY: the game's slot backup, a fixed region of its data section.
+    let backup = unsafe { core::slice::from_raw_parts(a.backup as *const u8, SLOT_BACKUP_LEN) }.to_vec();
+    crate::replayrec::note_lobby(live.clone(), backup);
     if loaded == 0 {
         arm(a, live);
     }
@@ -549,6 +594,32 @@ fn arm(a: &Addrs, live: Vec<u8>) {
             if let Some(seed) = replay.header.game_seed() {
                 // SAFETY: `GameSeed` is a u32 in the game's data section.
                 unsafe { core::ptr::write_unaligned(a.seed as *mut u32, seed) };
+            }
+            // Before the game picks random start positions it copies a backup of the slots (outside
+            // the lobby block) over the lobby's; without the recorded one the local lobby's players
+            // would replace the recorded ones.
+            match replay.slot_backup() {
+                Some((recorded, backup)) => {
+                    log(
+                        W2R_LOG_INFO,
+                        &format!(
+                            "slot backup: {}",
+                            if recorded { "recorded" } else { "taken from the start state" }
+                        ),
+                    );
+                    // SAFETY: the game's slot backup, SLOT_BACKUP_LEN bytes in its data section.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            backup.as_ptr(),
+                            a.backup as *mut u8,
+                            SLOT_BACKUP_LEN,
+                        )
+                    };
+                }
+                None => log(
+                    W2R_LOG_WARN,
+                    "slot backup: none recorded; players may start in other places",
+                ),
             }
             if let Ok(mut r) = RESTORE.lock() {
                 *r = Some(live);
@@ -593,7 +664,15 @@ fn load(cfg: &Config, name: &str, live: &[u8]) -> Result<Replay, String> {
         return Err(format!("it is for game build {}, this is {BUILD}", h.build));
     }
     if h.fingerprint != cfg.fingerprint {
-        return Err("it was recorded with a different set of simulation plugins".into());
+        // Not fatal: the recording may still play, but a simulation plugin that differs from the
+        // recorded set can make it drift, so the player is told rather than stopped.
+        log(
+            W2R_LOG_WARN,
+            &format!(
+                "{name} was recorded with different simulation plugins (recorded {:02x?}, loaded {:02x?}); playing anyway, it may desync",
+                h.fingerprint, cfg.fingerprint
+            ),
+        );
     }
     if h.game_seed().is_none() {
         return Err("it has no game seed".into());
@@ -629,6 +708,40 @@ unsafe extern "C" fn seed_detour(seed: u32) {
     unsafe { original(use_seed) }
 }
 
+// ---- SyncCheck -----------------------------------------------------------------------------
+
+/// The game compares a sync record (`[0x18, ring << 4 | kind, hash lo, hash hi]`) in a turn's
+/// packet with the hash it made itself, and on a difference treats the sender as out of sync.
+/// While a replay plays that is only advice: one kind of hash includes values the simulation does
+/// not depend on, so the units can agree turn after turn while that hash differs, and acting on
+/// it ends the match. The difference is logged and the record is accepted.
+unsafe extern "C" fn sync_check_detour(record: *const u8) -> u8 {
+    let original: SyncCheckFn =
+        unsafe { core::mem::transmute(ORIG_SYNC_CHECK.load(Ordering::Acquire)) };
+    let ok = unsafe { original(record) };
+    if ok != 0 || !is_active() {
+        return ok;
+    }
+    let n = SYNC_BAD.fetch_add(1, Ordering::AcqRel) + 1;
+    if n <= 6 {
+        // SAFETY: the game passes a pointer to the four bytes of the record.
+        let bytes = unsafe { core::slice::from_raw_parts(record, 4) };
+        let turn = ADDRS.get().map_or(0, |a| unsafe {
+            core::ptr::read_unaligned(a.turns as *const u32)
+        });
+        log(
+            W2R_LOG_WARN,
+            &format!(
+                "sync record differs at turn {turn} (ring {} kind {} hash {:#06x}); accepted,                  the replay goes on",
+                bytes[1] >> 4,
+                bytes[1] & 0xf,
+                u16::from_le_bytes([bytes[2], bytes[3]])
+            ),
+        );
+    }
+    1
+}
+
 // ---- TurnGather ----------------------------------------------------------------------------
 
 unsafe extern "C" fn gather_detour(
@@ -650,6 +763,18 @@ unsafe extern "C" fn gather_detour(
     done
 }
 
+/// How many draws of the game's generator take `from` to `to` (at most 64), if it is that few.
+fn draws_apart(from: u32, to: u32) -> Option<u32> {
+    let mut s = from;
+    for n in 0..=64 {
+        if s == to {
+            return Some(n);
+        }
+        s = s.wrapping_mul(0x015a_4e35).wrapping_add(1);
+    }
+    None
+}
+
 /// # Safety
 /// `ptrs`, `lens` and `status` must point to the game's tables of 8 `u32`.
 unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
@@ -669,20 +794,17 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
         let local = unsafe { *(a.local as *const u8) };
         if local < 8 {
             REAL.store(local, Ordering::Release);
+            // Start as the player who made the recording, not the seat this game gave the viewer.
+            let home = play.replay.header.local;
+            HOME.store(if home < 8 { home } else { local }, Ordering::Release);
+            if home < 8 && home != local {
+                VIEWED.store(home, Ordering::Release);
+            }
             log(
                 W2R_LOG_INFO,
                 "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision;                  Page Up/Down speed, End pause, Delete step",
             );
         }
-    }
-    // SAFETY: a u32 in the game's data section.
-    if unsafe { core::ptr::read_unaligned(a.sync as *const u32) } != 0
-        && !SYNC_LOGGED.swap(true, Ordering::AcqRel)
-    {
-        log(
-            W2R_LOG_ERROR,
-            &format!("the game reports a sync mismatch around turn {turn}"),
-        );
     }
     if !play.checked_rng {
         play.checked_rng = true;
@@ -691,13 +813,36 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
                 W2R_LOG_INFO,
                 &format!("simulation RNG before turn {turn} is {rng:#010x}, as recorded"),
             ),
-            Some(want) => log(
-                W2R_LOG_ERROR,
-                &format!(
-                    "simulation RNG before turn {turn} is {rng:#010x}, recorded {want:#010x}: \
-                     the start state differs, expect a desync"
-                ),
-            ),
+            Some(want) => {
+                // The start-up differs a little between the recorded machine (often a client) and
+                // this one (the host of the replay game): usually by a draw or two that nothing in
+                // the simulation depends on. Put the recorded state back so the turns replay from
+                // the same random numbers.
+                let apart = match (draws_apart(rng, want), draws_apart(want, rng)) {
+                    (Some(n), _) => format!("{n} draw(s) behind the recording"),
+                    (None, Some(n)) => format!("{n} draw(s) ahead of the recording"),
+                    _ => "unrelated to the recording".to_string(),
+                };
+                log(
+                    W2R_LOG_WARN,
+                    &format!(
+                        "simulation RNG before turn {turn} is {rng:#010x}, recorded {want:#010x} \
+                         ({apart}); setting the recorded state"
+                    ),
+                );
+                // SAFETY: the simulation RNG is a u32 in the game's data section.
+                unsafe { core::ptr::write_unaligned(a.rng as *mut u32, want) };
+                // The game's sync check keeps a ring of state hashes, the first made while the
+                // match was set up (one kind of hash includes the RNG state). The recorded turns
+                // carry the original machine's hashes, so make the first one again from the state
+                // just restored.
+                // SAFETY: the sync ring initialiser takes nothing and returns nothing (Ghidra,
+                // build 2818); the state it hashes is the game's own.
+                unsafe {
+                    core::mem::transmute::<usize, unsafe extern "C" fn()>(a.sync_init)()
+                };
+                log(W2R_LOG_INFO, "sync check: first hash made again from the recorded state");
+            }
             None => {}
         }
     }
@@ -798,6 +943,9 @@ unsafe fn write_view(a: &Addrs, player: u8, mask: u8) {
         core::ptr::write_volatile(a.local as *mut u8, player);
         core::ptr::write_volatile(a.view_player as *mut u8, player);
         core::ptr::write_volatile(a.view_mask as *mut u8, mask);
+        // The sounds (and UI skin) follow the local player's race, so the watched player's.
+        let race = core::ptr::read_volatile((a.races + usize::from(player & 7)) as *const u8);
+        core::ptr::write_volatile(a.race_flag as *mut u8, race);
     }
 }
 
@@ -1028,6 +1176,11 @@ fn say(a: &Addrs, text: &str) {
         let push: PushFn = core::mem::transmute(a.push);
         push(c.as_ptr(), 1, 3000);
     }
+}
+
+/// Whether the game's victory/defeat test should be skipped: while a replay is still playing.
+pub fn match_end_held() -> bool {
+    is_active() && !ENDED.load(Ordering::Acquire)
 }
 
 /// What the on-screen panel shows (`hudpanel.rs`).
@@ -1286,7 +1439,8 @@ fn poll_keys() {
         }
     }
     if pressed & KEY_HOME != 0 {
-        VIEWED.store(NONE, Ordering::Release);
+        let home = HOME.load(Ordering::Acquire);
+        VIEWED.store(if home < 8 && home != real { home } else { NONE }, Ordering::Release);
     }
     if pressed & KEY_FULL != 0 {
         FULL_VISION.fetch_xor(true, Ordering::AcqRel);
@@ -1298,10 +1452,11 @@ fn poll_keys() {
 
 /// Back to the recorded player, nothing watched.
 fn reset_view() {
-    SYNC_LOGGED.store(false, Ordering::Release);
+    SYNC_BAD.store(0, Ordering::Release);
     crate::fogmaps::disarm();
     crate::viewmem::reset();
     VIEWED.store(NONE, Ordering::Release);
+    HOME.store(NONE, Ordering::Release);
     FULL_VISION.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
@@ -1322,6 +1477,13 @@ fn finish(reason: &str) {
     if let Ok(mut p) = PLAY.lock() {
         *p = None;
     }
+    let bad = SYNC_BAD.swap(0, Ordering::AcqRel);
+    if bad > 0 {
+        log(
+            W2R_LOG_INFO,
+            &format!("{bad} sync record(s) differed from the game's hashes and were accepted"),
+        );
+    }
     log(W2R_LOG_INFO, &format!("replay stopped: {reason}"));
 }
 
@@ -1336,5 +1498,32 @@ pub fn on_run_game_return() {
     if let Some(a) = ADDRS.get() {
         // SAFETY: as in `prepare`; `live` was read from the same region.
         unsafe { core::ptr::copy_nonoverlapping(live.as_ptr(), a.lobby as *mut u8, live.len()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rng_distance_counts_draws_of_the_games_generator() {
+        let seed = 0x6acb_9dc7;
+        let next = |s: u32| s.wrapping_mul(0x015a_4e35).wrapping_add(1);
+        assert_eq!(draws_apart(seed, seed), Some(0));
+        assert_eq!(draws_apart(seed, next(seed)), Some(1));
+        assert_eq!(draws_apart(next(seed), seed), None);
+        // the recorded and played states of a real recording are 69 and 70 draws from the seed:
+        // one apart, though each is beyond the search limit from the seed itself
+        let (mut a, mut b) = (seed, seed);
+        for _ in 0..69 {
+            a = next(a);
+        }
+        for _ in 0..70 {
+            b = next(b);
+        }
+        assert_eq!(a, 0x9075_1470);
+        assert_eq!(b, 0x33d7_5b31);
+        assert_eq!(draws_apart(a, b), Some(1));
+        assert_eq!(draws_apart(seed, a), None);
     }
 }

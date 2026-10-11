@@ -184,10 +184,13 @@ fn problem(entry: &Entry) -> Option<&'static str> {
     if !entry.has_start_state {
         return Some("Recorded before replays existed");
     }
+    None
+}
+
+/// A reason to think the recording may not play back cleanly, which does not stop it.
+fn warning(entry: &Entry) -> Option<&'static str> {
     match crate::replayplay::fingerprint() {
-        Some(now) if now != entry.fingerprint => {
-            Some("Different plugins than loaded now")
-        }
+        Some(now) if now != entry.fingerprint => Some("Plugins differ from the recording"),
         _ => None,
     }
 }
@@ -341,6 +344,10 @@ impl Picker {
             line(map_state);
             if let Some(why) = problem(e) {
                 line(why);
+            }
+            if let Some(note) = warning(e) {
+                line(note);
+                line("It may go out of sync");
             }
             // The picture, a square inside the frame's padding.
             let picture_y = y + GAP;

@@ -136,6 +136,7 @@ mod tests {
             seed: Header::seed_bytes(0xdead_beef, 0x1234_5678),
             lobby: (0..crate::format::LOBBY_LEN).map(|i| i as u8).collect(),
             map_sha: Some([9; 32]),
+            slot_backup: (0..crate::format::SLOT_BACKUP_LEN).map(|i| (i * 3) as u8).collect(),
         }
     }
 
@@ -207,6 +208,7 @@ mod tests {
     fn a_header_without_a_map_hash_reads_as_an_old_recording() {
         let mut h = header();
         h.map_sha = None;
+        h.slot_backup = Vec::new();
         let w = Writer::new(Vec::new(), &h).unwrap();
         let r = Replay::parse(&w.out).unwrap();
         assert_eq!(r.header.map_sha, None);
@@ -218,10 +220,50 @@ mod tests {
     }
 
     #[test]
+    fn the_slot_backup_is_recorded_or_taken_from_the_lobby_block() {
+        let mut h = header();
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        let r = Replay::parse(&w.out).unwrap();
+        assert_eq!(r.header.slot_backup, h.slot_backup);
+        assert_eq!(r.slot_backup(), Some((true, h.slot_backup.clone())));
+        // an older recording: the backup equals the lobby slots the game started from
+        h.slot_backup = Vec::new();
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        let r = Replay::parse(&w.out).unwrap();
+        let (recorded, backup) = r.slot_backup().unwrap();
+        assert!(!recorded);
+        assert_eq!(backup, h.lobby[..crate::format::SLOT_BACKUP_LEN].to_vec());
+        // and one without a lobby block has nothing to offer
+        h.lobby = Vec::new();
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        assert_eq!(Replay::parse(&w.out).unwrap().slot_backup(), None);
+    }
+
+    #[test]
+    fn the_local_players_entry_is_found_by_net_id_and_name() {
+        let mut h = header();
+        let mut lobby = vec![0u8; crate::format::LOBBY_LEN];
+        for i in 0..2usize {
+            let e = &mut lobby[i * SLOT_LEN..(i + 1) * SLOT_LEN];
+            e[4] = i as u8; // net id
+            e[13] = b'a' + i as u8; // name
+        }
+        h.lobby = lobby.clone();
+        // entry 1 was moved to position 5 and is the local player
+        h.slots = [[0u8; SLOT_LEN]; SLOTS];
+        h.slots[5].copy_from_slice(&lobby[SLOT_LEN..2 * SLOT_LEN]);
+        h.slots[5][9] = 7; // race and team may change on the way
+        h.local = 5;
+        let w = Writer::new(Vec::new(), &h).unwrap();
+        assert_eq!(Replay::parse(&w.out).unwrap().local_entry(), Some(1));
+    }
+
+    #[test]
     fn a_header_without_a_lobby_block_reads_as_an_old_recording() {
         let mut h = header();
         h.lobby = Vec::new();
         h.map_sha = None;
+        h.slot_backup = Vec::new();
         let w = Writer::new(Vec::new(), &h).unwrap();
         let r = Replay::parse(&w.out).unwrap();
         assert!(r.header.lobby.is_empty());

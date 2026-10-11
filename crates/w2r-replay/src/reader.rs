@@ -4,7 +4,7 @@
 use w2r_stats::slot::{self, SLOT_LEN, SLOTS};
 
 use crate::format::{
-    Footer, Header, LOBBY_LEN, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN,
+    Footer, Header, LOBBY_LEN, MAGIC, SLOT_BACKUP_LEN, MAX_CHAT, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN,
     OWNER_LEN, REC_CHAT, REC_FOOTER, REC_TURN, VERSION,
 };
 
@@ -124,6 +124,13 @@ fn header(raw: &[u8]) -> Option<Header> {
         let n = c.len(32)?;
         c.take(n)?.try_into().ok()
     };
+    // Added after the map hash: absent in older files.
+    let slot_backup = if c.0.is_empty() {
+        Vec::new()
+    } else {
+        let n = c.len(SLOT_BACKUP_LEN)?;
+        c.take(n)?.to_vec()
+    };
     Some(Header {
         build,
         client,
@@ -137,6 +144,7 @@ fn header(raw: &[u8]) -> Option<Header> {
         seed,
         lobby,
         map_sha,
+        slot_backup,
     })
 }
 
@@ -255,6 +263,36 @@ impl Replay {
     /// The last recorded turn number.
     pub fn last_turn(&self) -> u32 {
         self.turns.last().map_or(0, |t| t.turn)
+    }
+
+    /// The slot backup to put back before `StartGame` runs, and whether it was recorded. An older
+    /// recording has none; the backup is the lobby's own slots as the game starts, so the lobby
+    /// block's slot table stands in for it.
+    pub fn slot_backup(&self) -> Option<(bool, Vec<u8>)> {
+        if self.header.slot_backup.len() == SLOT_BACKUP_LEN {
+            return Some((true, self.header.slot_backup.clone()));
+        }
+        self.header
+            .lobby
+            .get(..SLOT_BACKUP_LEN)
+            .map(|b| (false, b.to_vec()))
+    }
+
+    /// The lobby entry (before the game moved the players to their start positions) that the
+    /// recording player sat in, found by net id and name; `header.local` is the position after.
+    pub fn local_entry(&self) -> Option<usize> {
+        let lobby = &self.header.lobby;
+        let local = usize::from(self.header.local);
+        if lobby.len() < SLOTS * SLOT_LEN || local >= SLOTS {
+            return None;
+        }
+        let key = |s: &[u8]| -> Vec<u8> {
+            let mut k = s[4..8].to_vec();
+            k.extend_from_slice(&s[slot::NAME_AT..SLOT_LEN]);
+            k
+        };
+        let want = key(&self.header.slots[local]);
+        (0..SLOTS).find(|&i| key(&lobby[i * SLOT_LEN..(i + 1) * SLOT_LEN]) == want)
     }
 
     pub fn players(&self) -> Vec<slot::Player> {

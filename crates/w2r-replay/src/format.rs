@@ -36,6 +36,9 @@ pub const NAMES_LEN: usize = 0x100;
 pub const LOBBY_AT: u32 = 0x0091_6260;
 pub const LOBBY_LEN: usize = 0x440;
 
+/// The game's slot backup: `SLOTS` entries of `SLOT_LEN` bytes.
+pub const SLOT_BACKUP_LEN: usize = SLOTS * SLOT_LEN;
+
 /// Limits that keep a hostile or damaged file from allocating without bound.
 pub const MAX_HEADER: usize = 64 * 1024;
 pub const MAX_PACKET: usize = 64 * 1024;
@@ -68,6 +71,11 @@ pub struct Header {
     /// SHA-256 of the map file the match was played on, or `None` if it could not be found when
     /// recording began (older recordings). Written only when present, after the lobby block.
     pub map_sha: Option<[u8; 32]>,
+    /// `SLOT_BACKUP_LEN` bytes of the game's slot backup (`SlotBackup`, 8 slots) as it was when
+    /// `StartGame` was entered, or empty (older recordings). The start-up code copies it over every
+    /// non-empty lobby slot before it picks random start positions, so a game of several humans
+    /// starts with the players in other places without it. Written after the map hash.
+    pub slot_backup: Vec<u8>,
 }
 
 impl Header {
@@ -140,6 +148,13 @@ impl Header {
         if let Some(sha) = &self.map_sha {
             put_varint(&mut o, sha.len() as u64);
             o.extend_from_slice(sha);
+        } else if !self.slot_backup.is_empty() {
+            put_varint(&mut o, 0);
+        }
+        if !self.slot_backup.is_empty() {
+            let backup = &self.slot_backup[..self.slot_backup.len().min(SLOT_BACKUP_LEN)];
+            put_varint(&mut o, backup.len() as u64);
+            o.extend_from_slice(backup);
         }
         o
     }

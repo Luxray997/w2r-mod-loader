@@ -6,7 +6,7 @@
 
 use super::{Kind, Symbol};
 
-pub const COUNT: usize = 376;
+pub const COUNT: usize = 380;
 
 /// Sorted by `name` (bytewise), so lookups can binary-search.
 pub static SYMBOLS: &[Symbol] = &[
@@ -1667,6 +1667,12 @@ pub static SYMBOLS: &[Symbol] = &[
         c_type: "uint8_t",
     },
     Symbol {
+        name: "PlayerRaces",
+        kind: Kind::Object,
+        static_addr: 0x009191b0,
+        c_type: "uint8_t",
+    },
+    Symbol {
         name: "PlayerSelectedUnits",
         kind: Kind::Object,
         static_addr: 0x00933e18,
@@ -2081,6 +2087,12 @@ pub static SYMBOLS: &[Symbol] = &[
         c_type: "bool(__cdecl*)(uint32_t* value, uint32_t* minV, uint32_t* maxV, uint32_t* step)",
     },
     Symbol {
+        name: "SlotBackup",
+        kind: Kind::Object,
+        static_addr: 0x00916b60,
+        c_type: "uint8_t",
+    },
+    Symbol {
         name: "Spacing",
         kind: Kind::Function,
         static_addr: 0x005ac9e0,
@@ -2097,6 +2109,18 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Function,
         static_addr: 0x00522640,
         c_type: "void*(__thiscall*)(void* str, const char* data, size_t len)",
+    },
+    Symbol {
+        name: "SyncCheck",
+        kind: Kind::Function,
+        static_addr: 0x004a1810,
+        c_type: "uint8_t(__cdecl*)(const uint8_t* record)",
+    },
+    Symbol {
+        name: "SyncRingInit",
+        kind: Kind::Function,
+        static_addr: 0x004a16f0,
+        c_type: "void(__cdecl*)(void)",
     },
     Symbol {
         name: "TeamColourReorder",

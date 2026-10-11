@@ -11,7 +11,7 @@
 
 pub const SLOT_LEN: usize = 0x26;
 pub const SLOTS: usize = 8;
-const NAME_AT: usize = 0x0d;
+pub const NAME_AT: usize = 0x0d;
 const MAX_DISCRIMINATOR: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -249,6 +249,12 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
 }
 
 unsafe extern "C" fn detour() {
+    // A replay is not a live match: the game's test asks the network layer who is still connected,
+    // and in the local replay game that is only the viewer, so it would call the match over at
+    // once. It runs again when the recording has been played to its end.
+    if crate::replayplay::match_end_held() {
+        return;
+    }
     let original: CheckFn = unsafe { core::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     unsafe { original() };
     if REPORTED.load(Ordering::Acquire) {

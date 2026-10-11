@@ -50,6 +50,7 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 static RNG_BEFORE: AtomicU32 = AtomicU32::new(0);
 /// The lobby block as it was when `StartGame` was entered (before the game normalised it).
 static PRE_LOBBY: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static PRE_BACKUP: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
 /// Final `(results, sync_mismatch)` from `CheckMatchEnd`, repeated in the closing footer.
 static RESULT: Mutex<Option<([u8; 8], u32)>> = Mutex::new(None);
@@ -187,8 +188,12 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
     }
 }
 
-/// `StartGame` was entered: remember the lobby block for the header of this match's recording.
-pub fn note_lobby(block: Vec<u8>) {
+/// `StartGame` was entered: remember the lobby block and the slot backup for the header
+/// of this match's recording.
+pub fn note_lobby(block: Vec<u8>, backup: Vec<u8>) {
+    if let Ok(mut b) = PRE_BACKUP.lock() {
+        *b = backup;
+    }
     if let Ok(mut l) = PRE_LOBBY.lock() {
         *l = block;
     }
@@ -342,6 +347,7 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
         ),
         lobby: PRE_LOBBY.lock().map(|l| l.clone()).unwrap_or_default(),
         map_sha,
+        slot_backup: PRE_BACKUP.lock().map(|b| b.clone()).unwrap_or_default(),
     };
     let name = format::file_name(started, &header.map);
     let (path, file) = match create_new(&cfg.dir, &name) {
