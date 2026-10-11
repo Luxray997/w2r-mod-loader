@@ -29,6 +29,8 @@ use crate::symbols::Symbols;
 type ExtentFn = unsafe extern "C" fn() -> f32;
 /// `DropNetPeer(netSlot, message, reason)`; a null message shows no chat line.
 type DropFn = unsafe extern "C" fn(u32, *const u8, u32);
+/// `SendToNetSlot(netSlot, message, length)`: one reliable message to one peer.
+type SendFn = unsafe extern "C" fn(u32, *const u8, u32);
 /// `NetPeerLeft(netSlot)`: the game's "peer left" notification.
 type PeerLeftFn = unsafe extern "C" fn(i32);
 /// `AlliancesFooter(ctx, x, y, w, h, a, b)`: the Cancel/OK strip of the Alliances dialog.
@@ -48,6 +50,9 @@ const FLAG_IN_MATCH: u32 = 0x1_0000;
 const NO_SEAT: u32 = 8;
 const NAME_STRIDE: usize = 0x38;
 const NAME_MAX: usize = 0x19;
+/// What the kicked player reads: the drop sends them nothing, so without this they only see the
+/// game's "Waiting for other players" screen.
+const KICK_NOTICE: &str = "The host removed you from this game.";
 /// How long to wait for the transport to remove the player on the host before doing it.
 const SETTLE_MS: u64 = 1000;
 const GIVE_UP_MS: u64 = 4000;
@@ -90,6 +95,8 @@ struct Game {
     turns: usize,
     mismatch: usize,
     drop: DropFn,
+    send: SendFn,
+    chat_mode: usize,
     peer_left: PeerLeftFn,
     ui_width: ExtentFn,
     kit: Kit,
@@ -136,6 +143,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         Some(turns),
         Some(mismatch),
         Some(drop),
+        Some(send),
+        Some(chat_mode),
         Some(peer_left),
         Some(ui_width),
     ) = (
@@ -151,6 +160,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         get("NetTurnCounter"),
         get("TurnSyncMismatch"),
         get("DropNetPeer"),
+        get("SendToNetSlot"),
+        get("ChatTargetMode"),
         get("NetPeerLeft"),
         get("HudUiWidth"),
     )
@@ -181,6 +192,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
             turns,
             mismatch,
             drop: core::mem::transmute::<usize, DropFn>(drop),
+            send: core::mem::transmute::<usize, SendFn>(send),
+            chat_mode,
             peer_left: core::mem::transmute::<usize, PeerLeftFn>(peer_left),
             ui_width: core::mem::transmute::<usize, ExtentFn>(ui_width),
             kit,
@@ -376,6 +389,18 @@ impl Game {
             .collect()
     }
 
+    /// A public chat line to the victim alone, sent before the drop (which tells them nothing).
+    /// The message is what `ChatSendLocal` builds: type 0, the chat mode byte, the text, a NUL.
+    fn tell_kicked(&self, slot: u8) {
+        // SAFETY: the mode is a byte in the game's data section.
+        let mode = unsafe { *(self.chat_mode as *const u8) };
+        let mut msg = vec![0u8, mode];
+        msg.extend_from_slice(KICK_NOTICE.as_bytes());
+        msg.push(0);
+        // SAFETY: the game's own send, a reliable message to one connected peer.
+        unsafe { (self.send)(u32::from(slot), msg.as_ptr(), msg.len() as u32) };
+    }
+
     /// Every filter input for net slots 1..8, for working out why nobody is listed.
     fn slot_dump(&self) -> String {
         (1..8usize)
@@ -490,6 +515,7 @@ fn kick(g: &Game, slot: u8, name: String, now: u64) {
             g.lockstep()
         ),
     );
+    g.tell_kicked(slot);
     // SAFETY: the game's own drop; a null message shows no chat line. The host is the only caller.
     unsafe { (g.drop)(u32::from(slot), core::ptr::null(), REASON_KICKED) };
     if let Ok(mut p) = PENDING.lock() {
