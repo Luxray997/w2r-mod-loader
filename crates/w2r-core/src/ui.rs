@@ -319,6 +319,8 @@ pub struct HostRow {
     pub auto_download: bool,
     /// `record_replays` (`host.json`); takes effect from the next match.
     pub record_replays: bool,
+    /// `auto_game_name` (`host.json`); the create screen suggests a game name on its own.
+    pub auto_game_name: bool,
     /// The handshake's current lobby warnings, if any.
     pub lobby: Vec<String>,
 }
@@ -331,6 +333,7 @@ pub const LOBBY_SCREEN_LABEL: &str = "Use the w2rpm multiplayer lobby screen";
 pub const MAP_SHARING_LABEL: &str = "Share maps with other players (send and receive)";
 pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
 pub const RECORD_REPLAYS_LABEL: &str = "Save a replay of each game I play";
+pub const AUTO_GAME_NAME_LABEL: &str = "Suggest a game name from the map when I pick one";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -350,6 +353,8 @@ pub enum Action {
     ToggleMapSharing,
     /// The user flipped `record_replays`.
     ToggleRecording,
+    /// The user flipped `auto_game_name`.
+    ToggleAutoGameName,
 }
 
 /// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
@@ -420,6 +425,12 @@ pub fn draw_plugin_screen(
     if w.checkbox(RECORD_REPLAYS_LABEL, &mut record_replays) {
         host.record_replays = record_replays;
         action = Action::ToggleRecording;
+    }
+    w.row(ROW_H, 1);
+    let mut auto_game_name = host.auto_game_name;
+    if w.checkbox(AUTO_GAME_NAME_LABEL, &mut auto_game_name) {
+        host.auto_game_name = auto_game_name;
+        action = Action::ToggleAutoGameName;
     }
     for line in &host.lobby {
         w.row(ROW_H, 1);
@@ -684,6 +695,7 @@ mod tests {
             map_sharing: false,
             auto_download: false,
             record_replays: false,
+            auto_game_name: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
@@ -707,11 +719,12 @@ mod tests {
         assert_eq!(calls[15], format!("checkbox {MAP_SHARING_LABEL:?} false"));
         assert_eq!(calls[17], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
         assert_eq!(calls[19], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
+        assert_eq!(calls[21], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
         assert_eq!(
-            calls[21],
+            calls[23],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[23], "label \"Plugins (3)\"");
+        assert_eq!(calls[25], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -740,6 +753,7 @@ mod tests {
             map_sharing: false,
             auto_download: false,
             record_replays: false,
+            auto_game_name: false,
             lobby: Vec::new(),
         };
         assert_eq!(
@@ -808,6 +822,15 @@ mod tests {
             Action::ToggleRecording
         );
         assert!(host.record_replays);
+
+        // And the game name switch.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(AUTO_GAME_NAME_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleAutoGameName
+        );
+        assert!(host.auto_game_name);
     }
 
     #[test]

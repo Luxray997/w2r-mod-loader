@@ -72,6 +72,14 @@ struct Screen {
     preview: PreviewGame,
     /// Presses of the name button; each one moves on to the next suggestion.
     name_presses: Cell<usize>,
+    /// The map the name was last considered for, and the name this screen put in the box for it.
+    auto_name: Mutex<AutoName>,
+}
+
+#[derive(Default)]
+struct AutoName {
+    map: String,
+    filled: String,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -82,11 +90,17 @@ unsafe impl Sync for Screen {}
 static SCREEN: OnceLock<Option<Screen>> = OnceLock::new();
 /// A fault under the replacement draw: stock screen from here on.
 static FAILED: AtomicBool = AtomicBool::new(false);
+/// The `auto_game_name` setting: suggest a game name when the map changes.
+static AUTO_GAME_NAME: AtomicBool = AtomicBool::new(false);
 static ANNOUNCED: AtomicBool = AtomicBool::new(false);
 /// When the replacement screen last drew; a longer gap means a fresh visit, and the browser from
 /// the last one is closed (wc2r-plus `kReentryGapMs`).
 static LAST_FRAME_MS: AtomicU64 = AtomicU64::new(0);
 const REENTRY_GAP_MS: u64 = 250;
+
+pub fn set_auto_game_name(on: bool) {
+    AUTO_GAME_NAME.store(on, Ordering::Relaxed);
+}
 
 /// Resolves everything the screen needs. False (logged by name) when anything is missing; the
 /// stock screen is then all that is ever drawn.
@@ -184,6 +198,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
         picker: Mutex::new(Picker::default()),
         preview: PreviewGame::new(symbols)?,
         name_presses: Cell::new(0),
+        auto_name: Mutex::new(AutoName::default()),
     })
 }
 
@@ -444,6 +459,34 @@ impl Screen {
         preview
     }
 
+    /// With the setting on, a new map (or the first one of a visit) gets a suggested game name if
+    /// the box is empty or still holds the name this put there for the map before.
+    ///
+    /// # Safety
+    /// `buffer` must be the game's NUL-terminated name buffer of `max` bytes.
+    unsafe fn auto_fill_name(&self, buffer: *mut u8, max: i32) {
+        let map = unsafe { self.selected_name() };
+        let mut state = self.auto_name.lock().unwrap_or_else(|e| e.into_inner());
+        if map.is_empty() || state.map == map {
+            return;
+        }
+        // SAFETY: the buffer is NUL-terminated within its capacity.
+        let current = unsafe { CStr::from_ptr(buffer.cast()) }.to_string_lossy().into_owned();
+        let cap = max.max(0) as usize;
+        if cap > 0 && (current.is_empty() || current == state.filled) {
+            let suggestion = game_name_from_map(&map, 0);
+            let len = suggestion.len().min(cap - 1);
+            // SAFETY: `cap` bytes are writable; the NUL fits after `len`.
+            unsafe {
+                core::ptr::copy_nonoverlapping(suggestion.as_ptr(), buffer, len);
+                *buffer.add(len) = 0;
+            }
+            state.filled = suggestion;
+            self.name_presses.set(1);
+        }
+        state.map = map;
+    }
+
     unsafe fn selected_name(&self) -> String {
         unsafe { str_data(self.selected.add(ENTRY_NAME)) }
     }
@@ -543,6 +586,9 @@ impl Screen {
                     PASSWORD_CAPACITY as usize,
                 )
             };
+            if AUTO_GAME_NAME.load(Ordering::Relaxed) {
+                unsafe { self.auto_fill_name(buffer, max) };
+            }
             let button_w = ROW_H * 1.6;
             unsafe {
                 k.text_edit_at(

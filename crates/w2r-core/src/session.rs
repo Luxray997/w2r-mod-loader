@@ -572,6 +572,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             map_sharing: session.config.map_sharing,
             auto_download: session.config.auto_download,
             record_replays: session.config.record_replays,
+            auto_game_name: session.config.auto_game_name,
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -651,6 +652,26 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                 }
                 if let Ok(mut h) = session.net.handshake.try_borrow_mut() {
                     h.set_map_sharing(host.map_sharing);
+                }
+            }
+            Action::ToggleAutoGameName => {
+                session.config.auto_game_name = host.auto_game_name;
+                #[cfg(target_arch = "x86")]
+                crate::createscreen::set_auto_game_name(host.auto_game_name);
+                match hostcfg::write(&session.root, &session.config) {
+                    Ok(()) => StartupLog.line(
+                        W2R_LOG_INFO,
+                        "host",
+                        &format!(
+                            "auto_game_name {}",
+                            if host.auto_game_name { "on" } else { "off" }
+                        ),
+                    ),
+                    Err(e) => StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    ),
                 }
             }
             Action::ToggleRecording => {
@@ -1056,6 +1077,7 @@ fn start() -> Session {
             &*host_log,
         );
         crate::replayrec::set_enabled(config.record_replays);
+        crate::createscreen::set_auto_game_name(config.auto_game_name);
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
     let authors = plugins::authors(&startup.root, &loaded.state);

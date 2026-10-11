@@ -29,6 +29,8 @@ pub struct HostConfig {
     pub auto_download: bool,
     /// Record each match played as a replay (docs/replay-research.md).
     pub record_replays: bool,
+    /// Create screen: fill the game name from the map while it is empty and on each map change.
+    pub auto_game_name: bool,
 }
 
 impl Default for HostConfig {
@@ -45,6 +47,7 @@ impl Default for HostConfig {
             map_sharing: true,
             auto_download: false,
             record_replays: true,
+            auto_game_name: false,
         }
     }
 }
@@ -76,6 +79,7 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "map_sharing" => cfg.map_sharing = value.as_bool().ok_or("bad_field")?,
             "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
             "record_replays" => cfg.record_replays = value.as_bool().ok_or("bad_field")?,
+            "auto_game_name" => cfg.auto_game_name = value.as_bool().ok_or("bad_field")?,
             "enhanced_lobby_screen" => {
                 cfg.enhanced_lobby_screen = value.as_bool().ok_or("bad_field")?;
             }
@@ -123,6 +127,10 @@ impl HostConfig {
             (
                 "record_replays".to_owned(),
                 Value::Bool(self.record_replays),
+            ),
+            (
+                "auto_game_name".to_owned(),
+                Value::Bool(self.auto_game_name),
             ),
         ])
         .to_json()
@@ -183,6 +191,7 @@ mod tests {
             map_sharing: false,
             auto_download: true,
             record_replays: false,
+            auto_game_name: true,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -252,6 +261,7 @@ mod tests {
             map_sharing: true,
             auto_download: false,
             record_replays: true,
+            auto_game_name: false,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));
