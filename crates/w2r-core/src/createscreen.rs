@@ -70,6 +70,8 @@ struct Screen {
     browser: Mutex<Browser>,
     picker: Mutex<Picker>,
     preview: PreviewGame,
+    /// Presses of the name button; each one moves on to the next suggestion.
+    name_presses: Cell<usize>,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -181,6 +183,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
         browser: Mutex::new(Browser::default()),
         picker: Mutex::new(Picker::default()),
         preview: PreviewGame::new(symbols)?,
+        name_presses: Cell::new(0),
     })
 }
 
@@ -540,14 +543,36 @@ impl Screen {
                     PASSWORD_CAPACITY as usize,
                 )
             };
+            let button_w = ROW_H * 1.6;
             unsafe {
                 k.text_edit_at(
-                    Rect::new(column.x, column.y + CAPTION_H, col_w, ROW_H),
+                    Rect::new(column.x, column.y + CAPTION_H, col_w - button_w - GAP * 0.5, ROW_H),
                     buffer,
                     max,
                     text_skin,
                 )
             };
+            let button = Rect::new(
+                column.x + col_w - button_w,
+                column.y + CAPTION_H,
+                button_w,
+                ROW_H,
+            );
+            if k.button_at(button, "Auto", false) {
+                let n = self.name_presses.get();
+                self.name_presses.set(n.wrapping_add(1));
+                let map = unsafe { self.selected_name() };
+                let suggestion = game_name_from_map(&map, n);
+                let cap = max.max(0) as usize;
+                if !suggestion.is_empty() && cap > 0 {
+                    let len = suggestion.len().min(cap - 1);
+                    // SAFETY: the game's name buffer holds `cap` bytes; the NUL fits after `len`.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(suggestion.as_ptr(), buffer, len);
+                        *buffer.add(len) = 0;
+                    }
+                }
+            }
         }
 
         k.label_at(
@@ -660,6 +685,67 @@ impl Screen {
         k.set_rect(Rect::new(x + button_w, footer_y, button_w, FOOTER_H));
         unsafe {
             (self.create_button)(&mut closure as *mut *mut u8 as *mut c_void);
+        }
+    }
+}
+
+/// Fewest characters a suggested game name has; shorter ones tend to get padded with spaces.
+const MIN_GAME_NAME: usize = 5;
+
+/// The `n`th suggestion for a game name from the map's name: a word of it, longest first
+/// ("Bridge to Bridge Combat" gives "combat" and "bridge"), then the initials ("gow" for "Garden
+/// of War") with a number so the name reaches [`MIN_GAME_NAME`] characters. Pressing again moves
+/// to the next one, which also sidesteps a name another lobby already uses.
+fn game_name_from_map(map: &str, n: usize) -> String {
+    let words: Vec<String> = map
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let initials: String = words.iter().filter_map(|w| w.chars().next()).collect();
+    let mut bases: Vec<String> = Vec::new();
+    let mut long: Vec<&String> = words.iter().filter(|w| w.len() >= MIN_GAME_NAME).collect();
+    long.sort_by_key(|w| core::cmp::Reverse(w.len()));
+    for w in long {
+        if !bases.contains(w) {
+            bases.push(w.clone());
+        }
+    }
+    if initials.len() >= MIN_GAME_NAME && !bases.contains(&initials) {
+        bases.push(initials.clone());
+    }
+    if let Some(base) = bases.get(n) {
+        return base.clone();
+    }
+    let prefix = if initials.is_empty() { "game" } else { initials.as_str() };
+    let width = MIN_GAME_NAME.saturating_sub(prefix.len()).max(2);
+    format!("{prefix}{:0width$}", n - bases.len() + 1)
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::game_name_from_map;
+
+    #[test]
+    fn word_then_initials_with_number() {
+        assert_eq!(game_name_from_map("Garden of War", 0), "garden");
+        assert_eq!(game_name_from_map("Garden of War", 1), "gow01");
+        assert_eq!(game_name_from_map("Garden of War", 2), "gow02");
+    }
+
+    #[test]
+    fn longest_word_first_and_unique() {
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 0), "bridge");
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 1), "combat");
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 2), "btbc01");
+    }
+
+    #[test]
+    fn never_short() {
+        for map in ["", "A B", "Ice", "Plains of Snow", "!!!"] {
+            for n in 0..30 {
+                assert!(game_name_from_map(map, n).len() >= 5, "{map:?} {n}");
+            }
         }
     }
 }
