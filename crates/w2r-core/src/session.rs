@@ -239,6 +239,7 @@ pub fn on_window(name: Option<&str>) {
     {
         crate::matchend::note_frame();
         crate::replayplay::poll();
+        crate::ingamekick::poll();
     }
     let now = chat::now_ms();
     ensure_started();
@@ -1004,6 +1005,10 @@ fn start() -> Session {
         crate::chatrec::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::hudpanel::install(&symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::ingamekick::install(&symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::ingamekick::install_alliances(image, &symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {

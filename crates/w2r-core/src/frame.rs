@@ -86,6 +86,8 @@ unsafe extern "C" fn detour(
     if !name.is_null() && unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes() == b"game_hud" {
         // SAFETY: `original` is the game's own BeginNamedWindow; `ctx` is its argument.
         unsafe { crate::hudpanel::before_hud(ctx, original) };
+        // SAFETY: as above.
+        unsafe { crate::ingamekick::before_hud(ctx, original) };
     }
     crate::watchdog::mark(crate::watchdog::FRAME_GAME);
     let opened = unsafe { original(ctx, name, x, y, w, h, flags) };

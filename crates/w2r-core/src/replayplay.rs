@@ -1190,7 +1190,7 @@ fn announce(a: &Addrs) {
     say(a, &text);
 }
 
-fn game_has_focus() -> bool {
+pub(crate) fn game_has_focus() -> bool {
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId,

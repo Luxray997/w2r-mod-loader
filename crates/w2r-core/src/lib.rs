@@ -37,6 +37,7 @@ pub mod peer;
 pub use w2r_preview::pud;
 pub mod pudvalidate;
 pub mod scoreboard;
+pub mod kickpanel;
 pub mod screenkit;
 pub mod store;
 pub mod symbols;
@@ -60,6 +61,8 @@ pub mod loader;
 pub mod chatrec;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod hudpanel;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod ingamekick;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod replaypicker;
 #[cfg(all(windows, target_arch = "x86"))]
