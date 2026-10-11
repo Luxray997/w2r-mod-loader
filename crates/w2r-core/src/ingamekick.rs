@@ -373,6 +373,27 @@ impl Game {
             .collect()
     }
 
+    /// Every filter input for net slots 1..8, for working out why nobody is listed.
+    fn slot_dump(&self) -> String {
+        (1..8usize)
+            .map(|n| {
+                let player = (self.u32_at(self.player_by_net, n) & 0xff) as u8;
+                let owner = if player < 8 {
+                    // SAFETY: the owner table is 0x20 bytes of the game's data section.
+                    i32::from(unsafe { *((self.owner + usize::from(player)) as *const u8) })
+                } else {
+                    -1
+                };
+                format!(
+                    "[net {n}: seat {:#x}, flags {:#x}, player {player}, owner {owner}]",
+                    self.u32_at(self.lobby_by_net, n),
+                    self.u32_at(self.turn_flags, n),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The numbers worth having beside every step of a kick.
     fn lockstep(&self) -> String {
         format!(
@@ -403,6 +424,9 @@ fn poll_inner(g: &Game) {
     let keys = read_keys();
     if !keys.any() {
         return;
+    }
+    if keys.toggle {
+        log(W2R_LOG_INFO, &format!("kick panel: {}", g.slot_dump()));
     }
     let list = g.candidates();
     let action = match PANEL.lock() {
