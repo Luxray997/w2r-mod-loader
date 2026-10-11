@@ -43,6 +43,10 @@ struct Game {
     mined_gold: usize,
     mined_lumber: usize,
     mined_oil: usize,
+    /// `TeamColourReorder`: the colour index of each player (the game shuffles them at the start).
+    colour_reorder: usize,
+    /// `TeamColourRgba`: four floats per colour index.
+    colour_rgba: usize,
 }
 
 struct Panel {
@@ -73,17 +77,22 @@ const WATCHED_ROW: u32 = rgba(226, 184, 68, 70);
 const DIM: u32 = rgba(140, 130, 112, 255);
 const GONE: u32 = rgba(110, 100, 88, 255);
 
-/// Player colours by slot: red, blue, green, violet, orange, black, white, yellow.
-const SLOT_COLOURS: [u32; 8] = [
-    rgba(214, 40, 40, 255),
-    rgba(40, 92, 224, 255),
-    rgba(40, 176, 64, 255),
-    rgba(160, 60, 196, 255),
-    rgba(244, 140, 30, 255),
-    rgba(100, 100, 100, 255),
-    rgba(236, 236, 236, 255),
-    rgba(244, 224, 40, 255),
-];
+/// The colour the game gives a player: a shuffled index per player, then four floats per index
+/// (the same tables the player-colours plugin reads). Falls back to grey for an unlikely index.
+///
+/// # Safety
+/// Reads the game's colour tables, which are at least 8 entries.
+unsafe fn player_colour(g: &Game, player: usize) -> u32 {
+    unsafe {
+        let index = usize::from(core::ptr::read_unaligned((g.colour_reorder + player % 8) as *const u8));
+        if index >= 8 {
+            return rgba(150, 150, 150, 255);
+        }
+        let f = |k: usize| core::ptr::read_unaligned((g.colour_rgba + (index * 4 + k) * 4) as *const f32);
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        rgba(byte(f(0)), byte(f(1)), byte(f(2)), 255)
+    }
+}
 
 /// The totals page: left edge, width, heading.
 const TOTAL_COLUMNS: [(f32, f32, &str); 7] = [
@@ -142,6 +151,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         Some(mined_gold),
         Some(mined_lumber),
         Some(mined_oil),
+        Some(colour_reorder),
+        Some(colour_rgba),
     ) = (
         get("PlayerGold"),
         get("PlayerLumber"),
@@ -159,6 +170,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         get("ScoreGoldMined"),
         get("ScoreLumberMined"),
         get("ScoreOilMined"),
+        get("TeamColourReorder"),
+        get("TeamColourRgba"),
     )
     else {
         log.line(W2R_LOG_ERROR, "host", "replay scoreboard: symbols missing");
@@ -183,6 +196,8 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         mined_gold,
         mined_lumber,
         mined_oil,
+        colour_reorder,
+        colour_rgba,
     };
     let _ = PANEL.set(Panel {
         kit,
@@ -247,6 +262,8 @@ struct Row {
     razed: u16,
     buildings_lost: u16,
     mined: [u32; 3],
+    /// The player's colour in this game.
+    colour: u32,
     /// Actions per minute; only for people, and only once there is something to measure.
     apm: Option<u32>,
 }
@@ -291,6 +308,7 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
                     razed: u16_at(g.razed),
                     buildings_lost: u16_at(g.buildings_lost),
                     mined: [u32_at(g.mined_gold), u32_at(g.mined_lumber), u32_at(g.mined_oil)],
+                    colour: player_colour(g, p),
                     apm: if member.human {
                         replayplay::actions_per_minute(member.slot)
                     } else {
@@ -380,7 +398,7 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
                 WATCHED_ROW,
             );
         }
-        let swatch = SLOT_COLOURS[usize::from(row.member.slot) % 8];
+        let swatch = row.colour;
         kit.fill_rect(
             Rect::new(x + 6.0, TOP + y + 2.0, 8.0, ROW_HEIGHT - 4.0),
             swatch,
