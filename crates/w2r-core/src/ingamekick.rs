@@ -41,9 +41,9 @@ const SESSION_IS_HOST: usize = 0x18;
 const STATE_IN_MATCH: u16 = 3;
 /// The reason `KickLobbyPeer` passes to the transport.
 const REASON_KICKED: u32 = 0x4000_0001;
-/// `TurnSlotFlags` bits: in the match, and already dropped.
+/// `TurnSlotFlags` bit: in the match. (0x4_0000 is set on healthy players too, so it is not a
+/// "dropped" test; seen as 0x7_0000 for a live second player.)
 const FLAG_IN_MATCH: u32 = 0x1_0000;
-const FLAG_DROPPED: u32 = 0x4_0000;
 /// A lobby seat value meaning "nobody".
 const NO_SEAT: u32 = 8;
 const NAME_STRIDE: usize = 0x38;
@@ -356,10 +356,13 @@ impl Game {
                     return None;
                 }
                 let flags = self.u32_at(self.turn_flags, n);
-                if flags & FLAG_IN_MATCH == 0 || flags & FLAG_DROPPED != 0 {
+                if flags & FLAG_IN_MATCH == 0 || self.u32_at(self.left_flags, n) != 0 {
                     return None;
                 }
                 let player = (self.u32_at(self.player_by_net, n) & 0xff) as u8;
+                if player < 8 && self.result(player) != 0 {
+                    return None;
+                }
                 // SAFETY: the owner table is 0x20 bytes of the game's data section.
                 if player >= 8 || unsafe { *((self.owner + usize::from(player)) as *const u8) } != 0
                 {
@@ -385,9 +388,10 @@ impl Game {
                     -1
                 };
                 format!(
-                    "[net {n}: seat {:#x}, flags {:#x}, player {player}, owner {owner}]",
+                    "[net {n}: seat {:#x}, flags {:#x}, left {}, player {player}, owner {owner}]",
                     self.u32_at(self.lobby_by_net, n),
                     self.u32_at(self.turn_flags, n),
+                    self.u32_at(self.left_flags, n),
                 )
             })
             .collect::<Vec<_>>()
