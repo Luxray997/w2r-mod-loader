@@ -62,7 +62,7 @@ unsafe impl Sync for Panel {}
 /// The flags the HUD's own full-screen window is begun with.
 const WINDOW_FLAGS: u32 = 0x120;
 const WIDTH: f32 = 362.0;
-const HEADER_HEIGHT: f32 = 46.0;
+const HEADER_HEIGHT: f32 = 60.0;
 const ROW_HEIGHT: f32 = 12.0;
 const MARGIN_RIGHT: f32 = 24.0;
 const TOP: f32 = 22.0;
@@ -366,6 +366,13 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
         "PgUp/PgDn speed   End pause   Del step   ` page"
     };
     kit.label_at(Rect::new(0.0, 28.0, WIDTH, 14.0), hint, ALIGN_CENTRE);
+    if !pace.ended {
+        kit.label_at(
+            Rect::new(0.0, 42.0, WIDTH, 14.0),
+            "[ ] switch player   Home own view   Ins full vision",
+            ALIGN_CENTRE,
+        );
+    }
 
     let Some(rows) = board else { return };
     let watching = replayplay::watching();
