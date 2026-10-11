@@ -93,6 +93,8 @@ struct Screen {
     slots: *const u8,
     slot_names: *const *const u8,
     host_name: *const u8,
+    /// Ping and loss from the transport's peer records; without it the bars are simply not drawn.
+    quality: Option<crate::netquality::game::Reader>,
 }
 
 // SAFETY: addresses of the game's functions and globals, fixed for the session; the screen is
@@ -135,6 +137,9 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
             TEAM_OPTIONS.store(screen.team_options as usize, Ordering::Release);
             let _ = SCREEN.set(Some(screen));
             let hooked = hook_localized(image, symbols, log);
+            if hooked {
+                crate::waitinglist::game::install(image, symbols, log);
+            }
             log.line(
                 W2R_LOG_INFO,
                 "host",
@@ -248,6 +253,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
             slots: at("MpLobbySlots")? as *const u8,
             slot_names: at("MpLobbySlotNames")? as *const *const u8,
             host_name: at("MpLobbyHostName")? as *const u8,
+            quality: crate::netquality::game::Reader::new(symbols),
         })
     }
 }
@@ -280,6 +286,13 @@ fn hook_localized(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
 unsafe extern "C" fn localized_detour(key: *const c_char) -> *const c_char {
     let original: LocalizedFn =
         unsafe { core::mem::transmute(REAL_LOCALIZED.load(Ordering::Acquire)) };
+    if !key.is_null() && unsafe { CStr::from_ptr(key) } == crate::waitinglist::KEY {
+        // The "Waiting for players" screen: remember the string so the label that draws it can
+        // be told apart and given a row per player.
+        let base = unsafe { original(key) };
+        crate::waitinglist::game::note_text(base);
+        return base;
+    }
     if !key.is_null() && unsafe { CStr::from_ptr(key) } == OBSERVER_TEAM_KEY {
         return c"OBS".as_ptr();
     }
@@ -625,6 +638,11 @@ impl Screen {
         let (seat0, mods, versions) = crate::session::lobby_roles();
         let mouse = k.mouse();
         let mut tip = None;
+        let quality = self
+            .quality
+            .as_ref()
+            .map(|q| q.poll())
+            .unwrap_or_else(|| Default::default());
         let host_name = unsafe { str_data_c(self.host_name) };
         let host = geo::host_slot(seat0, &present, &names, &host_name);
         let fixed = unsafe { *self.fixed_start } == 1;
@@ -678,6 +696,11 @@ impl Screen {
             }
             if fixed {
                 k.fill_rect(geo::swatch_rect(*g, marks), geo::TEAM_COLOURS[i]);
+            }
+            if let Some(m) = &quality[i]
+                && let Some(q) = quality_marks(k, rects.name[i], m, mouse)
+            {
+                tip = Some(q);
             }
         }
         if let Some(text) = tip {
@@ -927,6 +950,27 @@ unsafe fn str_data_c(p: *const u8) -> String {
         return String::new();
     }
     unsafe { CStr::from_ptr(p.cast()).to_string_lossy().into_owned() }
+}
+
+/// A slot's connection-quality bars and ping number at the right end of its name cell. Returns
+/// the tooltip text while the pointer is over them.
+fn quality_marks(
+    k: &Kit,
+    cell: Rect,
+    m: &crate::netquality::Metrics,
+    mouse: (f32, f32),
+) -> Option<String> {
+    use crate::netquality as nq;
+    let marks = nq::marks(cell)?;
+    let q = nq::quality(m);
+    for (i, bar) in marks.bars.iter().enumerate() {
+        k.fill_rect(*bar, if i < q.bars() { q.colour() } else { nq::DIM });
+    }
+    let label = nq::label(m);
+    if !label.is_empty() {
+        k.label_at(marks.label, &label, ALIGN_RIGHT);
+    }
+    geo::contains(marks.hover, mouse).then(|| nq::tip(m))
 }
 
 /// Where each slot's gutter (for the marks) and name cell (for the download bar) landed.

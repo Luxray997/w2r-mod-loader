@@ -30,6 +30,8 @@ pub use w2r_preview::mappreview;
 pub mod maproles;
 pub mod mapsearchcache;
 pub mod mapstore;
+pub mod netquality;
+pub mod waitinglist;
 pub mod mapwire;
 pub mod observer;
 pub mod pe;
