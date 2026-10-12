@@ -107,6 +107,22 @@ pub fn parse_table(table: &[[u8; SLOT_LEN]; SLOTS]) -> Vec<Player> {
         .collect()
 }
 
+/// The observer team in the lobby's team list (the ninth option, added by the observer plugin).
+pub const OBSERVER_TEAM: u8 = 9;
+
+/// True when at least two humans play on different teams: a game against another person, as
+/// opposed to one human against computers or humans only on the same side. Observers do not count.
+pub fn has_human_opponents(players: &[Player]) -> bool {
+    let mut teams = players
+        .iter()
+        .filter(|p| p.kind == Kind::Human && p.team != OBSERVER_TEAM)
+        .map(|p| p.team);
+    match teams.next() {
+        Some(first) => teams.any(|t| t != first),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +193,29 @@ mod tests {
         let players = parse_table(&table);
         assert_eq!(players.len(), 1);
         assert_eq!(players[0].slot, 6);
+    }
+
+    fn p(kind: Kind, team: u8) -> Player {
+        Player {
+            slot: 0,
+            kind,
+            name: "x".into(),
+            tag: None,
+            team,
+            race: 0,
+        }
+    }
+
+    #[test]
+    fn human_opponents_need_two_humans_on_different_teams() {
+        use Kind::{Computer as C, Human as H};
+        assert!(has_human_opponents(&[p(H, 1), p(H, 2)]));
+        assert!(has_human_opponents(&[p(H, 1), p(H, 1), p(C, 2), p(H, 3)]));
+        // one human against the computer, or humans allied against it
+        assert!(!has_human_opponents(&[p(H, 1), p(C, 2)]));
+        assert!(!has_human_opponents(&[p(H, 1), p(H, 1), p(C, 2)]));
+        // an observer is not an opponent
+        assert!(!has_human_opponents(&[p(H, 1), p(H, OBSERVER_TEAM)]));
+        assert!(!has_human_opponents(&[]));
     }
 }

@@ -138,6 +138,11 @@ impl Settings {
 
     /// The reports endpoint, or why sharing cannot run.
     pub fn endpoint(&self) -> Result<String, Error> {
+        self.endpoint_for("v1/reports")
+    }
+
+    /// `path` (no leading slash) on the service, or why sharing cannot run.
+    pub fn endpoint_for(&self, path: &str) -> Result<String, Error> {
         let base = if self.url.is_empty() { DEFAULT_URL } else { &self.url };
         let base = base.trim_end_matches('/');
         if !url_ok(base) {
@@ -146,7 +151,7 @@ impl Settings {
                 "the stats service URL must be https://...",
             ));
         }
-        Ok(format!("{base}/v1/reports"))
+        Ok(format!("{base}/{path}"))
     }
 }
 
@@ -162,7 +167,7 @@ pub enum Fate {
     Sent,
     /// The server refused it for a reason that will not change (it is not retried).
     Rejected,
-    /// Never sent: a human in the game has no BattleTag, so it cannot be rated.
+    /// Never sent: not a game against human opponents, or a human has no BattleTag.
     Skipped,
 }
 
@@ -245,7 +250,8 @@ pub struct Summary {
     pub pending: usize,
 }
 
-/// True when every human in the report has a BattleTag.
+/// True when the report is of a game between people and every human in it has a BattleTag. The
+/// server refuses the rest, so they are not sent (they stay in the outbox as local history).
 fn ratable(raw: &[u8]) -> bool {
     let Ok(env) = Envelope::parse(raw) else {
         return false;
@@ -253,10 +259,11 @@ fn ratable(raw: &[u8]) -> bool {
     let Ok(report) = env.report() else {
         return false;
     };
-    report
-        .players
-        .iter()
-        .all(|p| p.kind != Kind::Human || p.tag.is_some())
+    crate::slot::has_human_opponents(&report.players)
+        && report
+            .players
+            .iter()
+            .all(|p| p.kind != Kind::Human || p.tag.is_some())
 }
 
 /// Sends every report the server has not settled yet. Does nothing unless sharing is on. A
@@ -366,7 +373,10 @@ mod tests {
     }
 
     fn put(root: &Path, started: u64, tagged: bool) -> String {
-        let players = vec![player(0, "Ann", true), player(1, "Bob", tagged)];
+        put_with(root, started, vec![player(0, "Ann", true), player(1, "Bob", tagged)])
+    }
+
+    fn put_with(root: &Path, started: u64, players: Vec<Player>) -> String {
         let report = Report {
             phase: Phase::Result,
             rid: started.to_le_bytes(),
@@ -491,6 +501,21 @@ mod tests {
         let fake = Fake::new(Ok(OK));
         let s = upload(&root, &on(), &fake).unwrap();
         assert_eq!((s.skipped, s.sent), (1, 0));
+        assert!(fake.bodies.borrow().is_empty());
+    }
+
+    #[test]
+    fn games_without_human_opponents_are_never_sent() {
+        let root = temp_root("vs-ai");
+        let mut bot = player(1, "Azeroth", false);
+        bot.kind = Kind::Computer;
+        put_with(&root, 10, vec![player(0, "Ann", true), bot]);
+        let mut ally = player(1, "Bob", true);
+        ally.team = 1;
+        put_with(&root, 11, vec![player(0, "Ann", true), ally]);
+        let fake = Fake::new(Ok(OK));
+        let s = upload(&root, &on(), &fake).unwrap();
+        assert_eq!((s.skipped, s.sent), (2, 0));
         assert!(fake.bodies.borrow().is_empty());
     }
 

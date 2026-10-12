@@ -182,24 +182,36 @@ fn turn_record(r: &mut Cur, after: Option<u32>) -> Option<Turn> {
     Some(Turn { turn, packets })
 }
 
+/// Checks the magic and version and reads the header; the cursor is left at the first record.
+fn start(raw: &[u8]) -> Result<(Header, Cur<'_>), Error> {
+    let mut c = Cur(raw);
+    if c.take(4) != Some(MAGIC) {
+        return Err(Error::NotAReplay);
+    }
+    let version = c
+        .take(2)
+        .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+        .ok_or(Error::NotAReplay)?;
+    if version != VERSION {
+        return Err(Error::UnsupportedVersion(version));
+    }
+    let len = c.u32().ok_or(Error::BadHeader)? as usize;
+    if len > MAX_HEADER {
+        return Err(Error::BadHeader);
+    }
+    let header = header(c.take(len).ok_or(Error::BadHeader)?).ok_or(Error::BadHeader)?;
+    Ok((header, c))
+}
+
 impl Replay {
+    /// Just the header of a file, without reading the turns. For a server that keeps the file
+    /// as it came and only needs to know which match it is.
+    pub fn parse_header(raw: &[u8]) -> Result<Header, Error> {
+        start(raw).map(|(header, _)| header)
+    }
+
     pub fn parse(raw: &[u8]) -> Result<Replay, Error> {
-        let mut c = Cur(raw);
-        if c.take(4) != Some(MAGIC) {
-            return Err(Error::NotAReplay);
-        }
-        let version = c
-            .take(2)
-            .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
-            .ok_or(Error::NotAReplay)?;
-        if version != VERSION {
-            return Err(Error::UnsupportedVersion(version));
-        }
-        let len = c.u32().ok_or(Error::BadHeader)? as usize;
-        if len > MAX_HEADER {
-            return Err(Error::BadHeader);
-        }
-        let header = header(c.take(len).ok_or(Error::BadHeader)?).ok_or(Error::BadHeader)?;
+        let (header, mut c) = start(raw)?;
         let mut turns: Vec<Turn> = Vec::new();
         let mut footer = None;
         let mut chats: Vec<Chat> = Vec::new();

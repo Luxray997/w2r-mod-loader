@@ -3,6 +3,7 @@
 //! queue that holds reports until an uploader exists. Pure Rust, no game or Windows calls, so
 //! everything here is tested without the game; the host supplies entropy and file locations.
 
+pub mod blob;
 pub mod envelope;
 pub mod game;
 pub mod hex;

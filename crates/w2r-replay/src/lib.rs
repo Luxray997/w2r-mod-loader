@@ -8,6 +8,7 @@ pub mod chat;
 pub mod format;
 pub mod packet;
 pub mod reader;
+pub mod upload;
 pub mod writer;
 
 pub use format::{Footer, Header};
