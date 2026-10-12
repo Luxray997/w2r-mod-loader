@@ -251,6 +251,16 @@ pub fn ladder(matches: &[Match], with_computers: bool) -> Ladder {
             out.skipped.push((m.started, "has computer players"));
             continue;
         }
+        // A bare name is not an identity: anyone could be using it, so a game with a human who
+        // has no BattleTag cannot be rated.
+        if !with_computers
+            && m.players
+                .iter()
+                .any(|p| p.kind == Kind::Human && p.tag.is_none())
+        {
+            out.skipped.push((m.started, "player without a BattleTag"));
+            continue;
+        }
         let mut teams: BTreeMap<u8, Vec<String>> = BTreeMap::new();
         for p in &m.players {
             let id = match p.kind {
@@ -471,6 +481,16 @@ mod tests {
         let m = matches_for(vec![human(0, "Ann", 1), bot], 0, &[(1, 3, 900)]);
         assert!(ladder(&m, false).players.is_empty());
         assert_eq!(ladder(&m, true).players.len(), 2);
+    }
+
+    #[test]
+    fn a_human_without_a_battletag_is_not_rated() {
+        let mut bob = human(1, "Bob", 2);
+        bob.tag = None;
+        let m = matches_for(vec![human(0, "Ann", 1), bob], 0, &[(1, 3, 900)]);
+        let l = ladder(&m, false);
+        assert!(l.players.is_empty());
+        assert_eq!(l.skipped, vec![(1, "player without a BattleTag")]);
     }
 
     #[test]
