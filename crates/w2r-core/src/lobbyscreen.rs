@@ -638,10 +638,20 @@ impl Screen {
         let names: [String; SLOT_COUNT] = core::array::from_fn(|i| unsafe { self.slot_name(i) });
         let (seat0, mods, versions) = crate::session::lobby_roles();
         // Ratings: ask for the tags in the room (cheap unless something is new to us).
+        // The BattleTag is in the game's slot record, not in the name it displays.
         let tags: [Option<String>; SLOT_COUNT] = core::array::from_fn(|i| {
-            present[i]
-                .then(|| crate::lobbyratings::tag_of(&geo::clean_text(&names[i])))
-                .flatten()
+            if !present[i] {
+                return None;
+            }
+            let mut record = [0u8; w2r_stats::slot::SLOT_LEN];
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.slots.add(i * SLOT_STRIDE),
+                    record.as_mut_ptr(),
+                    record.len(),
+                );
+            }
+            w2r_stats::slot::parse_slot(i as u8, &record)?.tag
         });
         let asking: Vec<String> = tags.iter().flatten().cloned().collect();
         crate::lobbyratings::want(&asking, clock);
