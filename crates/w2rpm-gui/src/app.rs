@@ -39,6 +39,8 @@ pub struct App {
     draft: Settings,
     session: Option<Arc<Session>>,
     root: Option<Root>,
+    /// The sharing setting of the chosen folder, saved the moment it is changed.
+    share: Option<Result<w2rpm_lib::share::Settings, String>>,
     view: View,
     tab: Tab,
     search: String,
@@ -59,6 +61,7 @@ impl App {
             settings,
             session: None,
             root: None,
+            share: None,
             view: View::default(),
             tab: Tab::Installed,
             search: String::new(),
@@ -88,12 +91,16 @@ impl App {
                     .map_err(|e| self.status = Some(Err(format!("not connected to an index: {e}"))))
                     .ok();
                 self.view = View::load(&root, self.session.as_deref());
+                self.share = Some(
+                    w2rpm_lib::share::Settings::load(&root.0).map_err(|e| e.to_string()),
+                );
                 self.root = Some(root);
             }
             Err(e) => {
                 self.status = Some(Err(e.to_string()));
                 self.session = None;
                 self.root = None;
+                self.share = None;
                 self.view = View::default();
             }
         }
@@ -297,6 +304,52 @@ impl App {
             "Leave the index URL empty to use the built-in one (once the plugin repository is \
              published).",
         );
+        self.sharing_section(ui);
+    }
+
+    /// The match-data sharing switch (the same setting as the checkbox on the in-game Plugins
+    /// screen, `config\sharing.json`). It is saved as soon as it is changed.
+    fn sharing_section(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Stats sharing");
+        let (Some(root), Some(share)) = (&self.root, &mut self.share) else {
+            ui.label("Choose a w2r folder first.");
+            return;
+        };
+        match share {
+            Err(e) => {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    format!("config/sharing.json is unusable: {e}"),
+                );
+            }
+            Ok(settings) => {
+                let mut on = settings.share_match_data;
+                let label = "Share my match results and replays (including in-game chat) \
+                             with the stats service";
+                if ui.checkbox(&mut on, label).changed() {
+                    settings.share_match_data = on;
+                    if let Err(e) = settings.save(&root.0) {
+                        self.status =
+                            Some(Err(format!("could not save the sharing setting: {e}")));
+                    }
+                }
+                ui.label(
+                    "Only games against other players are sent: the map and its settings, each \
+                     player's BattleTag, teams, race, the result, and the replay file. The game \
+                     sends them by itself after a match when this is on.",
+                );
+                match settings.endpoint() {
+                    Ok(url) => {
+                        ui.label(format!("Service: {}", url.trim_end_matches("/v1/reports")));
+                    }
+                    Err(_) => {
+                        ui.label("Service: not set");
+                    }
+                }
+            }
+        }
     }
 
     fn consent_window(&mut self, ctx: &egui::Context) {
