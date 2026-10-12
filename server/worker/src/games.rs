@@ -424,21 +424,19 @@ pub fn effort_by_slot(
 
 /// A game this short cannot tell a spectator from a player who was beaten at once.
 const SPECTATOR_MIN_TURNS: u32 = 1500;
-/// The most a spectator might gather while waiting (a few trips with the peon): a player who built
-/// an economy mines far more than this.
-const SPECTATOR_MAX_MINED: u32 = 1000;
-
 /// Humans who sat in the game without playing it: the "one peon, allied to everyone" way of
-/// watching. They may wander about or gather a little, but killed and razed nothing, lost nothing
-/// (nobody attacks an ally), mined next to nothing and stayed to the end of a game of some length.
-/// Needs both tables, so an older client's report never flags anyone.
+/// watching. They may wander about and pick up a bag of gold or wood, but with no town hall nothing
+/// they carry is ever delivered, and one peon cannot harvest oil, so the score tables show no
+/// mining at all. They also killed and razed nothing, lost nothing (nobody attacks an ally) and
+/// stayed to the end of a game of some length. Needs both tables, so an older client's report
+/// never flags anyone.
 pub fn spectators(effort: &BTreeMap<u8, SlotEffort>) -> BTreeSet<u8> {
     effort
         .iter()
         .filter(|(_, e)| {
             e.effort.military == Some(0)
                 && e.lost == Some(0)
-                && e.mined.is_some_and(|m| m <= SPECTATOR_MAX_MINED)
+                && e.mined == Some(0)
                 && e.effort.actions.is_some()
                 && e.end >= SPECTATOR_MIN_TURNS
                 && e.presence >= rating::LEFT_BELOW
@@ -900,7 +898,7 @@ mod tests {
 
     const WATCHED_SCORE: &str = r#"[{"slot":0,"kills":30,"razed":4,"gold":9000},
         {"slot":1,"kills":12,"razed":0,"gold":4000},{"slot":2,"kills":9,"razed":1,"gold":6000},
-        {"slot":3,"kills":8,"razed":0,"gold":5000},{"slot":4,"kills":0,"razed":0,"lost":0,"buildings_lost":0,"gold":100,"lumber":200,"oil":0}]"#;
+        {"slot":3,"kills":8,"razed":0,"gold":5000},{"slot":4,"kills":0,"razed":0,"lost":0,"buildings_lost":0,"gold":0,"lumber":0,"oil":0}]"#;
     const WATCHED_ACTIVITY: &str = r#"[{"slot":0,"last_seen":4000,"last_action":3990,"actions":300},
         {"slot":1,"last_seen":4000,"last_action":3990,"actions":200},
         {"slot":2,"last_seen":4000,"last_action":3990,"actions":250},
@@ -937,6 +935,12 @@ mod tests {
             r#"[{"slot":0,"last_seen":4000,"last_action":900,"actions":40}]"#,
         );
         assert!(spectators(&beaten).is_empty());
+        // delivered a little gold: there was a town hall, so that is a player
+        let miner = effort(
+            r#"[{"slot":0,"kills":0,"razed":0,"lost":0,"gold":100}]"#,
+            r#"[{"slot":0,"last_seen":4000,"last_action":3900,"actions":50}]"#,
+        );
+        assert!(spectators(&miner).is_empty());
         // built an economy and never fought or was attacked: that is playing
         let builder = effort(
             r#"[{"slot":0,"kills":0,"razed":0,"lost":0,"gold":9000,"lumber":4000}]"#,

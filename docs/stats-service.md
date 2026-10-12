@@ -125,10 +125,11 @@ depend on them.)
   Observers (team 9) are never rated. A human who watched from inside the game (one peon, allied to
   everyone) is moved to the observer team before judging when the tables show it
   (`games::spectators`): no kills or razing, no units or buildings lost (nobody attacks an ally),
-  at most 1000 gold, lumber and oil mined in all (they may wander and gather a little while
-  waiting), there to the end of a game of 1500+ turns. Orders given do not matter. It needs both
-  tables, so older clients' reports never flag anyone, and the spectator is neither rated nor
-  counted as a third side.
+  nothing mined (with no town hall nothing the peon carries is delivered, and one peon cannot
+  harvest oil), there to the end of a game of 1500+ turns. Orders given do not matter. It needs
+  both tables, so older clients' reports never flag anyone, and the spectator is neither rated nor
+  counted as a third side. Not used yet: the spectator is allied with every player when the game
+  ends, which the reports do not carry.
 - **Read API** (public, JSON, CORS open, cached 60 s): `GET /v1/ratings?tags=Name%231234,...` (up to
   16 tags; unknown tags are absent), `GET /v1/leaderboard?limit=50&min_games=1`, and
   `GET /v1/games?limit=20` (latest verified games with settings and what each rating did).
