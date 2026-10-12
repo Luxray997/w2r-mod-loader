@@ -177,9 +177,11 @@ async fn put_replay(mut req: Request, env: Env) -> Result<Response> {
         return refusal(429, "too many replays today");
     }
 
-    let data = worker::js_sys::Uint8Array::from(&raw[..]).buffer();
+    // The file goes to R2 under its hash first; the metadata row follows. If the row fails the
+    // object is simply written again by the retry (same key, same bytes).
+    env.bucket("REPLAYS")?.put(row.sha.clone(), raw.clone()).execute().await?;
     db.prepare(
-        "INSERT OR IGNORE INTO replays          (sha, key, received, size, started, map, setup, build, client, data)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT OR IGNORE INTO replays          (sha, key, received, size, started, map, setup, build, client)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(&[
         row.sha.as_str().into(),
@@ -191,7 +193,6 @@ async fn put_replay(mut req: Request, env: Env) -> Result<Response> {
         row.setup.as_str().into(),
         row.build.as_str().into(),
         row.client.as_str().into(),
-        data.into(),
     ])?
     .run()
     .await?;

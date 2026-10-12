@@ -45,7 +45,9 @@ sent too, untouched, as `PUT /v1/replays` with two headers: `x-w2r-key` (the ins
 key) and `x-w2r-sig` (its signature over `w2r-replay-1
 ` + the file's SHA-256, `w2r_stats::blob`).
 The server verifies the signature, reads only the header (`Replay::parse_header`), and stores the
-file as a BLOB in the `replays` table (limit 1.5 MB, one D1 row holds 2 MB).
+file in the R2 bucket `w2r-replays` under its SHA-256 (limit 1.5 MB); the `replays` table in D1
+holds only the metadata (key, map, start time, roster hash, size). Replays were first kept as D1
+BLOBs and moved to R2 on 2026-10-12 (migration 0004), so they do not count against the 5 GB of D1.
 
 - **Linking:** the roster hash computed from the replay's header equals `reports.setup` of the
   same game, and the start times agree (checked on seven games: identical to the second). A replay
@@ -87,8 +89,11 @@ dev dependency and `worker-build` is installed through cargo. To change the serv
 2. `npx wrangler deploy` (it runs `worker-build --release`).
 3. Check `https://w2r-stats.saweet.net/v1/health`.
 
-Migrations so far: `0002` (game-settings columns, applied) and `0003` (replays table, not yet
-applied). A database made fresh from `schema.sql` needs neither.
+Migrations so far, all applied to the live database: `0002` (game-settings columns), `0003` (the
+replays table) and `0004` (replays table without the file column, files in R2; it drops the old
+table, so clients send their replays again: delete `configeplay-upload-state.json`, then run
+`w2rpm share upload`). A database made fresh from `schema.sql` needs none of them, only the
+`w2r-replays` bucket (`npx wrangler r2 bucket create w2r-replays`).
 
 ## Still to build
 
