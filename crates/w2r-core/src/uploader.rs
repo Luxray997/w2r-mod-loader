@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use w2r_abi::W2R_LOG_WARN;
+use w2r_stats::identity;
 use w2r_stats::share::{self, Error, Poster, Settings};
 
 use crate::host::Log;
@@ -95,19 +96,57 @@ fn run_once(root: &Path) {
     if !settings.share_match_data {
         return;
     }
-    let line = match share::upload(root, &settings, &WinHttp) {
-        Ok(s) if s.sent + s.rejected + s.skipped == 0 => return,
-        Ok(s) => format!(
-            "uploaded: {} sent, {} refused, {} skipped",
-            s.sent, s.rejected, s.skipped
+    match share::upload(root, &settings, &WinHttp) {
+        Ok(s) if s.sent + s.rejected + s.skipped == 0 => {}
+        Ok(s) => note(
+            root,
+            &format!(
+                "reports: {} sent, {} refused, {} skipped",
+                s.sent, s.rejected, s.skipped
+            ),
         ),
-        Err(e) => format!("upload failed, will retry: {e}"),
-    };
+        Err(e) => note(root, &format!("reports: upload failed, will retry: {e}")),
+    }
+    // A replay still being recorded is not finished; `replayrec::end` asks again when it is.
+    if recording() {
+        return;
+    }
+    let identity = identity::load_or_create(&root.join("config").join("identity.json"), || None);
+    let Ok(identity) = identity else { return };
+    match w2r_replay::upload::upload(root, &settings, &identity, &WinHttp) {
+        Ok(s) if s.sent + s.rejected + s.skipped == 0 => {}
+        Ok(s) => note(
+            root,
+            &format!(
+                "replays: {} sent, {} refused, {} skipped, {} waiting",
+                s.sent, s.rejected, s.skipped, s.waiting
+            ),
+        ),
+        Err(e) => note(root, &format!("replays: upload failed, will retry: {e}")),
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86"))]
+fn recording() -> bool {
+    crate::replayrec::recording()
+}
+
+#[cfg(not(all(windows, target_arch = "x86")))]
+fn recording() -> bool {
+    false
+}
+
+/// One line in `logs\share.log`.
+fn note(root: &Path, line: &str) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let path = root.join("logs").join("share.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(f, "{secs} {line}");
     }
 }

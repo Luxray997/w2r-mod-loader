@@ -337,7 +337,7 @@ pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
 pub const RECORD_REPLAYS_LABEL: &str = "Save a replay of each game I play";
 pub const AUTO_GAME_NAME_LABEL: &str = "Suggest a game name from the map when I pick one";
 pub const SHARE_LABEL: &str =
-    "Share my match results (map, players' BattleTags, result) with the stats service";
+    "Share my match results and replays (including chat) with the stats service";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {

@@ -363,7 +363,8 @@ fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
                 .endpoint()
                 .map_or_else(|_| "(not set)".to_string(), |e| e.replace("/v1/reports", ""));
             println!("service: {service}");
-            println!("Sent data: your signed match reports (map, players' BattleTags, teams, race, result, turns).");
+            println!("Sent: your signed match reports (map, players' BattleTags, teams, race, settings, result, turns)
+      and your replay files, which include in-game chat.");
         }
         ShareAction::On => {
             settings.share_match_data = true;
@@ -388,9 +389,28 @@ fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
             }
             let s = share::upload(&root.0, &settings, &Https::default())?;
             println!(
-                "{} sent, {} refused, {} skipped (a player without a BattleTag), {} waiting",
+                "{} sent, {} refused, {} skipped (not against humans, or a player without a BattleTag), {} waiting",
                 s.sent, s.rejected, s.skipped, s.pending
             );
+            let identity = w2r_stats::identity::load_or_create(
+                &root.0.join("config").join("identity.json"),
+                || None,
+            );
+            match identity {
+                Ok(identity) => {
+                    let r = w2r_replay::upload::upload(
+                        &root.0,
+                        &settings,
+                        &identity,
+                        &Https::default(),
+                    )?;
+                    println!(
+                        "replays: {} sent, {} refused, {} skipped, {} waiting",
+                        r.sent, r.rejected, r.skipped, r.waiting
+                    );
+                }
+                Err(_) => println!("replays: no installation key yet (play a game first)"),
+            }
         }
     }
     Ok(())

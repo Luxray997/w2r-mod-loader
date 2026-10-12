@@ -217,6 +217,11 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Release);
 }
 
+/// True while a replay is open for writing.
+pub fn recording() -> bool {
+    REC.lock().is_ok_and(|r| r.is_some())
+}
+
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
     end(None);
@@ -450,10 +455,16 @@ pub fn end(left: Option<([u8; 8], u32)>) {
         sync_mismatch,
     };
     match rec.writer.finish(&footer) {
-        Ok(_) => log(
-            W2R_LOG_INFO,
-            &format!("saved {} ({turns} turns)", rec.path.display()),
-        ),
+        Ok(_) => {
+            log(
+                W2R_LOG_INFO,
+                &format!("saved {} ({turns} turns)", rec.path.display()),
+            );
+            // The file is closed: share it, if the player has sharing on (<root>eplays\<file>).
+            if let Some(root) = rec.path.parent().and_then(|d| d.parent()) {
+                crate::uploader::kick(root, false);
+            }
+        }
         Err(e) => log(W2R_LOG_ERROR, &format!("could not finish the replay: {e}")),
     }
 }
