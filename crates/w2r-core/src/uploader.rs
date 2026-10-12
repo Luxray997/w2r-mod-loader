@@ -151,6 +151,15 @@ fn note(root: &Path, line: &str) {
     }
 }
 
+/// A plain GET of a public read endpoint (the lobby's rating lookup). Only a 200 is an answer.
+pub fn get(url: &str) -> Result<Vec<u8>, Error> {
+    let (status, answer) = winhttp::request("GET", url, &[], &[])?;
+    if status != 200 {
+        return Err(Error::new("network", format!("service answered {status}")));
+    }
+    Ok(answer)
+}
+
 struct WinHttp;
 
 impl Poster for WinHttp {

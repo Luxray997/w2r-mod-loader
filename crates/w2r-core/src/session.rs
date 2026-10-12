@@ -1079,6 +1079,7 @@ fn start() -> Session {
     #[cfg(target_arch = "x86")]
     {
         crate::uploader::init(&startup.root);
+        crate::lobbyratings::init(&startup.root);
         crate::matchend::init_reporter(
             &startup.root,
             loaded.fingerprint,

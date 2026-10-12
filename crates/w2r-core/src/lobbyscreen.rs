@@ -353,6 +353,7 @@ fn forget_stale_notices(now: u64) {
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(at, _)| now.saturating_sub(*at) <= geo::NOTICE_GAP_MS);
         NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        SUGGESTED.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -636,6 +637,14 @@ impl Screen {
         let present: [bool; SLOT_COUNT] = core::array::from_fn(|i| self.slot_present(i));
         let names: [String; SLOT_COUNT] = core::array::from_fn(|i| unsafe { self.slot_name(i) });
         let (seat0, mods, versions) = crate::session::lobby_roles();
+        // Ratings: ask for the tags in the room (cheap unless something is new to us).
+        let tags: [Option<String>; SLOT_COUNT] = core::array::from_fn(|i| {
+            present[i]
+                .then(|| crate::lobbyratings::tag_of(&geo::clean_text(&names[i])))
+                .flatten()
+        });
+        let asking: Vec<String> = tags.iter().flatten().cloned().collect();
+        crate::lobbyratings::want(&asking, clock);
         let mouse = k.mouse();
         let mut tip = None;
         let quality = self
@@ -704,9 +713,47 @@ impl Screen {
             {
                 tip = Some(q);
             }
+            if let Some(tag) = &tags[i]
+                && let Some(r) = rating_rect(rects.name[i], quality[i].is_some(), host_view)
+            {
+                let standing = crate::lobbyratings::standing(tag);
+                let text = crate::lobbyratings::label(standing);
+                if !text.is_empty() {
+                    let colour = match standing {
+                        crate::lobbyratings::Standing::Rated { .. } => RATING_COLOUR,
+                        _ => RATING_NEW_COLOUR,
+                    };
+                    k.label_coloured_at(r, &text, ALIGN_RIGHT, colour);
+                    if geo::contains(r, mouse) {
+                        tip = crate::lobbyratings::tip(standing).or(tip);
+                    }
+                }
+            }
         }
+        self.suggest_teams(&present, &tags);
         if let Some(text) = tip {
             self.draw_tip(window, mouse, &text);
+        }
+    }
+
+    /// Once the ratings of four or more tagged players are in, one chat line (local to this
+    /// player) saying how to split them into even teams. Shown again only when the answer changes.
+    fn suggest_teams(&self, present: &[bool], tags: &[Option<String>]) {
+        let humans: Vec<(String, String)> = (0..SLOT_COUNT)
+            .filter(|&i| present[i])
+            .filter_map(|i| {
+                let tag = tags[i].clone()?;
+                let name = tag.rsplit_once('#').map_or(tag.as_str(), |(n, _)| n);
+                Some((name.to_owned(), tag))
+            })
+            .collect();
+        let Some(line) = crate::lobbyratings::suggestion(&humans) else {
+            return;
+        };
+        let mut shown = SUGGESTED.lock().unwrap_or_else(|e| e.into_inner());
+        if *shown != line {
+            *shown = line.clone();
+            push_notice(line);
         }
     }
 
@@ -953,6 +1000,26 @@ unsafe fn str_data_c(p: *const u8) -> String {
     }
     unsafe { CStr::from_ptr(p.cast()).to_string_lossy().into_owned() }
 }
+
+const RATING_COLOUR: u32 = geo::pack(235, 205, 120, 255);
+const RATING_NEW_COLOUR: u32 = geo::pack(150, 150, 150, 255);
+
+/// Where a player's rating goes: just left of the connection marks, or at the right end of the
+/// name cell when there are none. `None` when the cell is too small for it.
+fn rating_rect(cell: Rect, has_quality: bool, dropdown: bool) -> Option<Rect> {
+    let marks = crate::netquality::marks(cell, dropdown)?;
+    let width = fl(cell.h * 2.2);
+    let right = if has_quality {
+        marks.label.x
+    } else {
+        marks.bars[0].x
+    };
+    let x = fl(right - width - cell.h * 0.2);
+    (x > cell.x + cell.w * 0.4).then(|| Rect::new(x, cell.y, width, cell.h))
+}
+
+/// The suggestion most recently shown in chat, so a lobby gets each one once.
+static SUGGESTED: Mutex<String> = Mutex::new(String::new());
 
 /// A slot's connection-quality bars and ping number at the right end of its name cell. Returns
 /// the tooltip text while the pointer is over them.

@@ -20,6 +20,7 @@ pub mod host;
 pub mod hostcfg;
 pub mod lobby;
 pub mod lobbylayout;
+pub mod lobbyratings;
 pub mod lobbypolicy;
 pub mod log;
 pub mod mapbrowser;
