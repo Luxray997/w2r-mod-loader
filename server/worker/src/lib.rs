@@ -2,6 +2,7 @@
 //! natively; the HTTP and D1 glue below only exists when building for WebAssembly.
 
 pub mod ingest;
+pub mod replay;
 
 #[cfg(target_arch = "wasm32")]
 mod app;

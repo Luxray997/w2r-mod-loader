@@ -799,6 +799,13 @@ name = "w2r-formats"
 version = "0.1.0"
 
 [[package]]
+name = "w2r-replay"
+version = "0.1.0"
+dependencies = [
+ "w2r-stats",
+]
+
+[[package]]
 name = "w2r-stats"
 version = "0.1.0"
 dependencies = [
@@ -812,7 +819,9 @@ name = "w2r-stats-worker"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "serde_json",
  "w2r-formats",
+ "w2r-replay",
  "w2r-stats",
  "worker",
 ]

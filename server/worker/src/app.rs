@@ -4,6 +4,7 @@ use worker::wasm_bindgen::JsValue;
 use worker::*;
 
 use crate::ingest::{self, Row};
+use crate::replay;
 
 /// Most envelopes in one upload. The client sends its outbox in batches.
 const MAX_BATCH: usize = 20;
@@ -21,6 +22,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     match (req.method(), path.as_str()) {
         (Method::Get, "/v1/health") => Response::ok("ok"),
         (Method::Post, "/v1/reports") => post_reports(req, env).await,
+        (Method::Put, "/v1/replays") => put_replay(req, env).await,
         _ => Response::error("not found", 404),
     }
 }
@@ -97,4 +99,101 @@ async fn store(db: &D1Database, r: &Row) -> Result<()> {
     .run()
     .await?;
     Ok(())
+}
+
+/// Most replays one key may add per day, a cap on how much a single install can store.
+const REPLAYS_PER_DAY: u64 = 200;
+
+fn json(status: u16, body: &str) -> Result<Response> {
+    let mut resp = Response::ok(body.to_string())?.with_status(status);
+    resp.headers_mut().set("content-type", "application/json")?;
+    Ok(resp)
+}
+
+fn refusal(status: u16, why: &str) -> Result<Response> {
+    // `why` is always one of our fixed ASCII phrases.
+    json(status, &format!(r#"{{"ok":false,"why":"{why}"}}"#))
+}
+
+/// `PUT /v1/replays`: the raw `.w2rr` file, with `x-w2r-key` (the installation's public key, hex)
+/// and `x-w2r-sig` (its signature over the file's SHA-256). Stored only when the same key has
+/// already reported the game; until then the answer is 409 and the client tries again later.
+async fn put_replay(mut req: Request, env: Env) -> Result<Response> {
+    let header = |name: &str| req.headers().get(name).ok().flatten().unwrap_or_default();
+    let key = w2r_stats::hex::decode_array::<32>(&header("x-w2r-key"));
+    let sig = w2r_stats::hex::decode_array::<64>(&header("x-w2r-sig"));
+    let (Some(key), Some(sig)) = (key, sig) else {
+        return refusal(400, "missing or bad key or signature header");
+    };
+    let raw = req.bytes().await?;
+    let now = now_secs();
+    let row = match replay::check(&raw, &key, &sig, now) {
+        Ok(row) => row,
+        Err(why) => {
+            let status = if why == replay::Reject::TooLarge { 413 } else { 422 };
+            return refusal(status, why.reason());
+        }
+    };
+    let db = env.d1("w2r_stats")?;
+
+    // Already stored: the same file again is a success, so a client that lost the answer can resend.
+    let have = db
+        .prepare("SELECT 1 AS one FROM replays WHERE sha = ?1")
+        .bind(&[row.sha.as_str().into()])?
+        .first::<serde_json::Value>(None)
+        .await?;
+    if have.is_some() {
+        return json(200, r#"{"ok":true,"stored":false}"#);
+    }
+
+    // The same key must have reported this game (same roster hash, start within ten minutes).
+    let lo = row.started.saturating_sub(replay::LINK_WINDOW_SECS);
+    let hi = row.started + replay::LINK_WINDOW_SECS;
+    let linked = db
+        .prepare("SELECT 1 AS one FROM reports WHERE key = ?1 AND setup = ?2 AND started BETWEEN ?3 AND ?4 LIMIT 1")
+        .bind(&[
+            row.key.as_str().into(),
+            row.setup.as_str().into(),
+            JsValue::from_f64(lo as f64),
+            JsValue::from_f64(hi as f64),
+        ])?
+        .first::<serde_json::Value>(None)
+        .await?;
+    if linked.is_none() {
+        return refusal(409, "no report for this game yet");
+    }
+
+    let today = db
+        .prepare("SELECT COUNT(*) AS n FROM replays WHERE key = ?1 AND received > ?2")
+        .bind(&[
+            row.key.as_str().into(),
+            JsValue::from_f64(now.saturating_sub(24 * 3600) as f64),
+        ])?
+        .first::<serde_json::Value>(None)
+        .await?
+        .and_then(|v| v.get("n").and_then(|n| n.as_u64()))
+        .unwrap_or(0);
+    if today >= REPLAYS_PER_DAY {
+        return refusal(429, "too many replays today");
+    }
+
+    let data = worker::js_sys::Uint8Array::from(&raw[..]).buffer();
+    db.prepare(
+        "INSERT OR IGNORE INTO replays          (sha, key, received, size, started, map, setup, build, client, data)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )
+    .bind(&[
+        row.sha.as_str().into(),
+        row.key.as_str().into(),
+        JsValue::from_f64(now as f64),
+        JsValue::from_f64(row.size as f64),
+        JsValue::from_f64(row.started as f64),
+        row.map.as_str().into(),
+        row.setup.as_str().into(),
+        row.build.as_str().into(),
+        row.client.as_str().into(),
+        data.into(),
+    ])?
+    .run()
+    .await?;
+    json(200, r#"{"ok":true,"stored":true}"#)
 }

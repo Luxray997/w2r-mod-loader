@@ -18,8 +18,10 @@ read API are not written. Design background: `docs/stats-reporting.md`.
 ## Ingest rules (server and client agree)
 
 A report is stored only if its signature verifies, its roster hashes to its `setup`, the reporter
-is a human in the roster, **every human has a BattleTag**, and its start time is within 14 days
-back and 1 hour ahead. Computers need no tag. Rejections are permanent; the client records them
+is a human in the roster, **the game has human opponents** (at least two humans on different,
+non-observer teams: games against the computer alone, or humans only allied, are refused),
+**every human has a BattleTag**, and its start time is within 14 days back and 1 hour ahead.
+Computers need no tag. Games against the computer stay in the local outbox and in `w2rpm stats`. Rejections are permanent; the client records them
 and does not retry. The client also never sends a game with an untagged human. Re-sending a stored
 report is accepted (`INSERT OR IGNORE` on `(key, rid)`).
 
@@ -36,9 +38,32 @@ resources, peasants-only on and off, tileset 4, fixed and random starts). The D1
 has a column for each; `migrations-0002-game-settings.sql` adds them to a database made from the
 first schema. Reports from clients without `game` are still accepted, with empty columns.
 
-Not captured yet: AI difficulty, game-end cause, per-player tallies over time. Replays (median
-40 KB, largest 780 KB, with public chat) could be uploaded as a second, separate artifact to R2
-if a full record is wanted; not built.
+## Replays
+
+A finished replay (`replays\*.w2rr`, median 40 KB, largest about 780 KB, **with public chat**) is
+sent too, untouched, as `PUT /v1/replays` with two headers: `x-w2r-key` (the installation's public
+key) and `x-w2r-sig` (its signature over `w2r-replay-1
+` + the file's SHA-256, `w2r_stats::blob`).
+The server verifies the signature, reads only the header (`Replay::parse_header`), and stores the
+file as a BLOB in the `replays` table (limit 1.5 MB, one D1 row holds 2 MB).
+
+- **Linking:** the roster hash computed from the replay's header equals `reports.setup` of the
+  same game, and the start times agree (checked on seven games: identical to the second). A replay
+  is stored only when the *same key* has reported that game; until then the answer is 409 and the
+  client tries again on its next run. This keeps strangers from filling the table.
+- **Client** (`w2r_replay::upload`, used by the host and `w2rpm share upload`): one ledger of its
+  own (`configeplay-upload-state.json`), at most 10 files per run, nothing touched in the last 20
+  seconds, nothing while a recording is open (`replayrec::recording`), and `replayrec::end` asks for
+  an upload when it closes a file. Skipped for good: no settings block (older recordings), no human
+  opponents, a human without a BattleTag, over 1.5 MB, older than 14 days.
+- **Answers:** 200 stored (or already stored), 409/429/5xx try later, anything else final.
+- **Cap:** 200 replays per key per day.
+- **Consent:** the same checkbox, worded "Share my match results and replays (including chat)...".
+  Chat is kept for now; whether to strip it is to be decided after seeing how players react.
+- **CPU:** the Worker hashes and verifies a signature per upload (a few ms for a large file in WASM);
+  untested against the free plan's 10 ms CPU limit.
+
+Not captured yet: AI difficulty, per-player tallies over time (derivable from replays).
 
 ## Local testing (done 2026-10-11)
 
@@ -49,16 +74,24 @@ Node 24 LTS is unpacked at `E:\tools\node` (not on PATH; C: is full, so also set
 real outbox reports to it stored all six, rejected a tampered copy ("bad signature") and stored
 nothing new on a resend.
 
-## Deploying (not done)
+## Deploying
 
-1. Node, `wrangler` and `worker-build` are installed here; `wrangler login` needs your Cloudflare account.
-2. `wrangler d1 create w2r-stats`, put the id in `server/worker/wrangler.toml`.
-3. `wrangler d1 execute w2r-stats --file schema.sql --remote`, then `wrangler deploy`.
-4. Client: `w2rpm share url https://<name>.<account>.workers.dev`, `w2rpm share on`.
+Deployed 2026-10-11 to `https://w2r-stats.saweet.net` (custom domain route in `wrangler.toml`,
+`workers_dev = false`; the D1 binding is `w2r_stats`). Node is at `E:\tools\node`; `wrangler` is a
+dev dependency and `worker-build` is installed through cargo. To change the service, from
+`server/worker`:
+
+1. Apply any new `migrations-*.sql` to the live database first (`npx wrangler d1 execute w2r-stats
+   --remote --file <file>`), because the new Worker expects the columns and tables. Test the same
+   file against a local copy first (`--local`, then `npx wrangler dev --local`).
+2. `npx wrangler deploy` (it runs `worker-build --release`).
+3. Check `https://w2r-stats.saweet.net/v1/health`.
+
+Migrations so far: `0002` (game-settings columns, applied) and `0003` (replays table, not yet
+applied). A database made fresh from `schema.sql` needs neither.
 
 ## Still to build
 
-Set `DEFAULT_URL` once the Worker is deployed (until then nothing is sent, even with the checkbox
-on). A sharing toggle in the egui manager. Rate limiting (Workers rate-limit binding, per key and
-IP), a cron pass that groups reports into games and applies the trust tiers, rating recompute with
-`w2r-stats::rating`, `GET /v1/ratings`. The in-game WinHTTP upload has not been run in the game.
+A sharing toggle in the egui manager. Rate limiting (Workers rate-limit binding, per key and IP), a
+cron pass that groups reports into games and applies the trust tiers, rating recompute with
+`w2r-stats::rating`, `GET /v1/ratings`. The in-game replay upload has not been run in the game.

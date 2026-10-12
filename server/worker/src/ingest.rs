@@ -3,7 +3,8 @@
 //!
 //! Policy (docs/stats-reporting.md, "when in doubt, don't rate"): a report is stored only when its
 //! signature verifies, its roster hashes to the `setup` it claims, the reporter is a human in that
-//! roster, and every human in the roster has a BattleTag. Whether a game is *true* is decided
+//! roster, the game has humans on at least two sides, and every human in the roster has a
+//! BattleTag. Whether a game is *true* is decided
 //! later, from several reports; this only keeps malformed or unratable ones out of the log.
 
 use w2r_stats::envelope::Envelope;
@@ -26,6 +27,8 @@ pub enum Reject {
     SetupMismatch,
     /// The reporter is not a human in the roster.
     NotAParticipant,
+    /// Not a game between people: one human against computers, or humans only on one side.
+    NoHumanOpponents,
     /// A human in the roster has no BattleTag, so the game cannot be rated.
     MissingTag,
     TooOld,
@@ -40,6 +43,7 @@ impl Reject {
             Reject::BadSignature => "bad signature",
             Reject::SetupMismatch => "setup does not match the roster",
             Reject::NotAParticipant => "reporter is not a human in the roster",
+            Reject::NoHumanOpponents => "no human opponents",
             Reject::MissingTag => "a human has no BattleTag",
             Reject::TooOld => "too old",
             Reject::FromTheFuture => "start time is in the future",
@@ -141,6 +145,9 @@ fn validate(report: &Report, now: u64) -> Result<(), Reject> {
     let me = report.players.iter().find(|p| p.slot == report.me);
     if me.is_none_or(|p| p.kind != Kind::Human) {
         return Err(Reject::NotAParticipant);
+    }
+    if !w2r_stats::slot::has_human_opponents(&report.players) {
+        return Err(Reject::NoHumanOpponents);
     }
     if report
         .players
@@ -295,10 +302,24 @@ mod tests {
 
     #[test]
     fn computers_need_no_tag() {
+        let mut bot = human(2, "Azeroth", 3, false);
+        bot.kind = Kind::Computer;
+        let roster = vec![human(0, "Ann", 1, true), human(1, "Bob", 2, true), bot];
+        assert!(check(&sealed(&report(roster, 0, Phase::Result)), NOW).is_ok());
+    }
+
+    #[test]
+    fn a_game_without_human_opponents_is_refused() {
         let mut bot = human(1, "Azeroth", 2, false);
         bot.kind = Kind::Computer;
-        let r = report(vec![human(0, "Ann", 1, true), bot], 0, Phase::Result);
-        assert!(check(&sealed(&r), NOW).is_ok());
+        let solo = report(vec![human(0, "Ann", 1, true), bot], 0, Phase::Result);
+        assert_eq!(check(&sealed(&solo), NOW), Err(Reject::NoHumanOpponents));
+        let allies = report(
+            vec![human(0, "Ann", 1, true), human(1, "Bob", 1, true)],
+            0,
+            Phase::Result,
+        );
+        assert_eq!(check(&sealed(&allies), NOW), Err(Reject::NoHumanOpponents));
     }
 
     #[test]
