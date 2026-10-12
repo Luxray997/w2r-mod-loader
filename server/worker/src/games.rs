@@ -355,6 +355,10 @@ pub struct SlotEffort {
     pub effort: rating::Effort,
     /// Share of the game attended, 1 when unknown.
     pub presence: f64,
+    /// Gold, lumber and oil mined, from the score table.
+    pub mined: Option<u32>,
+    /// The last turn anyone's packets arrived, 0 without an activity table.
+    pub end: u32,
 }
 
 impl Default for SlotEffort {
@@ -362,6 +366,8 @@ impl Default for SlotEffort {
         SlotEffort {
             effort: rating::Effort::default(),
             presence: 1.0,
+            mined: None,
+            end: 0,
         }
     }
 }
@@ -389,8 +395,13 @@ pub fn effort_by_slot(
     let mut out: BTreeMap<u8, SlotEffort> = BTreeMap::new();
     for v in list(score_json) {
         if let Some(slot) = slot_of(&v) {
-            out.entry(slot).or_default().effort.military =
-                Some(field(&v, "kills").saturating_add(field(&v, "razed")));
+            let e = out.entry(slot).or_default();
+            e.effort.military = Some(field(&v, "kills").saturating_add(field(&v, "razed")));
+            e.mined = Some(
+                field(&v, "gold")
+                    .saturating_add(field(&v, "lumber"))
+                    .saturating_add(field(&v, "oil")),
+            );
         }
     }
     let activity = list(activity_json);
@@ -401,9 +412,47 @@ pub fn effort_by_slot(
             let e = out.entry(slot).or_default();
             e.effort.actions = Some(field(v, "actions"));
             e.presence = rating::presence(field(v, "last_seen"), end);
+            e.end = end;
         }
     }
     out
+}
+
+/// A game this short cannot tell a spectator from a player who was beaten at once.
+const SPECTATOR_MIN_TURNS: u32 = 1500;
+/// Orders a spectator might still give (a stray click) without counting as playing.
+const SPECTATOR_MAX_ACTIONS: u32 = 10;
+
+/// Humans who sat in the game without playing it: the "one peon, allied to everyone" way of
+/// watching. They killed and razed nothing, mined nothing, gave next to no orders and stayed to
+/// the end of a game of some length. Needs both tables, so an older client's report never flags
+/// anyone.
+pub fn spectators(effort: &BTreeMap<u8, SlotEffort>) -> BTreeSet<u8> {
+    effort
+        .iter()
+        .filter(|(_, e)| {
+            e.effort.military == Some(0)
+                && e.mined == Some(0)
+                && e.effort.actions.is_some_and(|a| a <= SPECTATOR_MAX_ACTIONS)
+                && e.end >= SPECTATOR_MIN_TURNS
+                && e.presence >= rating::LEFT_BELOW
+        })
+        .map(|(slot, _)| *slot)
+        .collect()
+}
+
+/// Moves detected spectators onto the observer team, so they are neither rated nor counted as a
+/// side. Returns how many were moved.
+pub fn mark_spectators(roster: &mut [Player], effort: &BTreeMap<u8, SlotEffort>) -> usize {
+    let watching = spectators(effort);
+    let mut moved = 0;
+    for p in roster.iter_mut() {
+        if p.kind == Kind::Human && p.team != OBSERVER_TEAM && watching.contains(&p.slot) {
+            p.team = OBSERVER_TEAM;
+            moved += 1;
+        }
+    }
+    moved
 }
 
 // ---- grouping reports into games ---------------------------------------------------------------
@@ -834,6 +883,70 @@ mod tests {
         let s = played(None, Some(activity));
         assert!(gain(&s, "Cid#1") < gain(&s, "Ann#1"));
         assert!(gain(&s, "Cid#1") > 0.0, "still something: they stayed");
+    }
+
+    fn watched_game() -> Vec<Player> {
+        // Two against two, and Eve sitting on a third team with her one peon.
+        let mut r = four();
+        r.push(human(4, "Eve", 3));
+        r
+    }
+
+    const WATCHED_SCORE: &str = r#"[{"slot":0,"kills":30,"razed":4,"gold":9000},
+        {"slot":1,"kills":12,"razed":0,"gold":4000},{"slot":2,"kills":9,"razed":1,"gold":6000},
+        {"slot":3,"kills":8,"razed":0,"gold":5000},{"slot":4,"kills":0,"razed":0,"gold":0,"lumber":0,"oil":0}]"#;
+    const WATCHED_ACTIVITY: &str = r#"[{"slot":0,"last_seen":4000,"last_action":3990,"actions":300},
+        {"slot":1,"last_seen":4000,"last_action":3990,"actions":200},
+        {"slot":2,"last_seen":4000,"last_action":3990,"actions":250},
+        {"slot":3,"last_seen":4000,"last_action":3990,"actions":220},
+        {"slot":4,"last_seen":4000,"last_action":300,"actions":3}]"#;
+
+    #[test]
+    fn a_player_watching_from_a_corner_is_not_a_side_and_is_not_rated() {
+        let effort = effort_by_slot(Some(WATCHED_SCORE), Some(WATCHED_ACTIVITY));
+        assert_eq!(spectators(&effort).into_iter().collect::<Vec<_>>(), vec![4]);
+        let mut roster = watched_game();
+        assert_eq!(mark_spectators(&mut roster, &effort), 1);
+        assert_eq!(roster[4].team, OBSERVER_TEAM);
+        // with Eve out, it is the ordinary two-team game it always was
+        let v = judge(
+            &roster,
+            &[vote("k1", "Ann", 1, "win", 4000), vote("k2", "Bob", 2, "loss", 4000)],
+            &none(),
+            &BTreeMap::new(),
+        );
+        assert_eq!((v.status, v.winner_team, v.rated), (Status::Verified, Some(1), true));
+        let mut s = BTreeMap::new();
+        apply(&mut s, &roster, 1, &effort);
+        assert!(!s.contains_key("Eve#1"));
+        assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn real_players_are_not_mistaken_for_watchers() {
+        let effort = |score: &str, activity: &str| effort_by_slot(Some(score), Some(activity));
+        // beaten early but did mine and give orders
+        let beaten = effort(
+            r#"[{"slot":0,"kills":0,"razed":0,"gold":400}]"#,
+            r#"[{"slot":0,"last_seen":4000,"last_action":900,"actions":40}]"#,
+        );
+        assert!(spectators(&beaten).is_empty());
+        // too short a game to tell
+        let short = effort(
+            r#"[{"slot":0,"kills":0,"razed":0,"gold":0}]"#,
+            r#"[{"slot":0,"last_seen":700,"last_action":20,"actions":2}]"#,
+        );
+        assert!(spectators(&short).is_empty());
+        // left early: that is a leaver, not a watcher
+        let left = effort(
+            r#"[{"slot":0,"kills":0,"razed":0,"gold":0},{"slot":1,"kills":5,"razed":0,"gold":10}]"#,
+            r#"[{"slot":0,"last_seen":1600,"last_action":20,"actions":2},
+                {"slot":1,"last_seen":4000,"last_action":3990,"actions":80}]"#,
+        );
+        assert!(spectators(&left).is_empty());
+        // an older client sends no activity: nobody is flagged
+        let old = effort_by_slot(Some(r#"[{"slot":0,"kills":0,"razed":0,"gold":0}]"#), None);
+        assert!(spectators(&old).is_empty());
     }
 
     #[test]

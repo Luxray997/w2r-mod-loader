@@ -399,9 +399,10 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
     let mut reversed = false;
     for g in &game_rows {
         let id = n(g, "id");
-        let Some(roster) = games::roster_from_json(&s(g, "roster")) else {
+        let Some(mut roster) = games::roster_from_json(&s(g, "roster")) else {
             continue;
         };
+        games::mark_spectators(&mut roster, &effort_of(&vote_rows, id));
         let votes: Vec<Vote> = vote_rows
             .iter()
             .filter(|v| n(v, "game_id") == id)
@@ -526,9 +527,10 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
     // trust. The second pass uses that to settle disputes.
     let mut trust: BTreeMap<String, u32> = BTreeMap::new();
     for g in &game_rows {
-        let Some(roster) = games::roster_from_json(&s(g, "roster")) else {
+        let Some(mut roster) = games::roster_from_json(&s(g, "roster")) else {
             continue;
         };
+        games::mark_spectators(&mut roster, &effort_of(&vote_rows, n(g, "id")));
         let votes = by_game.get(&(n(g, "id") as i64)).cloned().unwrap_or_default();
         if games::judge(&roster, &votes, &trusted, &BTreeMap::new()).corroborated {
             let keys: BTreeSet<&str> = votes.iter().map(|v| v.key.as_str()).collect();
@@ -539,9 +541,10 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
     }
     for g in &game_rows {
         let id = n(g, "id");
-        let Some(roster) = games::roster_from_json(&s(g, "roster")) else {
+        let Some(mut roster) = games::roster_from_json(&s(g, "roster")) else {
             continue;
         };
+        games::mark_spectators(&mut roster, &effort_of(&vote_rows, id));
         let votes = by_game.remove(&(id as i64)).unwrap_or_default();
         let verdict = games::judge(&roster, &votes, &trusted, &trust);
         statements.push(verdict_stmt(db, id, &verdict, votes.len(), now)?);

@@ -122,6 +122,11 @@ depend on them.)
   `{slot, last_seen, last_action, actions}` per human, kept by the replay recorder
   (`w2r_replay::activity`; packet ids are the humans in slot order, not lobby slots) and only
   present when the match was recorded.
+  Observers (team 9) are never rated. A human who watched from inside the game (one peon, allied to
+  everyone) is moved to the observer team before judging when the tables show it
+  (`games::spectators`): no kills or razing, nothing mined, at most ten orders, there to the end of
+  a game of 1500+ turns. It needs both tables, so older clients' reports never flag anyone, and
+  the spectator is neither rated nor counted as a third side.
 - **Read API** (public, JSON, CORS open, cached 60 s): `GET /v1/ratings?tags=Name%231234,...` (up to
   16 tags; unknown tags are absent), `GET /v1/leaderboard?limit=50&min_games=1`, and
   `GET /v1/games?limit=20` (latest verified games with settings and what each rating did).
