@@ -117,6 +117,44 @@ impl PlayerScore {
     }
 }
 
+/// How present and busy one human was, from the turn packets the recorder saw: the last turn a
+/// packet of theirs arrived (they leave, and it stops), the last turn they gave a real order, and
+/// how many orders they gave. `slot` is their lobby slot, as in the score table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerActivity {
+    pub slot: u8,
+    pub last_seen: u32,
+    pub last_action: u32,
+    pub actions: u32,
+}
+
+impl PlayerActivity {
+    fn to_value(&self) -> Value {
+        object(vec![
+            ("slot", num(self.slot)),
+            ("last_seen", num(self.last_seen)),
+            ("last_action", num(self.last_action)),
+            ("actions", num(self.actions)),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Result<PlayerActivity, &'static str> {
+        let uint = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_number)
+                .and_then(w2r_formats::json::Number::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or("bad activity field")
+        };
+        Ok(PlayerActivity {
+            slot: u8::try_from(uint("slot")?).map_err(|_| "bad activity slot")?,
+            last_seen: uint("last_seen")?,
+            last_action: uint("last_action")?,
+            actions: uint("actions")?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultInfo {
     pub outcome: Outcome,
@@ -128,6 +166,9 @@ pub struct ResultInfo {
     /// The score tables of every player in the game; absent from older clients and from a match
     /// that was recovered after a crash.
     pub score: Option<Vec<PlayerScore>>,
+    /// Who was still there and doing things, per human; absent from older clients and from a
+    /// match that was not recorded.
+    pub activity: Option<Vec<PlayerActivity>>,
 }
 
 impl ResultInfo {
@@ -243,6 +284,14 @@ impl Report {
                         Value::Array(score.iter().take(MAX_PLAYERS).map(PlayerScore::to_value).collect()),
                     ));
                 }
+                if let Some(activity) = &r.activity {
+                    fields.push((
+                        "activity",
+                        Value::Array(
+                            activity.iter().take(MAX_PLAYERS).map(PlayerActivity::to_value).collect(),
+                        ),
+                    ));
+                }
                 object(fields)
             }
         };
@@ -322,6 +371,17 @@ impl Report {
                             .collect::<Result<Vec<_>, _>>()?,
                     ),
                 };
+                let activity = match r.get("activity") {
+                    None | Some(Value::Null) => None,
+                    Some(list) => Some(
+                        list.as_array()
+                            .ok_or("bad activity")?
+                            .iter()
+                            .take(MAX_PLAYERS)
+                            .map(PlayerActivity::from_value)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    ),
+                };
                 Some(ResultInfo {
                     outcome: Outcome::from_code(code, turns).ok_or("no match")?,
                     code,
@@ -329,6 +389,7 @@ impl Report {
                     sync_mismatch: u32::try_from(uint(field("sync_mismatch")?)?)
                         .map_err(|_| "bad sync_mismatch")?,
                     score,
+                    activity,
                 })
             }
         };
@@ -426,6 +487,7 @@ mod tests {
                 turns: 5994,
                 sync_mismatch: 0,
                 score: None,
+                activity: None,
             }),
         );
         assert_eq!(Report::from_value(&done.to_value()), Ok(done.clone()));
@@ -445,6 +507,7 @@ mod tests {
             turns: 10,
             sync_mismatch: 0,
             score: None,
+            activity: None,
         });
         assert!(Report::from_value(&sample(Phase::Start, with_result).to_value()).is_err());
     }
@@ -468,6 +531,7 @@ mod tests {
                 PlayerScore { slot: 0, kills: 12, razed: 2, lost: 5, buildings_lost: 1, gold: 9000, lumber: 4000, oil: 800 },
                 PlayerScore { slot: 1, ..PlayerScore::default() },
             ]),
+            activity: Some(vec![PlayerActivity { slot: 0, last_seen: 9000, last_action: 8990, actions: 700 }]),
         });
         let r = sample(Phase::Result, with.clone());
         let back = Report::from_value(&r.to_value()).unwrap();
@@ -482,7 +546,7 @@ mod tests {
         // a result without the key reads as unknown, and writes back without it
         let old = ResultInfo { score: None, ..with.unwrap() };
         assert_eq!(old.combat(), None);
-        let text = sample(Phase::Result, Some(old)).to_value().to_json();
-        assert!(!text.contains("score"));
+        let text = sample(Phase::Result, Some(ResultInfo { activity: None, ..old })).to_value().to_json();
+        assert!(!text.contains("score") && !text.contains("activity"));
     }
 }

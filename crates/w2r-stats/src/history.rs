@@ -192,6 +192,7 @@ mod tests {
                 turns: t,
                 sync_mismatch: 0,
                 score: None,
+                activity: None,
             }),
         }
     }

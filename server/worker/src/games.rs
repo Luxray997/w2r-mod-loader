@@ -273,12 +273,12 @@ pub fn apply(
     standings: &mut BTreeMap<String, Standing>,
     roster: &[Player],
     winner_team: u8,
-    military: &BTreeMap<u8, u32>,
+    effort: &BTreeMap<u8, SlotEffort>,
 ) -> Vec<Change> {
     let mut winners: Vec<String> = Vec::new();
     let mut losers: Vec<String> = Vec::new();
-    let mut w_mil: Vec<Option<u32>> = Vec::new();
-    let mut l_mil: Vec<Option<u32>> = Vec::new();
+    let mut w_eff: Vec<SlotEffort> = Vec::new();
+    let mut l_eff: Vec<SlotEffort> = Vec::new();
     for p in roster {
         let (Kind::Human, Some(tag)) = (p.kind, p.tag.as_ref()) else {
             continue;
@@ -288,10 +288,10 @@ pub fn apply(
         }
         if p.team == winner_team {
             winners.push(tag.clone());
-            w_mil.push(military.get(&p.slot).copied());
+            w_eff.push(effort.get(&p.slot).copied().unwrap_or_default());
         } else {
             losers.push(tag.clone());
-            l_mil.push(military.get(&p.slot).copied());
+            l_eff.push(effort.get(&p.slot).copied().unwrap_or_default());
         }
     }
     if winners.is_empty() || losers.is_empty() {
@@ -303,13 +303,26 @@ pub fn apply(
             .collect()
     };
     let (w_before, l_before) = (get(standings, &winners), get(standings, &losers));
-    // A player who did little of the fighting moves less than the one who carried the game.
+    // A player who did little moves less than the one who carried the game. A winner who left
+    // early also earns only the share of the game they stayed for; a loser who left early takes
+    // the whole loss, so quitting never softens it.
+    let share = |eff: &[SlotEffort], winning: bool| -> Vec<f64> {
+        let base = rating::contribution_weights(&eff.iter().map(|e| e.effort).collect::<Vec<_>>());
+        eff.iter()
+            .zip(base)
+            .map(|(e, w)| match (winning, e.presence) {
+                (true, p) => w * p,
+                (false, p) if p < rating::LEFT_BELOW => 1.0,
+                (false, _) => w,
+            })
+            .collect()
+    };
     let (w_after, l_after) = rating::update_weighted(
         &w_before,
         &l_before,
         false,
-        &rating::contribution_weights(&w_mil),
-        &rating::contribution_weights(&l_mil),
+        &share(&w_eff, true),
+        &share(&l_eff, false),
     );
     let mut out = Vec::new();
     for (tags, before, after, won) in [
@@ -336,11 +349,34 @@ pub fn apply(
     out
 }
 
-/// Each slot's military score (units killed plus buildings razed) from a game's stored score
-/// table, a JSON array of `{"slot":..,"kills":..,"razed":..,..}`. Empty when there is none.
-pub fn military_by_slot(score_json: &str) -> BTreeMap<u8, u32> {
-    let Some(doc) = json::parse(score_json.as_bytes()).ok() else {
-        return BTreeMap::new();
+/// What the reports say one player did, and how long they were there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotEffort {
+    pub effort: rating::Effort,
+    /// Share of the game attended, 1 when unknown.
+    pub presence: f64,
+}
+
+impl Default for SlotEffort {
+    fn default() -> Self {
+        SlotEffort {
+            effort: rating::Effort::default(),
+            presence: 1.0,
+        }
+    }
+}
+
+/// Each slot's effort from a game's stored score table (`{"slot","kills","razed",..}` entries) and
+/// activity table (`{"slot","last_seen","last_action","actions"}` entries), either of which may be
+/// missing or malformed. Military is units killed plus buildings razed.
+pub fn effort_by_slot(
+    score_json: Option<&str>,
+    activity_json: Option<&str>,
+) -> BTreeMap<u8, SlotEffort> {
+    let list = |text: Option<&str>| -> Vec<Value> {
+        text.and_then(|t| json::parse(t.as_bytes()).ok())
+            .and_then(|d| d.as_array().map(<[Value]>::to_vec))
+            .unwrap_or_default()
     };
     let field = |v: &Value, k: &str| {
         v.get(k)
@@ -348,14 +384,26 @@ pub fn military_by_slot(score_json: &str) -> BTreeMap<u8, u32> {
             .and_then(Number::as_u64)
             .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX))
     };
-    doc.as_array()
-        .unwrap_or(&[])
-        .iter()
-        .filter_map(|v| {
-            let slot = u8::try_from(v.get("slot")?.as_number()?.as_u64()?).ok()?;
-            Some((slot, field(v, "kills").saturating_add(field(v, "razed"))))
-        })
-        .collect()
+    let slot_of =
+        |v: &Value| v.get("slot")?.as_number()?.as_u64().and_then(|n| u8::try_from(n).ok());
+    let mut out: BTreeMap<u8, SlotEffort> = BTreeMap::new();
+    for v in list(score_json) {
+        if let Some(slot) = slot_of(&v) {
+            out.entry(slot).or_default().effort.military =
+                Some(field(&v, "kills").saturating_add(field(&v, "razed")));
+        }
+    }
+    let activity = list(activity_json);
+    // The last turn anyone's packets arrived stands for the end of the game.
+    let end = activity.iter().map(|v| field(v, "last_seen")).max().unwrap_or(0);
+    for v in &activity {
+        if let Some(slot) = slot_of(v) {
+            let e = out.entry(slot).or_default();
+            e.effort.actions = Some(field(v, "actions"));
+            e.presence = rating::presence(field(v, "last_seen"), end);
+        }
+    }
+    out
 }
 
 // ---- grouping reports into games ---------------------------------------------------------------
@@ -721,35 +769,77 @@ mod tests {
         assert!(again[0].after.mu > again[0].before.mu);
     }
 
+    fn four() -> Vec<Player> {
+        vec![
+            human(0, "Ann", 1),
+            human(1, "Cid", 1),
+            human(2, "Bob", 2),
+            human(3, "Dee", 2),
+        ]
+    }
+
+    fn gain(s: &BTreeMap<String, Standing>, t: &str) -> f64 {
+        s[t].rating.mu - 25.0
+    }
+
+    fn played(score: Option<&str>, activity: Option<&str>) -> BTreeMap<String, Standing> {
+        let mut s = BTreeMap::new();
+        apply(&mut s, &four(), 1, &effort_by_slot(score, activity));
+        s
+    }
+
     #[test]
     fn a_teammate_who_did_no_fighting_earns_less_of_the_win() {
-        let team = |name: &str, slot, team| human(slot, name, team);
-        let roster = vec![
-            team("Ann", 0, 1),
-            team("Cid", 1, 1),
-            team("Bob", 2, 2),
-            team("Dee", 3, 2),
-        ];
-        let even = |military: &BTreeMap<u8, u32>| {
-            let mut s = BTreeMap::new();
-            apply(&mut s, &roster, 1, military);
-            s
-        };
-        let flat = even(&BTreeMap::new());
+        let flat = played(None, None);
         // Ann killed and razed 40; Cid only mined. Bob and Dee fought evenly.
-        let score = military_by_slot(
-            r#"[{"slot":0,"kills":30,"razed":10},{"slot":1,"kills":0,"razed":0},
-                {"slot":2,"kills":8,"razed":2},{"slot":3,"kills":9,"razed":1}]"#,
-        );
-        assert_eq!(score[&0], 40);
-        let weighted = even(&score);
-        assert!(weighted["Ann#1"].rating.mu - 25.0 > weighted["Cid#1"].rating.mu - 25.0);
+        let score = r#"[{"slot":0,"kills":30,"razed":10},{"slot":1,"kills":0,"razed":0},
+                {"slot":2,"kills":8,"razed":2},{"slot":3,"kills":9,"razed":1}]"#;
+        assert_eq!(effort_by_slot(Some(score), None)[&0].effort.military, Some(40));
+        let weighted = played(Some(score), None);
         // Cid gets half the gain Ann does; without the score they were identical.
-        let gain = |s: &BTreeMap<String, Standing>, t: &str| s[t].rating.mu - 25.0;
         assert!((gain(&flat, "Ann#1") - gain(&flat, "Cid#1")).abs() < 1e-9);
         assert!((gain(&weighted, "Cid#1") / gain(&weighted, "Ann#1") - 0.5).abs() < 1e-9);
         // The losing side fought evenly: both lose the same.
         assert!((gain(&weighted, "Bob#1") - gain(&weighted, "Dee#1")).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_winner_who_left_early_earns_only_the_time_they_stayed() {
+        // Cid's packets stopped a quarter of the way in; everyone else stayed to turn 1000.
+        let activity = r#"[{"slot":0,"last_seen":1000,"last_action":990,"actions":100},
+            {"slot":1,"last_seen":250,"last_action":240,"actions":100},
+            {"slot":2,"last_seen":1000,"last_action":990,"actions":100},
+            {"slot":3,"last_seen":1000,"last_action":990,"actions":100}]"#;
+        let s = played(None, Some(activity));
+        assert!((gain(&s, "Cid#1") / gain(&s, "Ann#1") - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_loser_who_left_early_takes_the_whole_loss() {
+        // Dee is idle and left a quarter of the way in; Bob stayed and fought.
+        let activity = r#"[{"slot":0,"last_seen":1000,"last_action":990,"actions":50},
+            {"slot":1,"last_seen":1000,"last_action":990,"actions":50},
+            {"slot":2,"last_seen":1000,"last_action":990,"actions":200},
+            {"slot":3,"last_seen":250,"last_action":20,"actions":2}]"#;
+        let s = played(None, Some(activity));
+        assert!((gain(&s, "Dee#1") - gain(&s, "Bob#1")).abs() < 1e-9, "same loss: full");
+    }
+
+    #[test]
+    fn a_player_present_but_idle_earns_less_than_one_who_played() {
+        let activity = r#"[{"slot":0,"last_seen":1000,"last_action":990,"actions":300},
+            {"slot":1,"last_seen":1000,"last_action":30,"actions":0},
+            {"slot":2,"last_seen":1000,"last_action":990,"actions":100},
+            {"slot":3,"last_seen":1000,"last_action":990,"actions":100}]"#;
+        let s = played(None, Some(activity));
+        assert!(gain(&s, "Cid#1") < gain(&s, "Ann#1"));
+        assert!(gain(&s, "Cid#1") > 0.0, "still something: they stayed");
+    }
+
+    #[test]
+    fn damaged_tables_are_ignored() {
+        assert!(effort_by_slot(Some("nonsense"), Some("{}")).is_empty());
+        assert!(effort_by_slot(None, None).is_empty());
     }
 
     #[test]

@@ -110,11 +110,18 @@ depend on them.)
   older than one already rated, or a verdict that later reverses, sets `meta.rebuild`; the job then
   recomputes every rating from the games in time order (at most once an hour, and every night). A
   rebuild reads up to 3000 games, a limit of this design.
-  In a team game each player's share of the result is weighted by their fighting: military score
-  (units killed plus buildings razed) against the team's average, from the game's score table. The
-  average or better counts fully, nothing counts half (`rating::contribution_weights`,
-  `MIN_WEIGHT`). Economy is not counted, so a player who only gathered while a teammate fought
-  earns less of the win (and loses less of a loss). No score table, or no fighting on a team: equal.
+  In a team game each player's share of the result is weighted by what they did
+  (`rating::contribution_weights`, `MIN_WEIGHT` 0.5): fighting (units killed plus buildings razed,
+  from the game's score table) counts 70 %, orders given (from the replay packets) 30 %, each as the
+  player's share of their team's average, capped at 1. Economy is not counted, so a player who only
+  gathered while a teammate fought earns less of the win (and loses less of a loss). A winner who
+  left early also earns only the share of the game they stayed for (`presence`: their last packet
+  turn over the last anyone's arrived); a loser who left (presence under 0.9) takes the whole loss,
+  so quitting never softens it. No score or activity table, or no activity on a team: equal.
+  The result report carries both tables (`result.score`, `result.activity`); activity is
+  `{slot, last_seen, last_action, actions}` per human, kept by the replay recorder
+  (`w2r_replay::activity`; packet ids are the humans in slot order, not lobby slots) and only
+  present when the match was recorded.
 - **Read API** (public, JSON, CORS open, cached 60 s): `GET /v1/ratings?tags=Name%231234,...` (up to
   16 tags; unknown tags are absent), `GET /v1/leaderboard?limit=50&min_games=1`, and
   `GET /v1/games?limit=20` (latest verified games with settings and what each rating did).

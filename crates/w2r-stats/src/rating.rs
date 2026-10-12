@@ -221,26 +221,65 @@ pub fn update_weighted(
 /// The least a player's share of a result can be scaled down to, for doing nothing in the fight.
 pub const MIN_WEIGHT: f64 = 0.5;
 
-/// How much of a result each member of one team earned, from their military score (units killed
-/// plus buildings razed): a player who did at least the team's average gets a full share, one who
-/// did nothing gets [`MIN_WEIGHT`]. Economy is deliberately not counted: gathering while a
-/// teammate fights is support, not the fight. Without a score for everyone, or when the team did no
-/// fighting at all, everyone counts fully.
-pub fn contribution_weights(military: &[Option<u32>]) -> Vec<f64> {
-    let known: Option<Vec<u32>> = military.iter().copied().collect();
-    let Some(known) = known else {
-        return vec![1.0; military.len()];
-    };
+/// What one player did in a game, as far as the reports tell: military score (units killed plus
+/// buildings razed, from the game's score table) and orders given (from the replay packets).
+/// `None` where the reports did not carry it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Effort {
+    pub military: Option<u32>,
+    pub actions: Option<u32>,
+}
+
+/// Share of the team's average, capped at 1; `None` unless everyone has a number and the team did
+/// something.
+fn shares(values: &[Option<u32>]) -> Option<Vec<f64>> {
+    let known: Option<Vec<u32>> = values.iter().copied().collect();
+    let known = known?;
     let total: u32 = known.iter().sum();
     if total == 0 {
-        return vec![1.0; military.len()];
+        return None;
     }
     let mean = f64::from(total) / known.len() as f64;
-    known
-        .iter()
-        .map(|&m| MIN_WEIGHT + (1.0 - MIN_WEIGHT) * (f64::from(m) / mean).min(1.0))
+    Some(known.iter().map(|&v| (f64::from(v) / mean).min(1.0)).collect())
+}
+
+/// Weight of fighting against orders given in a player's contribution.
+const MILITARY_SHARE: f64 = 0.7;
+
+/// How much of a result each member of one team earned. Fighting counts most (military score)
+/// and orders given count too; each is the player's share of the team's average, capped at 1. A
+/// player who did at least the average gets a full share, one who did nothing gets [`MIN_WEIGHT`].
+/// Economy is deliberately not counted: gathering while a teammate fights is support, not the
+/// fight. Whatever is missing for someone is ignored for the whole team; with nothing usable, or
+/// when the team did nothing at all, everyone counts fully.
+pub fn contribution_weights(effort: &[Effort]) -> Vec<f64> {
+    let military = shares(&effort.iter().map(|e| e.military).collect::<Vec<_>>());
+    let actions = shares(&effort.iter().map(|e| e.actions).collect::<Vec<_>>());
+    (0..effort.len())
+        .map(|i| {
+            let share = match (&military, &actions) {
+                (Some(m), Some(a)) => MILITARY_SHARE * m[i] + (1.0 - MILITARY_SHARE) * a[i],
+                (Some(m), None) => m[i],
+                (None, Some(a)) => a[i],
+                (None, None) => return 1.0,
+            };
+            MIN_WEIGHT + (1.0 - MIN_WEIGHT) * share
+        })
         .collect()
 }
+
+/// How much of the game a player was there for: the last turn their packets arrived against the
+/// last turn anyone's did. 1 when unknown.
+pub fn presence(last_seen: u32, game_end: u32) -> f64 {
+    if game_end == 0 {
+        return 1.0;
+    }
+    (f64::from(last_seen) / f64::from(game_end)).clamp(0.0, 1.0)
+}
+
+/// A player present for less of the game than this left it (the last few percent can just be a
+/// defeated player closing the game).
+pub const LEFT_BELOW: f64 = 0.9;
 
 /// Chance that the first team beats the second, drawing aside.
 pub fn win_probability(first: &[Rating], second: &[Rating]) -> f64 {
@@ -344,18 +383,48 @@ pub fn ladder(matches: &[Match], with_computers: bool) -> Ladder {
 mod tests {
     use super::*;
 
+    fn fight(m: u32) -> Effort {
+        Effort { military: Some(m), actions: None }
+    }
+
     #[test]
     fn weights_follow_the_fighting_and_ignore_the_economy() {
         // 30 and 10 against a mean of 20: the first is full, the second three quarters.
-        let w = contribution_weights(&[Some(30), Some(10), Some(0)]);
+        let w = contribution_weights(&[fight(30), fight(10), fight(0)]);
         assert_eq!(w.len(), 3);
         assert!((w[0] - 1.0).abs() < 1e-9);
         assert!((w[1] - (MIN_WEIGHT + (1.0 - MIN_WEIGHT) * 0.75)).abs() < 1e-9);
         assert!((w[2] - MIN_WEIGHT).abs() < 1e-9);
         // unknown for anyone, or no fighting on the team: everyone counts fully
-        assert_eq!(contribution_weights(&[Some(5), None]), vec![1.0, 1.0]);
-        assert_eq!(contribution_weights(&[Some(0), Some(0)]), vec![1.0, 1.0]);
+        let none = Effort::default();
+        assert_eq!(contribution_weights(&[fight(5), none]), vec![1.0, 1.0]);
+        assert_eq!(contribution_weights(&[fight(0), fight(0)]), vec![1.0, 1.0]);
         assert!(contribution_weights(&[]).is_empty());
+    }
+
+    #[test]
+    fn orders_given_count_beside_the_fighting() {
+        let e = |m, a| Effort { military: Some(m), actions: Some(a) };
+        // equal fighting, but one hardly gave orders
+        let w = contribution_weights(&[e(10, 300), e(10, 0)]);
+        assert!(w[0] > w[1]);
+        assert!((w[0] - 1.0).abs() < 1e-9, "{w:?}");
+        // fighting is worth more than orders: no fighting but busy beats busy-less fighting
+        let w = contribution_weights(&[e(20, 0), e(0, 200)]);
+        assert!(w[0] > w[1], "{w:?}");
+        // only orders known
+        let w = contribution_weights(&[
+            Effort { military: None, actions: Some(100) },
+            Effort { military: None, actions: Some(0) },
+        ]);
+        assert!(w[0] > w[1]);
+    }
+
+    #[test]
+    fn presence_is_the_share_of_the_game_attended() {
+        assert!((presence(50, 100) - 0.5).abs() < 1e-12);
+        assert_eq!(presence(120, 100), 1.0);
+        assert_eq!(presence(5, 0), 1.0);
     }
 
     #[test]
@@ -516,6 +585,7 @@ mod tests {
                         turns,
                         sync_mismatch: 0,
                         score: None,
+                        activity: None,
                     }),
                 },
             ));

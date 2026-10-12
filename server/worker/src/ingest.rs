@@ -218,6 +218,7 @@ mod tests {
                 turns: 9000,
                 sync_mismatch: 0,
                 score: None,
+                activity: None,
             }),
         }
     }

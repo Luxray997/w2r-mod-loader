@@ -165,16 +165,25 @@ fn verdict_stmt(
 }
 
 /// The first score table among a game's result reports (they all describe the same game).
-fn first_score(votes: &[J], id: f64) -> Option<String> {
+/// The first `column` (`score` or `activity`, a JSON table) among a game's result reports.
+fn first_table(votes: &[J], id: f64, column: &str) -> Option<String> {
     votes
         .iter()
         .filter(|v| n(v, "game_id") == id)
-        .find_map(|v| v.get("score").and_then(J::as_str).map(str::to_string))
+        .find_map(|v| v.get(column).and_then(J::as_str).map(str::to_string))
 }
 
-/// Each slot's military score for a game, empty when no report carried a score table.
-fn military_of(votes: &[J], id: f64) -> BTreeMap<u8, u32> {
-    first_score(votes, id).map_or_else(BTreeMap::new, |s| games::military_by_slot(&s))
+fn first_score(votes: &[J], id: f64) -> Option<String> {
+    first_table(votes, id, "score")
+}
+
+/// What each slot did and how long it stayed, from the score and activity tables a game's
+/// reports carried; empty when they carried neither.
+fn effort_of(votes: &[J], id: f64) -> BTreeMap<u8, games::SlotEffort> {
+    games::effort_by_slot(
+        first_table(votes, id, "score").as_deref(),
+        first_table(votes, id, "activity").as_deref(),
+    )
 }
 
 fn score_stmt(db: &D1Database, id: f64, votes: &[J]) -> Option<Result<D1PreparedStatement>> {
@@ -367,7 +376,8 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
         db,
         &format!(
             "SELECT game_id, key, me_tag, me_team, outcome, turns, sync, combat, \
-             json_extract(envelope, '$.body.result.score') AS score FROM reports \
+             json_extract(envelope, '$.body.result.score') AS score, \
+             json_extract(envelope, '$.body.result.activity') AS activity FROM reports \
              WHERE phase = 'result' AND ignored = 0 AND game_id IN ({list})"
         ),
         &binds,
@@ -382,7 +392,7 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
         started: u64,
         roster: Vec<w2r_stats::slot::Player>,
         winner: u8,
-        military: BTreeMap<u8, u32>,
+        effort: BTreeMap<u8, games::SlotEffort>,
     }
     let mut statements = Vec::new();
     let mut to_rate: Vec<Rated> = Vec::new();
@@ -410,7 +420,7 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
                 started: n(g, "started") as u64,
                 roster,
                 winner: verdict.winner_team.unwrap_or(0),
-                military: military_of(&vote_rows, id),
+                effort: effort_of(&vote_rows, id),
             }),
             // It was rated and no longer deserves it, or the winner changed: only a rebuild fixes that.
             (false, true) => reversed = true,
@@ -459,7 +469,7 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
         let mut writes = Vec::new();
         let mut touched_tags: BTreeMap<String, u64> = BTreeMap::new();
         for g in &to_rate {
-            let changes = games::apply(&mut standings, &g.roster, g.winner, &g.military);
+            let changes = games::apply(&mut standings, &g.roster, g.winner, &g.effort);
             for c in &changes {
                 touched_tags.insert(c.tag.clone(), g.started);
             }
@@ -498,7 +508,8 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
     let vote_rows = rows(
         db,
         "SELECT game_id, key, me_tag, me_team, outcome, turns, sync, combat, \
-         json_extract(envelope, '$.body.result.score') AS score FROM reports \
+         json_extract(envelope, '$.body.result.score') AS score, \
+         json_extract(envelope, '$.body.result.activity') AS activity FROM reports \
          WHERE phase = 'result' AND ignored = 0 AND game_id IS NOT NULL",
         &[],
     )
@@ -539,7 +550,7 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
         }
         let (rated, changes) = match (verdict.rated, verdict.winner_team) {
             (true, Some(winner)) => {
-                let changes = games::apply(&mut standings, &roster, winner, &military_of(&vote_rows, id));
+                let changes = games::apply(&mut standings, &roster, winner, &effort_of(&vote_rows, id));
                 for c in &changes {
                     last_seen.insert(c.tag.clone(), n(g, "started") as u64);
                 }

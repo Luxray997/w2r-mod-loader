@@ -52,6 +52,8 @@ static RNG_BEFORE: AtomicU32 = AtomicU32::new(0);
 static PRE_LOBBY: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static PRE_BACKUP: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
+/// Who sent packets and gave orders, turn by turn, for the match being (or last) recorded.
+static ACTIVITY: Mutex<Option<w2r_replay::activity::Activity>> = Mutex::new(None);
 /// Final `(results, sync_mismatch)` from `CheckMatchEnd`, repeated in the closing footer.
 static RESULT: Mutex<Option<([u8; 8], u32)>> = Mutex::new(None);
 
@@ -306,6 +308,12 @@ fn capture() {
         }
     }
     let Some(rec) = guard.as_mut() else { return };
+    if let Ok(mut a) = ACTIVITY.lock() {
+        let a = a.get_or_insert_with(w2r_replay::activity::Activity::new);
+        for (id, data) in &packets {
+            a.note(turn, *id, data);
+        }
+    }
     let now = crate::matchend::now_secs();
     let mut ok = rec.writer.turn(turn, &packets).is_ok();
     if ok && now >= rec.flushed_at + FLUSH_EVERY_SECS {
@@ -365,6 +373,9 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
             return None;
         }
     };
+    if let Ok(mut a) = ACTIVITY.lock() {
+        *a = Some(w2r_replay::activity::Activity::new());
+    }
     let writer = Writer::new(BufWriter::new(file), &header)
         .map_err(|e| log(W2R_LOG_ERROR, &format!("recording off for this match: {e}")))
         .ok()?;
@@ -410,6 +421,16 @@ fn create_new(dir: &Path, name: &str) -> std::io::Result<(PathBuf, File)> {
         std::io::ErrorKind::AlreadyExists,
         "too many replays with this name",
     ))
+}
+
+/// What the recorder saw of each human in this match, for the stats result report. Empty when the
+/// match was not recorded. Stays available after the recording is closed, until the next match.
+pub fn activity_report(players: &[w2r_stats::slot::Player]) -> Vec<w2r_stats::report::PlayerActivity> {
+    ACTIVITY
+        .lock()
+        .ok()
+        .and_then(|a| a.as_ref().map(|a| a.report(players)))
+        .unwrap_or_default()
 }
 
 /// The local player's result is final: write the footer now and flush, so the replay on disk

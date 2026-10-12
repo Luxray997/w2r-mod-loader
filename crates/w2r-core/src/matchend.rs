@@ -685,6 +685,7 @@ fn report_result(raw: &Raw) {
         turns: raw.turns,
         sync_mismatch: raw.mismatch,
         score: raw.scores(&ctx.players),
+        activity: Some(crate::replayrec::activity_report(&ctx.players)).filter(|a| !a.is_empty()),
     };
     if let Some(report) = build(rep, &ctx, Phase::Result, Some(info)) {
         seal_and_queue(rep, &report);
