@@ -357,6 +357,8 @@ pub struct SlotEffort {
     pub presence: f64,
     /// Gold, lumber and oil mined, from the score table.
     pub mined: Option<u32>,
+    /// Units and buildings lost, from the score table.
+    pub lost: Option<u32>,
     /// The last turn anyone's packets arrived, 0 without an activity table.
     pub end: u32,
 }
@@ -367,6 +369,7 @@ impl Default for SlotEffort {
             effort: rating::Effort::default(),
             presence: 1.0,
             mined: None,
+            lost: None,
             end: 0,
         }
     }
@@ -397,6 +400,7 @@ pub fn effort_by_slot(
         if let Some(slot) = slot_of(&v) {
             let e = out.entry(slot).or_default();
             e.effort.military = Some(field(&v, "kills").saturating_add(field(&v, "razed")));
+            e.lost = Some(field(&v, "lost").saturating_add(field(&v, "buildings_lost")));
             e.mined = Some(
                 field(&v, "gold")
                     .saturating_add(field(&v, "lumber"))
@@ -420,20 +424,22 @@ pub fn effort_by_slot(
 
 /// A game this short cannot tell a spectator from a player who was beaten at once.
 const SPECTATOR_MIN_TURNS: u32 = 1500;
-/// Orders a spectator might still give (a stray click) without counting as playing.
-const SPECTATOR_MAX_ACTIONS: u32 = 10;
+/// The most a spectator might gather while waiting (a few trips with the peon): a player who built
+/// an economy mines far more than this.
+const SPECTATOR_MAX_MINED: u32 = 1000;
 
 /// Humans who sat in the game without playing it: the "one peon, allied to everyone" way of
-/// watching. They killed and razed nothing, mined nothing, gave next to no orders and stayed to
-/// the end of a game of some length. Needs both tables, so an older client's report never flags
-/// anyone.
+/// watching. They may wander about or gather a little, but killed and razed nothing, lost nothing
+/// (nobody attacks an ally), mined next to nothing and stayed to the end of a game of some length.
+/// Needs both tables, so an older client's report never flags anyone.
 pub fn spectators(effort: &BTreeMap<u8, SlotEffort>) -> BTreeSet<u8> {
     effort
         .iter()
         .filter(|(_, e)| {
             e.effort.military == Some(0)
-                && e.mined == Some(0)
-                && e.effort.actions.is_some_and(|a| a <= SPECTATOR_MAX_ACTIONS)
+                && e.lost == Some(0)
+                && e.mined.is_some_and(|m| m <= SPECTATOR_MAX_MINED)
+                && e.effort.actions.is_some()
                 && e.end >= SPECTATOR_MIN_TURNS
                 && e.presence >= rating::LEFT_BELOW
         })
@@ -894,12 +900,12 @@ mod tests {
 
     const WATCHED_SCORE: &str = r#"[{"slot":0,"kills":30,"razed":4,"gold":9000},
         {"slot":1,"kills":12,"razed":0,"gold":4000},{"slot":2,"kills":9,"razed":1,"gold":6000},
-        {"slot":3,"kills":8,"razed":0,"gold":5000},{"slot":4,"kills":0,"razed":0,"gold":0,"lumber":0,"oil":0}]"#;
+        {"slot":3,"kills":8,"razed":0,"gold":5000},{"slot":4,"kills":0,"razed":0,"lost":0,"buildings_lost":0,"gold":100,"lumber":200,"oil":0}]"#;
     const WATCHED_ACTIVITY: &str = r#"[{"slot":0,"last_seen":4000,"last_action":3990,"actions":300},
         {"slot":1,"last_seen":4000,"last_action":3990,"actions":200},
         {"slot":2,"last_seen":4000,"last_action":3990,"actions":250},
         {"slot":3,"last_seen":4000,"last_action":3990,"actions":220},
-        {"slot":4,"last_seen":4000,"last_action":300,"actions":3}]"#;
+        {"slot":4,"last_seen":4000,"last_action":3500,"actions":60}]"#;
 
     #[test]
     fn a_player_watching_from_a_corner_is_not_a_side_and_is_not_rated() {
@@ -925,12 +931,18 @@ mod tests {
     #[test]
     fn real_players_are_not_mistaken_for_watchers() {
         let effort = |score: &str, activity: &str| effort_by_slot(Some(score), Some(activity));
-        // beaten early but did mine and give orders
+        // beaten early: lost units and buildings, whatever they mined
         let beaten = effort(
-            r#"[{"slot":0,"kills":0,"razed":0,"gold":400}]"#,
+            r#"[{"slot":0,"kills":0,"razed":0,"lost":12,"buildings_lost":6,"gold":400}]"#,
             r#"[{"slot":0,"last_seen":4000,"last_action":900,"actions":40}]"#,
         );
         assert!(spectators(&beaten).is_empty());
+        // built an economy and never fought or was attacked: that is playing
+        let builder = effort(
+            r#"[{"slot":0,"kills":0,"razed":0,"lost":0,"gold":9000,"lumber":4000}]"#,
+            r#"[{"slot":0,"last_seen":4000,"last_action":3900,"actions":500}]"#,
+        );
+        assert!(spectators(&builder).is_empty());
         // too short a game to tell
         let short = effort(
             r#"[{"slot":0,"kills":0,"razed":0,"gold":0}]"#,
