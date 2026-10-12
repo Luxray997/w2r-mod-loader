@@ -102,3 +102,13 @@ every client while testing.
 
 To test with a second human: host a game, start it, kick from either place, then read the log lines
 on both machines and check the kicked client's screen.
+
+## Alliances screen (2026-10-12)
+
+The Alliances dialog is now replaced whole, as in wc2r-plus (`alliancesscreen.rs`, pure part in
+`alliancelayout.rs`): players grouped under their lobby team, the local player and teammates green,
+players who lost, won or left red, the game's own allied/vision checkboxes. The host's Kick button is
+a fifth column at the end of each other person's row (the first click reads "Sure?", the second
+removes), so the stacked rows of the `AlliancesFooter` hook only show if the replacement faulted and
+the game's dialog is back. The roster (teams, names, teammates) is read at match start; the game's
+`AlliancesFooter` is still called for Cancel/OK. Not yet seen in game.

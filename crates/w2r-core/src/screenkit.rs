@@ -84,6 +84,7 @@ pub mod game {
     const CTX_CURRENT_WINDOW: usize = 0x3d28;
     const CTX_TEXT_COLOUR: usize = 0x20c;
     const CTX_SPACING_Y: usize = 0x2004;
+    const CTX_SCROLLBAR_SIZE: usize = 0x2008;
     const WINDOW_PANEL: usize = 0x8c;
     const WINDOW_BUFFER: usize = 0x64;
     // The window's Nuklear edit state (`TextEdit` -> FUN_005b1e20): which field has the keyboard.
@@ -340,6 +341,32 @@ pub mod game {
         /// The colour the game is drawing text in right now.
         pub fn current_text_colour(&self) -> u32 {
             self.text_colour()
+        }
+
+        /// Sets the colour the game draws text in; put the old one back with the same call.
+        pub fn set_current_text_colour(&self, colour: u32) {
+            self.set_text_colour(colour);
+        }
+
+        /// The scrollbar width's neighbour, `ScrollbarSize + 4` in the context: wc2r-plus zeroes
+        /// it around a group's begin and end to hide that group's vertical scrollbar.
+        pub fn scrollbar_y(&self) -> *mut f32 {
+            let ctx = self.ctx() as *mut u8;
+            if ctx.is_null() {
+                return core::ptr::null_mut();
+            }
+            unsafe { ctx.add(CTX_SCROLLBAR_SIZE + 4).cast::<f32>() }
+        }
+
+        /// A group in the next layout cell (no rectangle override); true when it opened.
+        pub fn begin_group_cell(&self, name: &CStr, flags: u32) -> bool {
+            unsafe { (self.begin_group)(self.ctx(), name.as_ptr(), flags) != 0 }
+        }
+
+        /// A menu button in the next layout cell; true when clicked.
+        pub fn button_cell(&self, text: &str) -> bool {
+            let t = cstr(text);
+            unsafe { (self.button)(self.ctx(), t.as_ptr().cast()) != 0 }
         }
 
         pub fn key_pressed(&self, key: i32) -> bool {

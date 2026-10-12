@@ -200,6 +200,8 @@ pub fn on_match_start() {
     crate::matchend::rearm();
     #[cfg(target_arch = "x86")]
     crate::replayrec::rearm();
+    #[cfg(target_arch = "x86")]
+    crate::alliancesscreen::on_match_start();
     SESSION.with(|cell| {
         // Busy means a plugin callback is on the stack and drew something; the event is lost
         // rather than delivered into a half-finished callback.
@@ -1042,6 +1044,8 @@ fn start() -> Session {
         crate::ingamekick::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::ingamekick::install_alliances(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::alliancesscreen::install(&symbols, &*log);
     }
     #[cfg(target_arch = "x86")]
     let nk = {

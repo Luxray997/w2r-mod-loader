@@ -108,6 +108,15 @@ unsafe extern "C" fn detour(
     {
         return 0;
     }
+    // The replacement Alliances dialog (with the host's Kick buttons) does the same.
+    #[cfg(target_arch = "x86")]
+    if opened != 0
+        && !name.is_null()
+        && unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes() == crate::alliancesscreen::WINDOW
+        && crate::alliancesscreen::try_draw()
+    {
+        return 0;
+    }
     opened
 }
 

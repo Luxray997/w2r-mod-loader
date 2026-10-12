@@ -9,7 +9,7 @@
 //! flag itself. Every step is logged with the turn counter and the game's lockstep mismatch flag.
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
@@ -271,10 +271,57 @@ unsafe extern "C" fn footer_detour(
 ) {
     let original: FooterFn =
         unsafe { core::mem::transmute(FOOTER_ORIGINAL.load(Ordering::Acquire)) };
-    if let Err(fault) = guarded(|| draw_dialog(x, y, w, h)) {
+    // The replacement Alliances screen has its own Kick buttons and calls this footer itself.
+    if !OWN_SCREEN.load(Ordering::Acquire)
+        && let Err(fault) = guarded(|| draw_dialog(x, y, w, h))
+    {
         crate::session::host_fault("alliances kick", &fault);
     }
     unsafe { original(ctx, x, y, w, h, a, b) };
+}
+
+/// The replacement Alliances screen sets this while it draws, so the footer hook leaves the
+/// stacked Kick rows (the fallback for the stock dialog) out.
+static OWN_SCREEN: AtomicBool = AtomicBool::new(false);
+
+pub fn set_own_screen(on: bool) {
+    OWN_SCREEN.store(on, Ordering::Release);
+}
+
+/// The people the host can remove right now as (player, net slot); empty unless this is the
+/// host in a live match.
+pub fn kickable() -> Vec<(u8, u8)> {
+    let Some(g) = GAME.get() else {
+        return Vec::new();
+    };
+    if !g.live_host() {
+        return Vec::new();
+    }
+    g.candidates()
+        .iter()
+        .map(|c| {
+            let player = (g.u32_at(g.player_by_net, usize::from(c.net_slot)) & 0xff) as u8;
+            (player, c.net_slot)
+        })
+        .collect()
+}
+
+/// The net slot whose Kick button is waiting for its confirming second click, if any.
+pub fn kick_armed() -> Option<u8> {
+    DIALOG_CONFIRM.lock().ok().and_then(|c| c.armed(now_ms()))
+}
+
+/// A click on a Kick button: the first arms it ("Sure?"), the second within the window removes.
+pub fn kick_pressed(slot: u8, name: String) {
+    let Some(g) = GAME.get() else { return };
+    let now = now_ms();
+    let confirmed = DIALOG_CONFIRM
+        .lock()
+        .map(|mut d| d.press(slot, now))
+        .unwrap_or(false);
+    if confirmed {
+        kick(g, slot, name, now);
+    }
 }
 
 /// One "name  [Kick]" row per other person, stacked in the empty area above the footer strip
@@ -324,13 +371,7 @@ fn draw_dialog(x: f32, y: f32, w: f32, h: f32) {
     }
     k.space_end();
     let Some(c) = clicked else { return };
-    let confirmed = DIALOG_CONFIRM
-        .lock()
-        .map(|mut d| d.press(c.net_slot, now))
-        .unwrap_or(false);
-    if confirmed {
-        kick(g, c.net_slot, c.name, now);
-    }
+    kick_pressed(c.net_slot, c.name);
 }
 
 impl Game {

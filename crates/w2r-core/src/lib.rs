@@ -4,6 +4,7 @@
 //! Nothing here touches the network; only the manager downloads. See docs/PLAN.md.
 
 pub use w2r_formats::{json, manifest, semver, state};
+pub mod alliancelayout;
 pub mod build_guard;
 pub mod chat;
 pub mod createpick;
@@ -51,6 +52,8 @@ pub mod viewmemory;
 #[cfg(windows)]
 pub mod watchdog;
 
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod alliancesscreen;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod browserview;
 #[cfg(all(windows, target_arch = "x86"))]
