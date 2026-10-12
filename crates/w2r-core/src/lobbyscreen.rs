@@ -719,13 +719,19 @@ impl Screen {
                 let standing = crate::lobbyratings::standing(tag);
                 let text = crate::lobbyratings::label(standing);
                 if !text.is_empty() {
-                    let colour = match standing {
-                        crate::lobbyratings::Standing::Rated { .. } => RATING_COLOUR,
-                        _ => RATING_NEW_COLOUR,
-                    };
-                    k.label_coloured_at(r, &text, ALIGN_RIGHT, colour);
-                    if geo::contains(r, mouse) {
-                        tip = crate::lobbyratings::tip(standing).or(tip);
+                    // The number is drawn only when the whole name fits to its left; a long name
+                    // keeps the room, and the rating is still in the tooltip over the name.
+                    let room = r.x - rects.name[i].x - rects.name[i].h * 0.5;
+                    let name = geo::clean_text(&names[i]);
+                    if room > 0.0 && k.count_lines(&name, room) <= 1 {
+                        let colour = match standing {
+                            crate::lobbyratings::Standing::Rated { .. } => RATING_COLOUR,
+                            _ => RATING_NEW_COLOUR,
+                        };
+                        k.label_coloured_at(r, &text, ALIGN_RIGHT, colour);
+                    }
+                    if tip.is_none() && geo::contains(rects.name[i], mouse) {
+                        tip = crate::lobbyratings::tip(standing);
                     }
                 }
             }
