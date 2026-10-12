@@ -45,6 +45,7 @@ pub mod store;
 pub mod symbols;
 pub mod target;
 pub mod ui;
+pub mod uploader;
 pub mod viewmemory;
 #[cfg(windows)]
 pub mod watchdog;

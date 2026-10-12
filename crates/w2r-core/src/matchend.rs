@@ -369,6 +369,7 @@ struct Reporter {
     ctx: Option<MatchCtx>,
     /// The in-flight marker file (see `w2r_stats::inflight`) and when it was last written.
     inflight: PathBuf,
+    root: PathBuf,
     marker_at: u64,
 }
 
@@ -448,9 +449,11 @@ pub fn init_reporter(root: &Path, fingerprint: [u8; 4], client: &str, log: &dyn 
         fingerprint: hex::encode(&fingerprint),
         ctx: None,
         inflight: root.join("inflight.json"),
+        root: root.to_path_buf(),
         marker_at: 0,
     };
     recover_unfinished(&rep, log);
+    crate::uploader::kick(&rep.root, true);
     if let Ok(mut r) = REPORTER.lock() {
         *r = Some(rep);
     }
@@ -521,6 +524,10 @@ fn seal_and_queue(rep: &Reporter, report: &Report) {
         Err(e) => format!("could not queue {name}: {e}"),
     };
     crate::session::StartupLog.line(W2R_LOG_INFO, "stats", &line);
+    // A result report is the moment to share: the start report is already waiting beside it.
+    if report.phase == Phase::Result {
+        crate::uploader::kick(&rep.root, false);
+    }
 }
 
 fn build(

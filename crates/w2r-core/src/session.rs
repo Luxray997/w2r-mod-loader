@@ -573,6 +573,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             auto_download: session.config.auto_download,
             record_replays: session.config.record_replays,
             auto_game_name: session.config.auto_game_name,
+            share_match_data: crate::uploader::enabled(),
             lobby: lobby_warnings(),
         };
         let registry = &session.registry;
@@ -673,6 +674,17 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                         &format!("cannot write {}: {e}", hostcfg::FILE),
                     ),
                 }
+            }
+            Action::ToggleSharing => {
+                let line = match crate::uploader::set_enabled(&session.root, host.share_match_data)
+                {
+                    Ok(()) => format!(
+                        "share_match_data {}",
+                        if host.share_match_data { "on" } else { "off" }
+                    ),
+                    Err(e) => format!("cannot write sharing.json: {e}"),
+                };
+                StartupLog.line(W2R_LOG_INFO, "host", &line);
             }
             Action::ToggleRecording => {
                 session.config.record_replays = host.record_replays;
@@ -1066,6 +1078,7 @@ fn start() -> Session {
         .set_fingerprint(loaded.fingerprint);
     #[cfg(target_arch = "x86")]
     {
+        crate::uploader::init(&startup.root);
         crate::matchend::init_reporter(
             &startup.root,
             loaded.fingerprint,

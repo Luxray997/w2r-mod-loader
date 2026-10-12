@@ -321,6 +321,8 @@ pub struct HostRow {
     pub record_replays: bool,
     /// `auto_game_name` (`host.json`); the create screen suggests a game name on its own.
     pub auto_game_name: bool,
+    /// `share_match_data` (`sharing.json`); match reports are uploaded from the next match.
+    pub share_match_data: bool,
     /// The handshake's current lobby warnings, if any.
     pub lobby: Vec<String>,
 }
@@ -334,6 +336,8 @@ pub const MAP_SHARING_LABEL: &str = "Share maps with other players (send and rec
 pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
 pub const RECORD_REPLAYS_LABEL: &str = "Save a replay of each game I play";
 pub const AUTO_GAME_NAME_LABEL: &str = "Suggest a game name from the map when I pick one";
+pub const SHARE_LABEL: &str =
+    "Share my match results (map, players' BattleTags, result) with the stats service";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -355,6 +359,8 @@ pub enum Action {
     ToggleRecording,
     /// The user flipped `auto_game_name`.
     ToggleAutoGameName,
+    /// The user flipped `share_match_data`.
+    ToggleSharing,
 }
 
 /// Draws the host section and the plugin list. `draw_section` draws the plugin's own widgets
@@ -431,6 +437,12 @@ pub fn draw_plugin_screen(
     if w.checkbox(AUTO_GAME_NAME_LABEL, &mut auto_game_name) {
         host.auto_game_name = auto_game_name;
         action = Action::ToggleAutoGameName;
+    }
+    w.row(ROW_H, 1);
+    let mut share = host.share_match_data;
+    if w.checkbox(SHARE_LABEL, &mut share) {
+        host.share_match_data = share;
+        action = Action::ToggleSharing;
     }
     for line in &host.lobby {
         w.row(ROW_H, 1);
@@ -696,6 +708,7 @@ mod tests {
             auto_download: false,
             record_replays: false,
             auto_game_name: false,
+            share_match_data: false,
             lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
@@ -720,11 +733,12 @@ mod tests {
         assert_eq!(calls[17], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
         assert_eq!(calls[19], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
         assert_eq!(calls[21], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
+        assert_eq!(calls[23], format!("checkbox {SHARE_LABEL:?} false"));
         assert_eq!(
-            calls[23],
+            calls[25],
             "label \"Lobby: Player 2 runs different simulation plugins\""
         );
-        assert_eq!(calls[25], "label \"Plugins (3)\"");
+        assert_eq!(calls[27], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -754,6 +768,7 @@ mod tests {
             auto_download: false,
             record_replays: false,
             auto_game_name: false,
+            share_match_data: false,
             lobby: Vec::new(),
         };
         assert_eq!(
@@ -831,6 +846,15 @@ mod tests {
             Action::ToggleAutoGameName
         );
         assert!(host.auto_game_name);
+
+        // And the sharing switch.
+        let fake = FakeWidgets::default();
+        fake.flip.borrow_mut().push(SHARE_LABEL.into());
+        assert_eq!(
+            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
+            Action::ToggleSharing
+        );
+        assert!(host.share_match_data);
     }
 
     #[test]
