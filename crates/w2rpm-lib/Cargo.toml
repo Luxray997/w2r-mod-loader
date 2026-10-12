@@ -9,6 +9,7 @@ description = "Plugin manager logic for Warcraft II Remastered: index, download,
 w2r-abi.workspace = true
 w2r-formats.workspace = true
 sha2 = "0.10"
+w2r-stats.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 

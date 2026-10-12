@@ -93,12 +93,31 @@ enum Cmd {
         #[arg(long)]
         play: Option<String>,
     },
+    /// Share your match results with the stats service (off until you turn it on).
+    Share {
+        #[command(subcommand)]
+        action: ShareAction,
+    },
     /// Skill ratings worked out from the reports in the outbox (humans only, two teams).
     Ratings {
         /// Also rate computer players by name. For trying the maths on single-player games.
         #[arg(long)]
         with_computers: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ShareAction {
+    /// Show whether sharing is on and where reports go.
+    Status,
+    /// Turn sharing on. Reports in the outbox are sent when you run `share upload`.
+    On,
+    /// Turn sharing off.
+    Off,
+    /// Set the stats service address (https://...).
+    Url { url: String },
+    /// Send the reports the service has not seen yet.
+    Upload,
 }
 
 fn context(cli: &Cli) -> Result<Session, Error> {
@@ -232,6 +251,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
         }
         Cmd::Stats { recent } => return stats(cli, *recent),
         Cmd::Replays { play } => return replays(cli, play.as_deref()),
+        Cmd::Share { action } => share(cli, action)?,
         Cmd::Ratings { with_computers } => return ratings(cli, *with_computers),
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
@@ -326,6 +346,52 @@ fn list(cli: &Cli) -> Result<(), Error> {
             "{} {} by {by} {on}  capabilities: {caps}{up}",
             p.id, p.version
         );
+    }
+    Ok(())
+}
+
+fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
+    use w2rpm_lib::fetch::Https;
+    use w2rpm_lib::share::{self, Settings};
+
+    let root = context_root(cli)?;
+    let mut settings = Settings::load(&root.0)?;
+    match action {
+        ShareAction::Status => {
+            println!("sharing: {}", if settings.share_match_data { "on" } else { "off" });
+            let service = settings
+                .endpoint()
+                .map_or_else(|_| "(not set)".to_string(), |e| e.replace("/v1/reports", ""));
+            println!("service: {service}");
+            println!("Sent data: your signed match reports (map, players' BattleTags, teams, race, result, turns).");
+        }
+        ShareAction::On => {
+            settings.share_match_data = true;
+            settings.save(&root.0)?;
+            println!("sharing is on; run `w2rpm share upload` to send reports");
+        }
+        ShareAction::Off => {
+            settings.share_match_data = false;
+            settings.save(&root.0)?;
+            println!("sharing is off");
+        }
+        ShareAction::Url { url } => {
+            settings.url = url.clone();
+            settings.endpoint()?;
+            settings.save(&root.0)?;
+            println!("service set to {url}");
+        }
+        ShareAction::Upload => {
+            if !settings.share_match_data {
+                println!("sharing is off; turn it on with `w2rpm share on`");
+                return Ok(());
+            }
+            let s = share::upload(&root.0, &settings, &Https::default())?;
+            println!(
+                "{} sent, {} refused, {} skipped (a player without a BattleTag), {} waiting",
+                s.sent, s.rejected, s.skipped, s.pending
+            );
+        }
     }
     Ok(())
 }

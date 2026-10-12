@@ -11,4 +11,5 @@ pub mod inflight;
 pub mod queue;
 pub mod rating;
 pub mod report;
+pub mod share;
 pub mod slot;

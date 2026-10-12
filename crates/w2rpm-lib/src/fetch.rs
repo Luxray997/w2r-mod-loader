@@ -34,6 +34,12 @@ impl Default for Https {
     }
 }
 
+impl Https {
+    pub(crate) fn agent(&self) -> &ureq::Agent {
+        &self.agent
+    }
+}
+
 impl Fetcher for Https {
     fn get(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error> {
         if !index::url_ok(url) {

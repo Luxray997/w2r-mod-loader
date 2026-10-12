@@ -2622,6 +2622,7 @@ dependencies = [
  "ureq",
  "w2r-abi",
  "w2r-formats",
+ "w2r-stats",
  "zip",
 ]
 
