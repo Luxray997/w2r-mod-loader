@@ -15,15 +15,66 @@ fn now_secs() -> u64 {
     (Date::now().as_millis() / 1000) as u64
 }
 
+/// Asks a Workers rate-limit binding whether `key` may make another request now. A binding that
+/// is missing, or a call that fails, lets the request through: limiting is protection, not a gate.
+async fn within_limit(env: &Env, binding: &str, key: &str) -> bool {
+    use worker::js_sys::{Function, Object, Reflect};
+    use worker::wasm_bindgen::JsCast;
+    let ask = async {
+        let limiter = Reflect::get(env.as_ref(), &JsValue::from_str(binding)).ok()?;
+        if limiter.is_undefined() || limiter.is_null() {
+            return None;
+        }
+        let options = Object::new();
+        Reflect::set(&options, &JsValue::from_str("key"), &JsValue::from_str(key)).ok()?;
+        let limit: Function = Reflect::get(&limiter, &JsValue::from_str("limit")).ok()?.dyn_into().ok()?;
+        let promise = limit.call1(&limiter, &options).ok()?;
+        let answer = worker::wasm_bindgen_futures::JsFuture::from(worker::js_sys::Promise::from(promise))
+            .await
+            .ok()?;
+        Reflect::get(&answer, &JsValue::from_str("success")).ok()?.as_bool()
+    };
+    ask.await.unwrap_or(true)
+}
+
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
     let path = req.path();
+    if path != "/v1/health" {
+        let reading = matches!(req.method(), Method::Get | Method::Options);
+        let (binding, class) = if reading { ("READ_LIMIT", "r") } else { ("WRITE_LIMIT", "w") };
+        let who = req.headers().get("cf-connecting-ip").ok().flatten().unwrap_or_default();
+        if !within_limit(&env, binding, &format!("{class}:{who}")).await {
+            let mut resp = Response::error("too many requests, slow down", 429)?;
+            resp.headers_mut().set("retry-after", "60")?;
+            return Ok(resp);
+        }
+    }
     match (req.method(), path.as_str()) {
+        (Method::Options, _) => crate::api::preflight(),
         (Method::Get, "/v1/health") => Response::ok("ok"),
+        (Method::Get, "/v1/ratings") => crate::api::ratings(&env.d1("w2r_stats")?, &req.url()?).await,
+        (Method::Get, "/v1/leaderboard") => {
+            crate::api::leaderboard(&env.d1("w2r_stats")?, &req.url()?).await
+        }
+        (Method::Get, "/v1/games") => crate::api::recent_games(&env.d1("w2r_stats")?, &req.url()?).await,
         (Method::Post, "/v1/reports") => post_reports(req, env).await,
         (Method::Put, "/v1/replays") => put_replay(req, env).await,
         _ => Response::error("not found", 404),
+    }
+}
+
+/// The scheduled triggers (wrangler.toml): every few minutes group and judge new reports; once a
+/// night rebuild every rating from the stored games.
+#[event(scheduled)]
+async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    console_error_panic_hook::set_once();
+    let Ok(db) = env.d1("w2r_stats") else { return };
+    let nightly = event.cron() == "0 3 * * *";
+    match crate::jobs::scheduled(&db, now_secs(), nightly).await {
+        Ok(line) => console_log!("scheduled: {line}"),
+        Err(e) => console_error!("scheduled failed: {e}"),
     }
 }
 
@@ -68,10 +119,10 @@ async fn store(db: &D1Database, r: &Row) -> Result<()> {
     let opt = |v: Option<u32>| v.map_or(JsValue::NULL, |n| JsValue::from_f64(f64::from(n)));
     db.prepare(
         "INSERT OR IGNORE INTO reports \
-         (key, rid, phase, setup, started, received, map, me, me_tag, outcome, code, turns, sync, \
-          map_sha, speed, flags, resources, tileset, peasants_only, fixed_start, envelope) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
-                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+         (key, rid, phase, setup, started, received, map, me, me_tag, me_team, outcome, code, turns, \
+          sync, map_sha, speed, flags, resources, tileset, peasants_only, fixed_start, envelope) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
     )
     .bind(&[
         r.key.as_str().into(),
@@ -83,6 +134,7 @@ async fn store(db: &D1Database, r: &Row) -> Result<()> {
         r.map.as_str().into(),
         JsValue::from_f64(f64::from(r.me)),
         r.me_tag.as_str().into(),
+        JsValue::from_f64(f64::from(r.me_team)),
         r.outcome.map_or(JsValue::NULL, JsValue::from),
         opt(r.code.map(u32::from)),
         opt(r.turns),

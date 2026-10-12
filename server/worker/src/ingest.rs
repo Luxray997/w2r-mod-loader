@@ -64,6 +64,7 @@ pub struct Row {
     pub map: String,
     pub me: u8,
     pub me_tag: String,
+    pub me_team: u8,
     pub outcome: Option<&'static str>,
     pub code: Option<u8>,
     pub turns: Option<u32>,
@@ -87,12 +88,13 @@ pub fn check(raw: &[u8], now: u64) -> Result<Row, Reject> {
         other => Reject::Malformed(other),
     })?;
     validate(&report, now)?;
-    let me_tag = report
+    let me = report
         .players
         .iter()
         .find(|p| p.slot == report.me)
-        .and_then(|p| p.tag.clone())
-        .ok_or(Reject::MissingTag)?;
+        .ok_or(Reject::NotAParticipant)?;
+    let me_tag = me.tag.clone().ok_or(Reject::MissingTag)?;
+    let me_team = me.team;
     let result = report.result.as_ref();
     Ok(Row {
         key: hex::encode(&envelope.key),
@@ -104,6 +106,7 @@ pub fn check(raw: &[u8], now: u64) -> Result<Row, Reject> {
         map: report.map.clone(),
         me: report.me,
         me_tag,
+        me_team,
         outcome: result.map(|r| match r.outcome {
             Outcome::Win => "win",
             Outcome::Loss => "loss",

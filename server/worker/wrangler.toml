@@ -18,3 +18,18 @@ database_id = "a2fdff76-c745-47a2-a7b5-60a2a8bf17a0"
 [[r2_buckets]]
 binding = "REPLAYS"
 bucket_name = "w2r-replays"
+
+# Group and judge new reports every five minutes; rebuild every rating once a night.
+[triggers]
+crons = ["*/5 * * * *", "0 3 * * *"]
+
+# Requests per address per minute: uploads (reports and replays) and reads are limited apart.
+[[ratelimits]]
+name = "WRITE_LIMIT"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "READ_LIMIT"
+namespace_id = "1002"
+simple = { limit = 120, period = 60 }

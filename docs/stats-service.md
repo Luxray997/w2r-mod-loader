@@ -67,6 +67,44 @@ BLOBs and moved to R2 on 2026-10-12 (migration 0004), so they do not count again
 
 Not captured yet: AI difficulty, per-player tallies over time (derivable from replays).
 
+## Games, ratings and the read API
+
+Uploads only store reports. A scheduled job (`server/worker/src/jobs.rs`, every 5 minutes, plus a
+nightly rebuild at 03:00 UTC) does the rest, because a free-plan invocation may run at most 50 D1
+queries. So a game is judged up to five minutes after its last report arrives.
+
+- **Binding:** a key speaks for the first BattleTag it reported under (`bindings`). Reports under
+  any other tag are kept but `ignored`.
+- **Grouping:** reports with the same roster hash that began within 300 s of each other are one
+  `games` row (`games::plan`). The same people playing again an hour later is a new game.
+- **Judging** (`games::judge`, all in one place, with tests): a vote is a result report from a
+  reporter who is in the roster under that tag and team, with no desync flag and at least 600 turns
+  (`MIN_TURNS`). `win` means that team won, `loss` means the other one did, and `left` counts as a
+  loss only when the leaver was the last human on their side. Then:
+  - **verified**: both sides back the same winner (one reporter from each), or a key in
+    `trusted_keys` is among the reporters;
+  - **disputed**: reports name different winners (kept out of the ratings);
+  - **unverified**: anything else, mostly "only one side has reported" or three-way games.
+- **Rated** means verified, two sides, no computers. Observers are never rated.
+- **Ratings:** TrueSkill (`w2r_stats::rating`), applied as games become verified. A game that is
+  older than one already rated, or a verdict that later reverses, sets `meta.rebuild`; the job then
+  recomputes every rating from the games in time order (at most once an hour, and every night). A
+  rebuild reads up to 3000 games, a limit of this design.
+- **Read API** (public, JSON, CORS open, cached 60 s): `GET /v1/ratings?tags=Name%231234,...` (up to
+  16 tags; unknown tags are absent), `GET /v1/leaderboard?limit=50&min_games=1`, and
+  `GET /v1/games?limit=20` (latest verified games with settings and what each rating did).
+- **Rate limits** (Workers rate-limit bindings, per address, per minute): 30 writes
+  (`WRITE_LIMIT`) and 120 reads (`READ_LIMIT`); `/v1/health` is exempt.
+- **Trusted keys:** insert a hex key into `trusted_keys` with `wrangler d1 execute`. It then
+  verifies games it played in on its own.
+- **Not solved:** a key can claim any BattleTag until that tag's real owner reports (a key binds
+  once). With a handful of known players that is acceptable; the trusted list and `ignored`
+  are the tools if it is abused.
+
+Migration `0005` adds the columns and tables and asks for a first rebuild, which also groups the
+reports already stored. The manager has a sharing switch on its Settings tab (same file as the
+in-game checkbox).
+
 ## Local testing (done 2026-10-11)
 
 Node 24 LTS is unpacked at `E:\tools\node` (not on PATH; C: is full, so also set
@@ -89,14 +127,14 @@ dev dependency and `worker-build` is installed through cargo. To change the serv
 2. `npx wrangler deploy` (it runs `worker-build --release`).
 3. Check `https://w2r-stats.saweet.net/v1/health`.
 
-Migrations so far, all applied to the live database: `0002` (game-settings columns), `0003` (the
-replays table) and `0004` (replays table without the file column, files in R2; it drops the old
+Migrations so far: `0002` (game-settings columns), `0003` (the replays table) and `0004` (replays table without the file column, files in R2; it drops the old
 table, so clients send their replays again: delete `configeplay-upload-state.json`, then run
 `w2rpm share upload`). A database made fresh from `schema.sql` needs none of them, only the
 `w2r-replays` bucket (`npx wrangler r2 bucket create w2r-replays`).
 
 ## Still to build
 
-A sharing toggle in the egui manager. Rate limiting (Workers rate-limit binding, per key and IP), a
-cron pass that groups reports into games and applies the trust tiers, rating recompute with
-`w2r-stats::rating`, `GET /v1/ratings`. The in-game replay upload has not been run in the game.
+A website for the leaderboard (the API is ready). The lobby showing ratings and balancing teams
+from them. Per-mode ratings (team games, free-for-all), draws, and a resumable rebuild for more
+than a few thousand games. Keeping only one or two replays per game. The in-game replay upload has
+not been seen from the game itself yet.
