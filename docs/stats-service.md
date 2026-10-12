@@ -173,6 +173,47 @@ table, so clients send their replays again: delete `configeplay-upload-state.js
 `w2rpm share upload`). A database made fresh from `schema.sql` needs none of them, only the
 `w2r-replays` bucket (`npx wrangler r2 bucket create w2r-replays`).
 
+## Status and open items (2026-10-12)
+
+Live and deployed (Worker version `bbf87a25`): reports, game settings, replays in R2, corroboration
+with lenient trust, TrueSkill ratings with contribution weights, presence for leavers, spectator
+detection, read API, rate limits. Client (built, committed, **not yet installed or run in a game**):
+score tables and per-human activity in result reports, lobby ratings beside names with an
+"Even teams" chat line, and the host's Balance button.
+
+**To do, in order:**
+
+1. **Verify in a real game.** Close the game, run `.	ools\install_dev.ps1 -WithAllPlugins`, play a
+   game against a human (ideally a team game with kills). Then check: `logs\share.log` shows
+   `reports:` and `replays:` lines; the live `reports` row has `settings`, `score` and `activity` in
+   its envelope (`wrangler d1 execute w2r_stats --remote --command "SELECT json_extract(envelope,
+   '$.body.result.activity') FROM reports ORDER BY id DESC LIMIT 1"`); the replay appears in R2.
+2. **Lobby, in the game.** Rating numbers appear beside names (slot names have no `#`; the tag is
+   read from the slot record); long names hide the number and keep the tooltip; the Balance button
+   (host, info column, row "Balance:") moves players and the other players see the new teams; the
+   info column with eight rows still looks right.
+3. **Cron triggers.** Still unconfirmed that `*/5` and `0 3 * * *` fire; the after-upload job covers
+   judging meanwhile. Check the Worker logs after a day.
+4. **Disconnect vs leave.** A dropped connection looks like a leave. Treat a drop that begins with a
+   desync or timeout differently from a deliberate leave, and give a win by the opponent leaving at
+   minute 3 less weight.
+5. **Pairing limit.** Count repeat pairings of the same two tags less (win trading); only when it
+   happens, since trust is deliberately lenient.
+6. **Spectator signal.** The in-game spectator (one peon, allied to everyone) is detected from the
+   score and activity tables. Stronger: send each player's alliances at the end of the match (the
+   spectator is allied with all); needs the alliance table found in game memory.
+7. **Balance polish.** The Balance button ignores start positions on fixed-start maps and counts
+   computers as average players; a setting to hide ratings in the lobby; a provisional marker for
+   ratings under about five games.
+8. **Later.** A leaderboard website (the API is ready, low priority); separate 1v1 and team ratings
+   once there are about 30 rated 1v1 games (the roster of every game is stored, so a rebuild can
+   compute any split); per-setting effects (resources, peasants only); a resumable rebuild beyond
+   3000 games; keeping only one or two replays per game; whether to strip chat from stored replays
+   once the reception is known.
+
+Tuning constants to revisit with real team games: `rating::MIN_WEIGHT` (0.5), `MILITARY_SHARE`
+(0.7), `LEFT_BELOW` (0.9), `games::SPECTATOR_MIN_TURNS` (1500), `MIN_TURNS` (600).
+
 ## Still to build
 
 A website for the leaderboard (the API is ready). (The lobby already shows ratings and the host has
