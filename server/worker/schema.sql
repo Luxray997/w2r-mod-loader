@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS reports (
   code      INTEGER,
   turns     INTEGER,
   sync      INTEGER,
+  map_sha   TEXT,                       -- SHA-256 of the map file played, 64 hex
+  speed     INTEGER,                    -- game speed setting, as stored
+  flags     INTEGER,                    -- match flags word, as stored (undecoded bits kept)
+  resources TEXT,                       -- default | random | low | medium | high
+  tileset   INTEGER,                    -- index into the game's tileset list, 0 = the map's own
+  peasants_only INTEGER,                -- 0 or 1
+  fixed_start   INTEGER,                -- 0 or 1
   envelope  TEXT    NOT NULL,           -- the signed envelope exactly as received
   UNIQUE (key, rid)
 );

@@ -185,6 +185,7 @@ mod tests {
             map: "Battle_2.pud".into(),
             me: 0,
             players: p,
+            game: None,
             result: code.map(|(c, t)| ResultInfo {
                 outcome: Outcome::from_code(c, t).unwrap(),
                 code: c,

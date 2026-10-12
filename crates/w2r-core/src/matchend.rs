@@ -20,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
+use w2r_stats::game::{self, GameInfo};
 use w2r_stats::identity::{self, Identity};
 use w2r_stats::inflight::{self, Inflight};
 use w2r_stats::queue::Queue;
@@ -300,6 +301,8 @@ struct Raw {
     mismatch: u32,
     slots: [[u8; slot::SLOT_LEN]; slot::SLOTS],
     names: [u8; 0x100],
+    /// The game's lobby block (settings), `game::BLOCK_LEN` bytes.
+    lobby: Vec<u8>,
 }
 
 /// # Safety
@@ -319,6 +322,11 @@ unsafe fn read_raw() -> Option<Raw> {
             mismatch: core::ptr::read_unaligned(a.mismatch as *const u32),
             slots,
             names: core::ptr::read(a.names as *const [u8; 0x100]),
+            lobby: core::slice::from_raw_parts(
+                game::LOBBY_AT as *const u8,
+                game::BLOCK_LEN,
+            )
+            .to_vec(),
         })
     }
 }
@@ -380,6 +388,7 @@ struct MatchCtx {
     players: Vec<Player>,
     me: u8,
     setup: [u8; 32],
+    game: Option<GameInfo>,
     /// The start report that was queued, for the in-flight marker.
     start: Option<Report>,
 }
@@ -548,6 +557,7 @@ fn build(
         map: ctx.map.clone(),
         me: ctx.me,
         players: ctx.players.clone(),
+        game: ctx.game.clone(),
         result,
     })
 }
@@ -560,9 +570,11 @@ fn context(raw: &Raw) -> Option<MatchCtx> {
     // Only a match with the local player in the roster is ours to report.
     players.iter().find(|p| p.slot == raw.local)?;
     let map = read_map();
+    let game = GameInfo::from_lobby_block(&raw.lobby, crate::mapdownload::played_map_sha(&map));
     Some(MatchCtx {
         started: now_secs(),
         setup: report::setup_id(&map, &players),
+        game,
         map,
         players,
         me: raw.local,

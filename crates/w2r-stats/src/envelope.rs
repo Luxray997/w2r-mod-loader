@@ -116,6 +116,7 @@ mod tests {
             map: "m".into(),
             me: 1,
             players,
+            game: None,
             result: None,
         }
     }

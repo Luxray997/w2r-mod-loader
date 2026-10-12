@@ -23,6 +23,23 @@ back and 1 hour ahead. Computers need no tag. Rejections are permanent; the clie
 and does not retry. The client also never sends a game with an untagged human. Re-sending a stored
 report is accepted (`INSERT OR IGNORE` on `(key, rid)`).
 
+## What a report says about the match
+
+Besides the roster and the reporter's result, a report carries a `game` object read from the
+game's lobby block at match start (`crates/w2r-stats/src/game.rs`): `map_sha` (SHA-256 of the map
+file, so two different maps called `Battle_2.pud` can be told apart), `speed` and `flags` exactly
+as the game stores them, and their decoded view: `resources` (default, random, low, medium, high),
+`tileset` (index into the game's list), `peasants_only`, `fixed_start`. Undecoded flag bits stay
+in `flags`, and the envelope is stored verbatim, so anything learned later can be recomputed. The
+decoder was checked against the lobby blocks of 20 saved replays (speeds 6 to 8, high and default
+resources, peasants-only on and off, tileset 4, fixed and random starts). The D1 `reports` table
+has a column for each; `migrations-0002-game-settings.sql` adds them to a database made from the
+first schema. Reports from clients without `game` are still accepted, with empty columns.
+
+Not captured yet: AI difficulty, game-end cause, per-player tallies over time. Replays (median
+40 KB, largest 780 KB, with public chat) could be uploaded as a second, separate artifact to R2
+if a full record is wanted; not built.
+
 ## Local testing (done 2026-10-11)
 
 Node 24 LTS is unpacked at `E:\tools\node` (not on PATH; C: is full, so also set

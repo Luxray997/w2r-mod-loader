@@ -64,6 +64,14 @@ pub struct Row {
     pub code: Option<u8>,
     pub turns: Option<u32>,
     pub sync: Option<u32>,
+    /// Settings, from reports made by clients that send them.
+    pub map_sha: Option<String>,
+    pub speed: Option<u8>,
+    pub flags: Option<u32>,
+    pub resources: Option<&'static str>,
+    pub tileset: Option<u8>,
+    pub peasants_only: Option<bool>,
+    pub fixed_start: Option<bool>,
     pub envelope: String,
 }
 
@@ -101,6 +109,17 @@ pub fn check(raw: &[u8], now: u64) -> Result<Row, Reject> {
         code: result.map(|r| r.code),
         turns: result.map(|r| r.turns),
         sync: result.map(|r| r.sync_mismatch),
+        map_sha: report
+            .game
+            .as_ref()
+            .and_then(|g| g.map_sha)
+            .map(|h| hex::encode(&h)),
+        speed: report.game.as_ref().map(|g| g.speed),
+        flags: report.game.as_ref().map(|g| g.flags),
+        resources: report.game.as_ref().map(|g| g.resources()),
+        tileset: report.game.as_ref().map(|g| g.tileset()),
+        peasants_only: report.game.as_ref().map(|g| g.peasants_only()),
+        fixed_start: report.game.as_ref().map(|g| g.fixed_start),
         // Stored as received, not re-serialised, so the log keeps the exact signed bytes.
         envelope: String::from_utf8_lossy(raw).into_owned(),
     })
@@ -179,6 +198,7 @@ mod tests {
             map: "Battle_2.pud".into(),
             me,
             players,
+            game: None,
             result: (phase == Phase::Result).then(|| ResultInfo {
                 outcome: Outcome::Win,
                 code: 3,
@@ -207,6 +227,26 @@ mod tests {
         assert_eq!(row.turns, Some(9000));
         assert_eq!(row.envelope.as_bytes(), raw.as_slice());
         assert_eq!(row.key.len(), 64);
+    }
+
+    #[test]
+    fn game_settings_become_columns() {
+        use w2r_stats::game::GameInfo;
+        let mut r = report(two_humans(), 0, Phase::Start);
+        let mut block = vec![0u8; w2r_stats::game::BLOCK_LEN];
+        block[0x2f6] = 3;
+        block[0x300..0x304].copy_from_slice(&(0x1000u32 | 0x200).to_le_bytes());
+        block[0x42a] = 1;
+        r.game = GameInfo::from_lobby_block(&block, Some([0xab; 32]));
+        let row = check(&sealed(&r), NOW).unwrap();
+        assert_eq!(row.map_sha.as_deref(), Some(&"ab".repeat(32)[..]));
+        assert_eq!(
+            (row.speed, row.resources, row.peasants_only, row.fixed_start),
+            (Some(3), Some("low"), Some(true), Some(true))
+        );
+        // A report from a client that sends no settings is still stored, with empty columns.
+        let old = check(&sealed(&report(two_humans(), 0, Phase::Start)), NOW).unwrap();
+        assert_eq!((old.map_sha, old.speed, old.resources), (None, None, None));
     }
 
     #[test]

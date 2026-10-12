@@ -12,6 +12,7 @@
 use sha2::{Digest, Sha256};
 use w2r_formats::json::{Number, Value};
 
+use crate::game::GameInfo;
 use crate::hex;
 use crate::slot::{Kind, Player};
 
@@ -92,6 +93,8 @@ pub struct Report {
     /// The reporter's own slot.
     pub me: u8,
     pub players: Vec<Player>,
+    /// The settings the match was played with; absent from reports made by older clients.
+    pub game: Option<GameInfo>,
     /// Present on `Result` reports only.
     pub result: Option<ResultInfo>,
 }
@@ -170,7 +173,7 @@ impl Report {
                 ("sync_mismatch", num(r.sync_mismatch)),
             ]),
         };
-        object(vec![
+        let mut fields = vec![
             ("v", num(VERSION)),
             ("phase", text(self.phase.as_str())),
             ("rid", Value::String(hex::encode(&self.rid))),
@@ -181,8 +184,14 @@ impl Report {
             ("map", Value::String(clip(&self.map))),
             ("me", num(self.me)),
             ("players", Value::Array(players)),
-            ("result", result),
-        ])
+        ];
+        // Older clients sent no `game` key; leave it out rather than send null, so a report
+        // re-built from one serialises to the bytes that were signed.
+        if let Some(g) = &self.game {
+            fields.push(("game", g.to_value()));
+        }
+        fields.push(("result", result));
+        object(fields)
     }
 
     /// Reads a report back. Strict about shape, not about unknown extra keys.
@@ -219,6 +228,10 @@ impl Report {
                 race: u8::try_from(uint(field("race")?)?).map_err(|_| "bad race")?,
             });
         }
+        let game = match v.get("game") {
+            None | Some(Value::Null) => None,
+            Some(g) => Some(GameInfo::from_value(g)?),
+        };
         let result = match get("result")? {
             Value::Null => None,
             r => {
@@ -247,6 +260,7 @@ impl Report {
             map: string(get("map")?)?,
             me: u8::try_from(uint(get("me")?)?).map_err(|_| "bad me")?,
             players,
+            game,
             result,
         })
     }
@@ -286,6 +300,7 @@ mod tests {
             map: "Battle_2.pud".into(),
             me: 1,
             players,
+            game: None,
             result,
         }
     }

@@ -4,6 +4,7 @@
 //! everything here is tested without the game; the host supplies entropy and file locations.
 
 pub mod envelope;
+pub mod game;
 pub mod hex;
 pub mod history;
 pub mod identity;

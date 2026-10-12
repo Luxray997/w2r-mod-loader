@@ -130,6 +130,7 @@ mod tests {
                 map: "m".into(),
                 me: 0,
                 players,
+                game: None,
                 result: None,
             },
             turns,

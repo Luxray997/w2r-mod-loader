@@ -439,6 +439,7 @@ mod tests {
                     map: "m".into(),
                     me,
                     players: roster.clone(),
+                    game: None,
                     result: Some(ResultInfo {
                         outcome: Outcome::from_code(code, turns).unwrap(),
                         code,

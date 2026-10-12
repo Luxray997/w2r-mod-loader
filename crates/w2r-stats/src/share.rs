@@ -366,6 +366,7 @@ mod tests {
             map: "m.pud".into(),
             me: 0,
             players,
+            game: None,
             result: Some(ResultInfo {
                 outcome: Outcome::Win,
                 code: 3,
