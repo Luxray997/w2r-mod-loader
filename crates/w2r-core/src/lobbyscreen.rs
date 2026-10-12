@@ -56,6 +56,7 @@ type VoidFn = unsafe extern "C" fn();
 type MaxPlayersFn = unsafe extern "C" fn() -> u8;
 type PopupFn = unsafe extern "thiscall" fn(*mut c_void);
 type LocalizedFn = unsafe extern "C" fn(*const c_char) -> *const c_char;
+type BroadcastFn = unsafe extern "C" fn(*const u8);
 
 struct Screen {
     kit: Kit,
@@ -93,6 +94,8 @@ struct Screen {
     slots: *const u8,
     slot_names: *const *const u8,
     host_name: *const u8,
+    /// `BroadcastLobbySlot`: tells the other players about a changed slot. 0 when unknown.
+    broadcast: usize,
     /// Ping and loss from the transport's peer records; without it the bars are simply not drawn.
     quality: Option<crate::netquality::game::Reader>,
 }
@@ -253,6 +256,7 @@ fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
             slots: at("MpLobbySlots")? as *const u8,
             slot_names: at("MpLobbySlotNames")? as *const *const u8,
             host_name: at("MpLobbyHostName")? as *const u8,
+            broadcast: symbols.address("BroadcastLobbySlot").unwrap_or(0),
             quality: crate::netquality::game::Reader::new(symbols),
         })
     }
@@ -578,6 +582,81 @@ impl Screen {
         if flip.0 || flip.1 {
             crate::session::set_lock_choice(locks.teams ^ flip.0, locks.slots ^ flip.1);
         }
+
+        // The host can have the players split into even teams by their ratings.
+        if host && self.broadcast != 0 {
+            let r = row(7);
+            k.label_at(r, "Balance:", ALIGN_LEFT);
+            if k.button_at(geo::lock_button(r), "Teams", false) {
+                self.balance_teams();
+            }
+        }
+    }
+
+    /// Puts the seated players (humans by rating, computers as average) on two teams as even as the
+    /// ratings allow, and tells the other players. Observers stay where they are.
+    fn balance_teams(&self) {
+        const SLOT_TEAM: usize = 0x0a;
+        let mut seats: Vec<(usize, w2r_stats::rating::Rating)> = Vec::new();
+        let mut names = Vec::new();
+        for i in 0..SLOT_COUNT {
+            let mut record = [0u8; w2r_stats::slot::SLOT_LEN];
+            // SAFETY: the slot table is SLOT_COUNT records of SLOT_LEN bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.slots.add(i * SLOT_STRIDE),
+                    record.as_mut_ptr(),
+                    record.len(),
+                );
+            }
+            let Some(p) = w2r_stats::slot::parse_slot(i as u8, &record) else {
+                continue;
+            };
+            if p.team == w2r_stats::slot::OBSERVER_TEAM {
+                continue;
+            }
+            let rating = match p.tag.as_deref().map(crate::lobbyratings::standing) {
+                Some(crate::lobbyratings::Standing::Rated { rating, .. }) => rating,
+                _ => w2r_stats::rating::Rating::default(),
+            };
+            seats.push((i, rating));
+            names.push(p.name);
+        }
+        let ratings: Vec<_> = seats.iter().map(|(_, r)| *r).collect();
+        let Some(split) = w2r_stats::balance::best_split(&ratings) else {
+            push_notice("Not enough players to balance.".to_owned());
+            return;
+        };
+        let broadcast: BroadcastFn = unsafe { core::mem::transmute(self.broadcast) };
+        let slots = self.slots as *mut u8;
+        for (team, group) in [(1u8, &split.first), (2u8, &split.second)] {
+            for &n in group {
+                let record = unsafe { slots.add(seats[n].0 * SLOT_STRIDE) };
+                let result = guarded(|| unsafe {
+                    if *record.add(SLOT_TEAM) != team {
+                        *record.add(SLOT_TEAM) = team;
+                        broadcast(record);
+                    }
+                });
+                if result.is_err() {
+                    push_notice("Balancing teams failed.".to_owned());
+                    return;
+                }
+            }
+        }
+        let list = |g: &[usize]| {
+            g.iter()
+                .map(|&n| names[n].as_str())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        push_notice(format!(
+            "Teams balanced: {} against {} ({:.0}% / {:.0}%)",
+            list(&split.first),
+            list(&split.second),
+            split.first_wins * 100.0,
+            (1.0 - split.first_wins) * 100.0
+        ));
     }
 
     /// The Players panel: a header, then the game's own slot rows in our column ratios.

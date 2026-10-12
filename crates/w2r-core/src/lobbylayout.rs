@@ -184,7 +184,7 @@ pub fn team_digit(index: usize) -> Option<&'static CStr> {
     DIGITS.get(index).copied()
 }
 
-pub const INFO_ROW_COUNT: usize = 7;
+pub const INFO_ROW_COUNT: usize = 8;
 const LOCK_BUTTON_SHARE: f32 = 0.34;
 const RESOURCE_MASK: u32 = 0x2_3000;
 const TILESET_MASK: u32 = 0x1_c000;
