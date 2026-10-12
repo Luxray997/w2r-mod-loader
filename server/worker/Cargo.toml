@@ -1,0 +1,26 @@
+# The stats service (docs/stats-service.md): a Cloudflare Worker built from Rust. It is its own
+# workspace so `cargo test --workspace` at the repo root never builds it for the host target.
+[workspace]
+
+[package]
+name = "w2r-stats-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+w2r-stats = { path = "../../crates/w2r-stats" }
+w2r-formats = { path = "../../crates/w2r-formats" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { version = "0.8", features = ["d1"] }
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

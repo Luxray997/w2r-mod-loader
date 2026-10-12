@@ -1,0 +1,15 @@
+name = "w2r-stats"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-01"
+
+# Served only from its own subdomain; saweet.net and www are other projects and stay untouched.
+workers_dev = false
+routes = [{ pattern = "w2r-stats.saweet.net", custom_domain = true }]
+
+[build]
+command = "worker-build --release"
+
+[[d1_databases]]
+binding = "w2r_stats"
+database_name = "w2r-stats"
+database_id = "a2fdff76-c745-47a2-a7b5-60a2a8bf17a0"
