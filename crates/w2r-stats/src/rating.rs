@@ -161,6 +161,19 @@ fn w_draw(t: f64, eps: f64) -> f64 {
 /// What a finished game between two teams did to every player. `first` and `second` are the two
 /// teams as they were rated before the game; with `draw` false the first team won.
 pub fn update(first: &[Rating], second: &[Rating], draw: bool) -> (Vec<Rating>, Vec<Rating>) {
+    update_weighted(first, second, draw, &[], &[])
+}
+
+/// [`update`] where each player's share in the result is scaled by a weight in `0..=1` (partial
+/// play): a weight of 0.5 moves that player's rating and uncertainty half as far as a full share.
+/// The weights line up with the teams; a missing weight counts as 1.
+pub fn update_weighted(
+    first: &[Rating],
+    second: &[Rating],
+    draw: bool,
+    first_weights: &[f64],
+    second_weights: &[f64],
+) -> (Vec<Rating>, Vec<Rating>) {
     if first.is_empty() || second.is_empty() {
         return (first.to_vec(), second.to_vec());
     }
@@ -184,17 +197,49 @@ pub fn update(first: &[Rating], second: &[Rating], draw: bool) -> (Vec<Rating>, 
     } else {
         (v_win(t, eps), w_win(t, eps))
     };
-    let apply = |r: &Rating, sign: f64| {
+    let apply = |r: &Rating, sign: f64, weight: f64| {
         let s2 = r.sigma * r.sigma;
+        let weight = weight.clamp(0.0, 1.0);
         Rating {
-            mu: r.mu + sign * s2 / c * v,
-            sigma: (s2 * (1.0 - s2 / c2 * w)).max(1e-6).sqrt(),
+            mu: r.mu + sign * weight * s2 / c * v,
+            sigma: (s2 * (1.0 - weight * s2 / c2 * w)).max(1e-6).sqrt(),
         }
     };
+    let weight = |list: &[f64], i: usize| list.get(i).copied().unwrap_or(1.0);
     (
-        a.iter().map(|r| apply(r, 1.0)).collect(),
-        b.iter().map(|r| apply(r, -1.0)).collect(),
+        a.iter()
+            .enumerate()
+            .map(|(i, r)| apply(r, 1.0, weight(first_weights, i)))
+            .collect(),
+        b.iter()
+            .enumerate()
+            .map(|(i, r)| apply(r, -1.0, weight(second_weights, i)))
+            .collect(),
     )
+}
+
+/// The least a player's share of a result can be scaled down to, for doing nothing in the fight.
+pub const MIN_WEIGHT: f64 = 0.5;
+
+/// How much of a result each member of one team earned, from their military score (units killed
+/// plus buildings razed): a player who did at least the team's average gets a full share, one who
+/// did nothing gets [`MIN_WEIGHT`]. Economy is deliberately not counted: gathering while a
+/// teammate fights is support, not the fight. Without a score for everyone, or when the team did no
+/// fighting at all, everyone counts fully.
+pub fn contribution_weights(military: &[Option<u32>]) -> Vec<f64> {
+    let known: Option<Vec<u32>> = military.iter().copied().collect();
+    let Some(known) = known else {
+        return vec![1.0; military.len()];
+    };
+    let total: u32 = known.iter().sum();
+    if total == 0 {
+        return vec![1.0; military.len()];
+    }
+    let mean = f64::from(total) / known.len() as f64;
+    known
+        .iter()
+        .map(|&m| MIN_WEIGHT + (1.0 - MIN_WEIGHT) * (f64::from(m) / mean).min(1.0))
+        .collect()
 }
 
 /// Chance that the first team beats the second, drawing aside.
@@ -298,6 +343,31 @@ pub fn ladder(matches: &[Match], with_computers: bool) -> Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weights_follow_the_fighting_and_ignore_the_economy() {
+        // 30 and 10 against a mean of 20: the first is full, the second three quarters.
+        let w = contribution_weights(&[Some(30), Some(10), Some(0)]);
+        assert_eq!(w.len(), 3);
+        assert!((w[0] - 1.0).abs() < 1e-9);
+        assert!((w[1] - (MIN_WEIGHT + (1.0 - MIN_WEIGHT) * 0.75)).abs() < 1e-9);
+        assert!((w[2] - MIN_WEIGHT).abs() < 1e-9);
+        // unknown for anyone, or no fighting on the team: everyone counts fully
+        assert_eq!(contribution_weights(&[Some(5), None]), vec![1.0, 1.0]);
+        assert_eq!(contribution_weights(&[Some(0), Some(0)]), vec![1.0, 1.0]);
+        assert!(contribution_weights(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_smaller_weight_moves_a_rating_less() {
+        let team = [Rating::default(), Rating::default()];
+        let (full, _) = update_weighted(&team, &team, false, &[1.0, 1.0], &[1.0, 1.0]);
+        let (part, _) = update_weighted(&team, &team, false, &[1.0, 0.5], &[1.0, 1.0]);
+        assert!((full[0].mu - part[0].mu).abs() < 1e-12, "the other player is unaffected");
+        assert!(((part[1].mu - 25.0) / (full[1].mu - 25.0) - 0.5).abs() < 1e-9);
+        assert!(part[1].sigma > full[1].sigma, "and learns less about them");
+        assert_eq!(update(&team, &team, false), update_weighted(&team, &team, false, &[], &[]));
+    }
     use crate::history::pair;
     use crate::report::{Phase, Report, ResultInfo, setup_id};
     use crate::slot::Player;

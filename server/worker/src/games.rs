@@ -273,9 +273,12 @@ pub fn apply(
     standings: &mut BTreeMap<String, Standing>,
     roster: &[Player],
     winner_team: u8,
+    military: &BTreeMap<u8, u32>,
 ) -> Vec<Change> {
     let mut winners: Vec<String> = Vec::new();
     let mut losers: Vec<String> = Vec::new();
+    let mut w_mil: Vec<Option<u32>> = Vec::new();
+    let mut l_mil: Vec<Option<u32>> = Vec::new();
     for p in roster {
         let (Kind::Human, Some(tag)) = (p.kind, p.tag.as_ref()) else {
             continue;
@@ -285,8 +288,10 @@ pub fn apply(
         }
         if p.team == winner_team {
             winners.push(tag.clone());
+            w_mil.push(military.get(&p.slot).copied());
         } else {
             losers.push(tag.clone());
+            l_mil.push(military.get(&p.slot).copied());
         }
     }
     if winners.is_empty() || losers.is_empty() {
@@ -298,7 +303,14 @@ pub fn apply(
             .collect()
     };
     let (w_before, l_before) = (get(standings, &winners), get(standings, &losers));
-    let (w_after, l_after) = rating::update(&w_before, &l_before, false);
+    // A player who did little of the fighting moves less than the one who carried the game.
+    let (w_after, l_after) = rating::update_weighted(
+        &w_before,
+        &l_before,
+        false,
+        &rating::contribution_weights(&w_mil),
+        &rating::contribution_weights(&l_mil),
+    );
     let mut out = Vec::new();
     for (tags, before, after, won) in [
         (&winners, &w_before, &w_after, true),
@@ -322,6 +334,28 @@ pub fn apply(
         }
     }
     out
+}
+
+/// Each slot's military score (units killed plus buildings razed) from a game's stored score
+/// table, a JSON array of `{"slot":..,"kills":..,"razed":..,..}`. Empty when there is none.
+pub fn military_by_slot(score_json: &str) -> BTreeMap<u8, u32> {
+    let Some(doc) = json::parse(score_json.as_bytes()).ok() else {
+        return BTreeMap::new();
+    };
+    let field = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_number)
+            .and_then(Number::as_u64)
+            .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    doc.as_array()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|v| {
+            let slot = u8::try_from(v.get("slot")?.as_number()?.as_u64()?).ok()?;
+            Some((slot, field(v, "kills").saturating_add(field(v, "razed"))))
+        })
+        .collect()
 }
 
 // ---- grouping reports into games ---------------------------------------------------------------
@@ -669,22 +703,53 @@ mod tests {
         );
         assert_eq!((v.status, v.rated), (Status::Verified, true));
         let mut s = BTreeMap::new();
-        apply(&mut s, &roster, 1);
+        apply(&mut s, &roster, 1, &BTreeMap::new());
         assert!(!s.contains_key("Watcher#1"));
     }
 
     #[test]
     fn applying_a_game_moves_the_winner_up_and_the_loser_down() {
         let mut s = BTreeMap::new();
-        let changes = apply(&mut s, &duel(), 1);
+        let changes = apply(&mut s, &duel(), 1, &BTreeMap::new());
         assert_eq!(changes.len(), 2);
         let (ann, bob) = (&s["Ann#1"], &s["Bob#1"]);
         assert!(ann.rating.mu > 25.0 && bob.rating.mu < 25.0);
         assert_eq!((ann.games, ann.wins, bob.losses), (1, 1, 1));
         // the first two-player result of new players is the published walk-through
         assert!((ann.rating.mu - 29.4).abs() < 0.1, "{}", ann.rating.mu);
-        let again = apply(&mut s, &duel(), 1);
+        let again = apply(&mut s, &duel(), 1, &BTreeMap::new());
         assert!(again[0].after.mu > again[0].before.mu);
+    }
+
+    #[test]
+    fn a_teammate_who_did_no_fighting_earns_less_of_the_win() {
+        let team = |name: &str, slot, team| human(slot, name, team);
+        let roster = vec![
+            team("Ann", 0, 1),
+            team("Cid", 1, 1),
+            team("Bob", 2, 2),
+            team("Dee", 3, 2),
+        ];
+        let even = |military: &BTreeMap<u8, u32>| {
+            let mut s = BTreeMap::new();
+            apply(&mut s, &roster, 1, military);
+            s
+        };
+        let flat = even(&BTreeMap::new());
+        // Ann killed and razed 40; Cid only mined. Bob and Dee fought evenly.
+        let score = military_by_slot(
+            r#"[{"slot":0,"kills":30,"razed":10},{"slot":1,"kills":0,"razed":0},
+                {"slot":2,"kills":8,"razed":2},{"slot":3,"kills":9,"razed":1}]"#,
+        );
+        assert_eq!(score[&0], 40);
+        let weighted = even(&score);
+        assert!(weighted["Ann#1"].rating.mu - 25.0 > weighted["Cid#1"].rating.mu - 25.0);
+        // Cid gets half the gain Ann does; without the score they were identical.
+        let gain = |s: &BTreeMap<String, Standing>, t: &str| s[t].rating.mu - 25.0;
+        assert!((gain(&flat, "Ann#1") - gain(&flat, "Cid#1")).abs() < 1e-9);
+        assert!((gain(&weighted, "Cid#1") / gain(&weighted, "Ann#1") - 0.5).abs() < 1e-9);
+        // The losing side fought evenly: both lose the same.
+        assert!((gain(&weighted, "Bob#1") - gain(&weighted, "Dee#1")).abs() < 1e-9);
     }
 
     #[test]

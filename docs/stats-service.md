@@ -110,6 +110,11 @@ depend on them.)
   older than one already rated, or a verdict that later reverses, sets `meta.rebuild`; the job then
   recomputes every rating from the games in time order (at most once an hour, and every night). A
   rebuild reads up to 3000 games, a limit of this design.
+  In a team game each player's share of the result is weighted by their fighting: military score
+  (units killed plus buildings razed) against the team's average, from the game's score table. The
+  average or better counts fully, nothing counts half (`rating::contribution_weights`,
+  `MIN_WEIGHT`). Economy is not counted, so a player who only gathered while a teammate fought
+  earns less of the win (and loses less of a loss). No score table, or no fighting on a team: equal.
 - **Read API** (public, JSON, CORS open, cached 60 s): `GET /v1/ratings?tags=Name%231234,...` (up to
   16 tags; unknown tags are absent), `GET /v1/leaderboard?limit=50&min_games=1`, and
   `GET /v1/games?limit=20` (latest verified games with settings and what each rating did).
@@ -155,7 +160,7 @@ table, so clients send their replays again: delete `configeplay-upload-state.js
 
 ## Still to build
 
-A website for the leaderboard (the API is ready). The lobby showing ratings and balancing teams
-from them. Per-mode ratings (team games, free-for-all), draws, and a resumable rebuild for more
+A website for the leaderboard (the API is ready). (The lobby already shows ratings and the host has
+a Balance button.) Per-mode ratings (team games, free-for-all), draws, and a resumable rebuild for more
 than a few thousand games. Keeping only one or two replays per game. The in-game replay upload has
 not been seen from the game itself yet.
