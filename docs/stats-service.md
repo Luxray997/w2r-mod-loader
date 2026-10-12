@@ -183,7 +183,7 @@ score tables and per-human activity in result reports, lobby ratings beside name
 
 **To do, in order:**
 
-1. **Verify in a real game.** Close the game, run `.	ools\install_dev.ps1 -WithAllPlugins`, play a
+1. **Verify in a real game.** Close the game, run `.\tools\install_dev.ps1 -WithAllPlugins`, play a
    game against a human (ideally a team game with kills). Then check: `logs\share.log` shows
    `reports:` and `replays:` lines; the live `reports` row has `settings`, `score` and `activity` in
    its envelope (`wrangler d1 execute w2r_stats --remote --command "SELECT json_extract(envelope,
