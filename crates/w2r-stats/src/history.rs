@@ -191,6 +191,7 @@ mod tests {
                 code: c,
                 turns: t,
                 sync_mismatch: 0,
+                score: None,
             }),
         }
     }

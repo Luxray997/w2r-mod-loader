@@ -65,6 +65,8 @@ pub struct Row {
     pub me: u8,
     pub me_tag: String,
     pub me_team: u8,
+    /// Whether the reporter's score tables show any fighting; `None` without a score.
+    pub combat: Option<bool>,
     pub outcome: Option<&'static str>,
     pub code: Option<u8>,
     pub turns: Option<u32>,
@@ -107,6 +109,7 @@ pub fn check(raw: &[u8], now: u64) -> Result<Row, Reject> {
         me: report.me,
         me_tag,
         me_team,
+        combat: result.and_then(|r| r.combat()),
         outcome: result.map(|r| match r.outcome {
             Outcome::Win => "win",
             Outcome::Loss => "loss",
@@ -214,6 +217,7 @@ mod tests {
                 code: 3,
                 turns: 9000,
                 sync_mismatch: 0,
+                score: None,
             }),
         }
     }
@@ -257,6 +261,25 @@ mod tests {
         // A report from a client that sends no settings is still stored, with empty columns.
         let old = check(&sealed(&report(two_humans(), 0, Phase::Start)), NOW).unwrap();
         assert_eq!((old.map_sha, old.speed, old.resources), (None, None, None));
+    }
+
+    #[test]
+    fn the_score_tables_say_whether_anything_was_fought() {
+        use w2r_stats::report::PlayerScore;
+        let with = |kills, razed| {
+            let mut r = report(two_humans(), 0, Phase::Result);
+            r.result.as_mut().unwrap().score = Some(vec![
+                PlayerScore { slot: 0, kills, razed, ..PlayerScore::default() },
+                PlayerScore { slot: 1, ..PlayerScore::default() },
+            ]);
+            check(&sealed(&r), NOW).unwrap().combat
+        };
+        assert_eq!(with(3, 0), Some(true));
+        assert_eq!(with(0, 1), Some(true));
+        assert_eq!(with(0, 0), Some(false));
+        // no score at all (older client): unknown, still stored
+        let old = check(&sealed(&report(two_humans(), 0, Phase::Result)), NOW).unwrap();
+        assert_eq!(old.combat, None);
     }
 
     #[test]

@@ -445,6 +445,7 @@ mod tests {
                         code,
                         turns,
                         sync_mismatch: 0,
+                        score: None,
                     }),
                 },
             ));

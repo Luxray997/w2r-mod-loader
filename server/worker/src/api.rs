@@ -116,7 +116,7 @@ pub async fn recent_games(db: &D1Database, url: &Url) -> Result<Response> {
     let found = db
         .prepare(
             "SELECT id, started, map, map_sha, resources, speed, peasants_only, fixed_start, roster, \
-             winner_team, turns, rated, corroborated, changes FROM games WHERE status = 'verified' \
+             winner_team, turns, rated, corroborated, changes, score FROM games WHERE status = 'verified' \
              ORDER BY started DESC, id DESC LIMIT ?1",
         )
         .bind(&[JsValue::from_f64(limit as f64)])?
@@ -142,6 +142,7 @@ pub async fn recent_games(db: &D1Database, url: &Url) -> Result<Response> {
                 "corroborated": n(g, "corroborated") != 0.0,
                 "players": parsed("roster"),
                 "changes": parsed("changes"),
+                "score": parsed("score"),
             })
         })
         .collect();

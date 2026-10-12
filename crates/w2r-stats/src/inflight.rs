@@ -100,6 +100,7 @@ pub fn recover(marker: &Inflight, rid: [u8; 8]) -> Option<Report> {
         code: 0,
         turns: marker.turns,
         sync_mismatch: marker.sync_mismatch,
+        score: None,
     });
     Some(report)
 }

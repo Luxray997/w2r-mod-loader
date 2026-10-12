@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS reports (
   peasants_only INTEGER,                -- 0 or 1
   fixed_start   INTEGER,                -- 0 or 1
   me_team   INTEGER,                    -- the reporter's team
+  combat    INTEGER,                    -- 1 if the score tables show any kill or razed building, 0 if none, NULL if unknown
   game_id   INTEGER,                    -- games.id once grouped
   ignored   INTEGER NOT NULL DEFAULT 0, -- 1 when the key reported under a tag it is not bound to
   envelope  TEXT    NOT NULL,           -- the signed envelope exactly as received
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS games (
   corroborated INTEGER NOT NULL DEFAULT 0, -- 1 when both sides reported and agree
   rated     INTEGER NOT NULL DEFAULT 0, -- 1 once it has moved the ratings
   changes   TEXT,                       -- JSON: who gained or lost how much
+  score     TEXT,                       -- JSON: per-player kills, losses, razed, mined (from a result report)
   updated   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS games_setup ON games (setup, started);

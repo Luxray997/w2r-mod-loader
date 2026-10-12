@@ -393,6 +393,7 @@ mod tests {
                 code: 3,
                 turns: 100,
                 sync_mismatch: 0,
+                score: None,
             }),
         };
         let json = seal(&Identity::from_secret([3; 32]), &report).to_json();

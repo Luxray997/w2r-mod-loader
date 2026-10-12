@@ -130,10 +130,11 @@ async fn store(db: &D1Database, r: &Row) -> Result<()> {
     let opt = |v: Option<u32>| v.map_or(JsValue::NULL, |n| JsValue::from_f64(f64::from(n)));
     db.prepare(
         "INSERT OR IGNORE INTO reports \
-         (key, rid, phase, setup, started, received, map, me, me_tag, me_team, outcome, code, turns, \
-          sync, map_sha, speed, flags, resources, tileset, peasants_only, fixed_start, envelope) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+         (key, rid, phase, setup, started, received, map, me, me_tag, me_team, combat, outcome, \
+          code, turns, sync, map_sha, speed, flags, resources, tileset, peasants_only, \
+          fixed_start, envelope) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
     )
     .bind(&[
         r.key.as_str().into(),
@@ -146,6 +147,8 @@ async fn store(db: &D1Database, r: &Row) -> Result<()> {
         JsValue::from_f64(f64::from(r.me)),
         r.me_tag.as_str().into(),
         JsValue::from_f64(f64::from(r.me_team)),
+        r.combat
+            .map_or(JsValue::NULL, |c| JsValue::from_f64(if c { 1.0 } else { 0.0 })),
         r.outcome.map_or(JsValue::NULL, JsValue::from),
         opt(r.code.map(u32::from)),
         opt(r.turns),

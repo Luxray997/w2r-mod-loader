@@ -12,8 +12,10 @@
 //!
 //! Policy that can be changed in one place:
 //! - `MIN_TURNS`: a result from a game shorter than this decides nothing (an aborted start).
-//! - a player who leaves counts as having lost only when they were the only human on their side
-//!   (`left_concedes`), because in a team game one person leaving does not end it.
+//! - a player who leaves counts as having lost only when they were the only human on their side,
+//!   because in a team game one person leaving does not end it, and only when the game's score
+//!   tables show something was fought;
+//! - a game with no kills and no razed buildings is not rated at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -58,6 +60,9 @@ pub struct Vote {
     pub outcome: String,
     pub turns: u32,
     pub sync_mismatch: u32,
+    /// Whether anything was fought (a kill or a razed building), from the game's score tables;
+    /// `None` for reports from clients that do not send them.
+    pub combat: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,11 +111,16 @@ fn claim(roster: &[Player], vote: &Vote, other_team: u8) -> Option<u8> {
     if vote.sync_mismatch != 0 || vote.turns < MIN_TURNS {
         return None;
     }
+    // A game where nobody killed anything is not a contest, whoever left or won.
+    if vote.combat == Some(false) {
+        return None;
+    }
     match vote.outcome.as_str() {
         "win" => Some(vote.team),
         "loss" => Some(other_team),
         // Leaving ends the game for the leaver's side only when nobody else is playing on it.
-        "left" if humans_on(roster, vote.team) == 1 => Some(other_team),
+        // Only with proof of fighting; a report that cannot say (older clients) is not enough.
+        "left" if humans_on(roster, vote.team) == 1 && vote.combat == Some(true) => Some(other_team),
         _ => None,
     }
 }
@@ -458,6 +468,7 @@ mod tests {
             outcome: outcome.into(),
             turns,
             sync_mismatch: 0,
+            combat: None,
         }
     }
 
@@ -564,6 +575,42 @@ mod tests {
         );
         // Ann alone is accepted on trust; Bob's leaving added nothing.
         assert_eq!((v.status, v.corroborated), (Status::Verified, false));
+    }
+
+    #[test]
+    fn leaving_counts_only_when_the_score_shows_a_fight() {
+        let fought = |c| Vote {
+            combat: c,
+            ..vote("k2", "Bob", 2, "left", 4000)
+        };
+        let ann = vote("k1", "Ann", 1, "win", 5000);
+        let judge_with = |c| judge(&duel(), &[fought(c)], &none(), &BTreeMap::new());
+        let v = judge_with(Some(true));
+        assert_eq!((v.status, v.winner_team, v.rated), (Status::Verified, Some(1), true));
+        // no kills, or a client that cannot say: the leave is not a result
+        assert_eq!(judge_with(Some(false)).status, Status::Unverified);
+        assert_eq!(judge_with(None).status, Status::Unverified);
+        // Ann's own win is unaffected by Bob's missing score (older client on one side)
+        let v = judge(&duel(), &[ann, fought(None)], &none(), &BTreeMap::new());
+        assert_eq!((v.status, v.winner_team), (Status::Verified, Some(1)));
+    }
+
+    #[test]
+    fn a_game_without_kills_is_not_rated_even_with_a_win_and_a_loss() {
+        let quiet = |key: &str, name: &str, team, outcome: &str| Vote {
+            combat: Some(false),
+            ..vote(key, name, team, outcome, 5000)
+        };
+        let v = judge(
+            &duel(),
+            &[quiet("k1", "Ann", 1, "win"), quiet("k2", "Bob", 2, "loss")],
+            &none(),
+            &BTreeMap::new(),
+        );
+        assert_eq!((v.status, v.rated), (Status::Unverified, false));
+        // while a report with no score at all (older client) still counts
+        let old = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000)], &none(), &BTreeMap::new());
+        assert!(old.rated);
     }
 
     #[test]

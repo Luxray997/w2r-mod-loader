@@ -104,6 +104,7 @@ fn vote_of(r: &J) -> Vote {
         outcome: s(r, "outcome"),
         turns: n(r, "turns") as u32,
         sync_mismatch: n(r, "sync") as u32,
+        combat: r.get("combat").and_then(J::as_f64).map(|c| c != 0.0),
     }
 }
 
@@ -161,6 +162,18 @@ fn verdict_stmt(
         num(now as f64),
         num(if v.corroborated { 1.0 } else { 0.0 }),
     ])
+}
+
+/// The first score table among a game's result reports (they all describe the same game).
+fn score_stmt(db: &D1Database, id: f64, votes: &[J]) -> Option<Result<D1PreparedStatement>> {
+    let score = votes
+        .iter()
+        .filter(|v| n(v, "game_id") == id)
+        .find_map(|v| v.get("score").and_then(J::as_str).map(str::to_string))?;
+    Some(
+        db.prepare("UPDATE games SET score = ?2 WHERE id = ?1")
+            .bind(&[num(id), text(&score)]),
+    )
 }
 
 /// How many corroborated games each of `keys` has taken part in (what its word is worth in a
@@ -344,7 +357,8 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
     let vote_rows = rows(
         db,
         &format!(
-            "SELECT game_id, key, me_tag, me_team, outcome, turns, sync FROM reports \
+            "SELECT game_id, key, me_tag, me_team, outcome, turns, sync, combat, \
+             json_extract(envelope, '$.body.result.score') AS score FROM reports \
              WHERE phase = 'result' AND ignored = 0 AND game_id IN ({list})"
         ),
         &binds,
@@ -375,6 +389,9 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
             .collect();
         let verdict = games::judge(&roster, &votes, &trusted, &trust);
         statements.push(verdict_stmt(db, id, &verdict, votes.len(), now)?);
+        if let Some(stmt) = score_stmt(db, id, &vote_rows) {
+            statements.push(stmt?);
+        }
         let was_rated = n(g, "rated") != 0.0;
         let same_winner = verdict.winner_team.map(f64::from) == g.get("winner_team").and_then(J::as_f64);
         match (verdict.rated, was_rated) {
@@ -469,7 +486,8 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
     .await?;
     let vote_rows = rows(
         db,
-        "SELECT game_id, key, me_tag, me_team, outcome, turns, sync FROM reports \
+        "SELECT game_id, key, me_tag, me_team, outcome, turns, sync, combat, \
+         json_extract(envelope, '$.body.result.score') AS score FROM reports \
          WHERE phase = 'result' AND ignored = 0 AND game_id IS NOT NULL",
         &[],
     )
@@ -505,6 +523,9 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
         let votes = by_game.remove(&(id as i64)).unwrap_or_default();
         let verdict = games::judge(&roster, &votes, &trusted, &trust);
         statements.push(verdict_stmt(db, id, &verdict, votes.len(), now)?);
+        if let Some(stmt) = score_stmt(db, id, &vote_rows) {
+            statements.push(stmt?);
+        }
         let (rated, changes) = match (verdict.rated, verdict.winner_team) {
             (true, Some(winner)) => {
                 let changes = games::apply(&mut standings, &roster, winner);

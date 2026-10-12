@@ -68,6 +68,55 @@ impl Outcome {
     }
 }
 
+/// What the game's score tables say about one player at the end (the same numbers the results
+/// screen shows). Every client sees the same simulation, so every reporter should send the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerScore {
+    pub slot: u8,
+    pub kills: u32,
+    pub razed: u32,
+    pub lost: u32,
+    pub buildings_lost: u32,
+    pub gold: u32,
+    pub lumber: u32,
+    pub oil: u32,
+}
+
+impl PlayerScore {
+    fn to_value(&self) -> Value {
+        object(vec![
+            ("slot", num(self.slot)),
+            ("kills", num(self.kills)),
+            ("razed", num(self.razed)),
+            ("lost", num(self.lost)),
+            ("buildings_lost", num(self.buildings_lost)),
+            ("gold", num(self.gold)),
+            ("lumber", num(self.lumber)),
+            ("oil", num(self.oil)),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Result<PlayerScore, &'static str> {
+        let uint = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_number)
+                .and_then(w2r_formats::json::Number::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or("bad score field")
+        };
+        Ok(PlayerScore {
+            slot: u8::try_from(uint("slot")?).map_err(|_| "bad score slot")?,
+            kills: uint("kills")?,
+            razed: uint("razed")?,
+            lost: uint("lost")?,
+            buildings_lost: uint("buildings_lost")?,
+            gold: uint("gold")?,
+            lumber: uint("lumber")?,
+            oil: uint("oil")?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultInfo {
     pub outcome: Outcome,
@@ -76,6 +125,19 @@ pub struct ResultInfo {
     pub turns: u32,
     /// The game's own lockstep desync flag at the end.
     pub sync_mismatch: u32,
+    /// The score tables of every player in the game; absent from older clients and from a match
+    /// that was recovered after a crash.
+    pub score: Option<Vec<PlayerScore>>,
+}
+
+impl ResultInfo {
+    /// Whether anything was fought: some player killed a unit or razed a building. `None` when
+    /// this report carries no score (older clients).
+    pub fn combat(&self) -> Option<bool> {
+        self.score
+            .as_ref()
+            .map(|s| s.iter().any(|p| p.kills > 0 || p.razed > 0))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,12 +228,23 @@ impl Report {
             .collect();
         let result = match &self.result {
             None => Value::Null,
-            Some(r) => object(vec![
-                ("outcome", text(r.outcome.as_str())),
-                ("code", num(r.code)),
-                ("turns", num(r.turns)),
-                ("sync_mismatch", num(r.sync_mismatch)),
-            ]),
+            Some(r) => {
+                let mut fields = vec![
+                    ("outcome", text(r.outcome.as_str())),
+                    ("code", num(r.code)),
+                    ("turns", num(r.turns)),
+                    ("sync_mismatch", num(r.sync_mismatch)),
+                ];
+                // Absent, not null, when unknown, so a report from an older client serialises to
+                // the bytes it was signed over.
+                if let Some(score) = &r.score {
+                    fields.push((
+                        "score",
+                        Value::Array(score.iter().take(MAX_PLAYERS).map(PlayerScore::to_value).collect()),
+                    ));
+                }
+                object(fields)
+            }
         };
         let mut fields = vec![
             ("v", num(VERSION)),
@@ -238,12 +311,24 @@ impl Report {
                 let field = |k: &str| r.get(k).ok_or("missing result field");
                 let code = u8::try_from(uint(field("code")?)?).map_err(|_| "bad code")?;
                 let turns = u32::try_from(uint(field("turns")?)?).map_err(|_| "bad turns")?;
+                let score = match r.get("score") {
+                    None | Some(Value::Null) => None,
+                    Some(list) => Some(
+                        list.as_array()
+                            .ok_or("bad score")?
+                            .iter()
+                            .take(MAX_PLAYERS)
+                            .map(PlayerScore::from_value)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    ),
+                };
                 Some(ResultInfo {
                     outcome: Outcome::from_code(code, turns).ok_or("no match")?,
                     code,
                     turns,
                     sync_mismatch: u32::try_from(uint(field("sync_mismatch")?)?)
                         .map_err(|_| "bad sync_mismatch")?,
+                    score,
                 })
             }
         };
@@ -340,6 +425,7 @@ mod tests {
                 code: 3,
                 turns: 5994,
                 sync_mismatch: 0,
+                score: None,
             }),
         );
         assert_eq!(Report::from_value(&done.to_value()), Ok(done.clone()));
@@ -358,6 +444,7 @@ mod tests {
             code: 2,
             turns: 10,
             sync_mismatch: 0,
+            score: None,
         });
         assert!(Report::from_value(&sample(Phase::Start, with_result).to_value()).is_err());
     }
@@ -368,5 +455,34 @@ mod tests {
         r.players[0].name = "x".repeat(200);
         let back = Report::from_value(&r.to_value()).unwrap();
         assert_eq!(back.players[0].name.len(), MAX_NAME);
+    }
+
+    #[test]
+    fn a_score_round_trips_and_an_old_result_has_none() {
+        let with = Some(ResultInfo {
+            outcome: Outcome::Win,
+            code: 3,
+            turns: 9000,
+            sync_mismatch: 0,
+            score: Some(vec![
+                PlayerScore { slot: 0, kills: 12, razed: 2, lost: 5, buildings_lost: 1, gold: 9000, lumber: 4000, oil: 800 },
+                PlayerScore { slot: 1, ..PlayerScore::default() },
+            ]),
+        });
+        let r = sample(Phase::Result, with.clone());
+        let back = Report::from_value(&r.to_value()).unwrap();
+        assert_eq!(back.result, with);
+        assert_eq!(back.result.as_ref().unwrap().combat(), Some(true));
+        // nobody fought
+        let quiet = ResultInfo {
+            score: Some(vec![PlayerScore::default(), PlayerScore::default()]),
+            ..with.clone().unwrap()
+        };
+        assert_eq!(quiet.combat(), Some(false));
+        // a result without the key reads as unknown, and writes back without it
+        let old = ResultInfo { score: None, ..with.unwrap() };
+        assert_eq!(old.combat(), None);
+        let text = sample(Phase::Result, Some(old)).to_value().to_json();
+        assert!(!text.contains("score"));
     }
 }

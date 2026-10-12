@@ -65,6 +65,12 @@ BLOBs and moved to R2 on 2026-10-12 (migration 0004), so they do not count again
 - **CPU:** the Worker hashes and verifies a signature per upload (a few ms for a large file in WASM);
   untested against the free plan's 10 ms CPU limit.
 
+The result block also carries `score`: for every player in the game, the game's own score tables
+(`ScoreUnitsKilled`, `ScoreBuildingsRazed`, `ScoreUnitsLost`, `ScoreBuildingsLost`, and gold,
+lumber and oil mined), read at match end (`matchend.rs`; the same counters the replay panel shows).
+Every client sees the same simulation, so every reporter should send the same numbers. It is absent
+from reports made before 2026-10-12 and from a match recovered after a crash.
+
 Not captured yet: AI difficulty, per-player tallies over time (derivable from replays).
 
 ## Games, ratings and the read API
@@ -85,7 +91,10 @@ depend on them.)
   is enough to rate it, and nobody is assumed to be cheating yet. A vote is a result report from a
   reporter who is in the roster under that tag and team, with no desync flag and at least 600 turns
   (`MIN_TURNS`). `win` means that team won, `loss` means the other one did, and `left` counts as a
-  loss only when the leaver was the last human on their side. Then:
+  loss only when the leaver was the last human on their side **and the score tables show a fight**.
+  A game where nobody killed a unit or razed a building (all `kills` and `razed` zero) decides
+  nothing, whoever won or left. A report with no score at all (an older client) can still carry a
+  win or a loss, but a leave from one is not a result. Then:
   - **verified** (rated): the votes name one winner. If one reporter from each side agrees the game
     is also **corroborated**; otherwise the reason reads "single report, accepted on trust";
   - **trust:** a key's weight is 1 plus the number of corroborated games it has taken part in (an
@@ -112,7 +121,8 @@ depend on them.)
   once). With a handful of known players that is acceptable; the trusted list and `ignored`
   are the tools if it is abused.
 
-Migrations `0005` (columns and tables) and `0006` (the `corroborated` flag) ask for a rebuild, which
+Migrations `0005` (columns and tables), `0006` (the `corroborated` flag) and `0007` (`combat` on
+reports, `score` on games) ask for a rebuild, which
 also groups the reports already stored. The manager has a sharing switch on its Settings tab (same file as the
 in-game checkbox).
 

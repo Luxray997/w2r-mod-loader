@@ -24,7 +24,7 @@ use w2r_stats::game::{self, GameInfo};
 use w2r_stats::identity::{self, Identity};
 use w2r_stats::inflight::{self, Inflight};
 use w2r_stats::queue::Queue;
-use w2r_stats::report::{self, Outcome, Phase, Report, ResultInfo};
+use w2r_stats::report::{self, Outcome, Phase, PlayerScore, Report, ResultInfo};
 use w2r_stats::slot::{self, Player};
 use w2r_stats::{envelope, hex};
 
@@ -48,7 +48,21 @@ static LAST: Mutex<Option<Raw>> = Mutex::new(None);
 static REPORTER: Mutex<Option<Reporter>> = Mutex::new(None);
 
 /// Absolute addresses of the globals the snapshot reads.
+/// The game's score tables (`ScoreUnitsKilled` and the rest): one entry per player slot, u16 for
+/// the counts and u32 for the mined resources. The replay panel reads the same ones.
+#[derive(Clone, Copy)]
+struct ScoreAddrs {
+    kills: usize,
+    razed: usize,
+    lost: usize,
+    buildings_lost: usize,
+    gold: usize,
+    lumber: usize,
+    oil: usize,
+}
+
 struct Addrs {
+    score: Option<ScoreAddrs>,
     results: usize,
     local: usize,
     owner: usize,
@@ -208,7 +222,22 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "match end: symbols missing");
         return false;
     };
+    let score = (|| {
+        Some(ScoreAddrs {
+            kills: get("ScoreUnitsKilled")?,
+            razed: get("ScoreBuildingsRazed")?,
+            lost: get("ScoreUnitsLost")?,
+            buildings_lost: get("ScoreBuildingsLost")?,
+            gold: get("ScoreGoldMined")?,
+            lumber: get("ScoreLumberMined")?,
+            oil: get("ScoreOilMined")?,
+        })
+    })();
+    if score.is_none() {
+        log.line(W2R_LOG_ERROR, "host", "match end: score symbols missing; results go without kills");
+    }
     let _ = ADDRS.set(Addrs {
+        score,
         results,
         local,
         owner,
@@ -303,6 +332,8 @@ struct Raw {
     names: [u8; 0x100],
     /// The game's lobby block (settings), `game::BLOCK_LEN` bytes.
     lobby: Vec<u8>,
+    /// The score tables for all eight slots, or `None` when their symbols are missing.
+    score: Option<[PlayerScore; 8]>,
 }
 
 /// # Safety
@@ -314,7 +345,26 @@ unsafe fn read_raw() -> Option<Raw> {
         for (i, s) in slots.iter_mut().enumerate() {
             *s = core::ptr::read((a.slots + i * slot::SLOT_LEN) as *const [u8; slot::SLOT_LEN]);
         }
+        let score = a.score.map(|t| {
+            let mut all = [PlayerScore::default(); 8];
+            for (p, entry) in all.iter_mut().enumerate() {
+                let u16_at = |base: usize| core::ptr::read_unaligned((base + p * 2) as *const u16);
+                let u32_at = |base: usize| core::ptr::read_unaligned((base + p * 4) as *const u32);
+                *entry = PlayerScore {
+                    slot: p as u8,
+                    kills: u32::from(u16_at(t.kills)),
+                    razed: u32::from(u16_at(t.razed)),
+                    lost: u32::from(u16_at(t.lost)),
+                    buildings_lost: u32::from(u16_at(t.buildings_lost)),
+                    gold: u32_at(t.gold),
+                    lumber: u32_at(t.lumber),
+                    oil: u32_at(t.oil),
+                };
+            }
+            all
+        });
         Some(Raw {
+            score,
             local: *(a.local as *const u8),
             results: core::ptr::read(a.results as *const [u8; 8]),
             owner: core::ptr::read(a.owner as *const [u8; 0x20]),
@@ -343,6 +393,17 @@ pub(crate) fn read_map() -> String {
 }
 
 impl Raw {
+    /// The score of every slot in `players`, in roster order.
+    fn scores(&self, players: &[Player]) -> Option<Vec<PlayerScore>> {
+        let all = self.score.as_ref()?;
+        Some(
+            players
+                .iter()
+                .filter_map(|p| all.get(usize::from(p.slot)).copied())
+                .collect(),
+        )
+    }
+
     fn format(&self, tag: &str) -> String {
         let mut line = format!(
             "{tag}: local={} results={:?} turns={} sync_mismatch={}\n  owner[0x20]={:02x?}",
@@ -623,6 +684,7 @@ fn report_result(raw: &Raw) {
         code,
         turns: raw.turns,
         sync_mismatch: raw.mismatch,
+        score: raw.scores(&ctx.players),
     };
     if let Some(report) = build(rep, &ctx, Phase::Result, Some(info)) {
         seal_and_queue(rep, &report);
