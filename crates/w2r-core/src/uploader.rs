@@ -116,7 +116,20 @@ struct WinHttp;
 
 impl Poster for WinHttp {
     fn post_json(&self, url: &str, body: &[u8]) -> Result<Vec<u8>, Error> {
-        winhttp::post(url, body)
+        let (status, answer) = winhttp::request("POST", url, &[], body)?;
+        if status != 200 {
+            return Err(Error::new("network", format!("service answered {status}")));
+        }
+        Ok(answer)
+    }
+
+    fn put_bytes(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), Error> {
+        winhttp::request("PUT", url, headers, body)
     }
 }
 
@@ -167,7 +180,13 @@ mod winhttp {
         s.encode_utf16().chain(Some(0)).collect()
     }
 
-    pub fn post(url: &str, body: &[u8]) -> Result<Vec<u8>, Error> {
+    /// One request; any HTTP status is returned, only transport failures are errors.
+    pub fn request(
+        verb: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), Error> {
         let (host, port, path) =
             split_url(url).ok_or_else(|| Error::new("bad_url", url.to_owned()))?;
         let len = u32::try_from(body.len()).map_err(|_| Error::new("too_large", "body"))?;
@@ -190,7 +209,7 @@ mod winhttp {
                 WinHttpConnect(session.0, host_w.as_ptr(), port, 0),
                 "WinHttpConnect",
             )?;
-            let verb = wide("POST");
+            let verb = wide(verb);
             let path_w = wide(path);
             let request = Handle::new(
                 WinHttpOpenRequest(
@@ -204,7 +223,14 @@ mod winhttp {
                 ),
                 "WinHttpOpenRequest",
             )?;
-            let headers = wide("content-type: application/json");
+            let mut header_text = String::from("content-type: application/json\r\n");
+            for (name, value) in headers {
+                // Names and values are ours (hex and numbers); drop anything that would end a line.
+                if !name.contains(['\r', '\n', ':']) && !value.contains(['\r', '\n']) {
+                    header_text.push_str(&format!("{name}: {value}\r\n"));
+                }
+            }
+            let headers = wide(&header_text);
             if WinHttpSendRequest(
                 request.0,
                 headers.as_ptr(),
@@ -250,10 +276,7 @@ mod winhttp {
                     return Err(Error::new("network", "response too large"));
                 }
             }
-            if status != 200 {
-                return Err(Error::new("network", format!("service answered {status}")));
-            }
-            Ok(out)
+            Ok((status as u16, out))
         }
     }
 }
@@ -262,7 +285,12 @@ mod winhttp {
 mod winhttp {
     use super::Error;
 
-    pub fn post(_url: &str, _body: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn request(
+        _verb: &str,
+        _url: &str,
+        _headers: &[(&str, String)],
+        _body: &[u8],
+    ) -> Result<(u16, Vec<u8>), Error> {
         Err(Error::new("network", "no transport on this platform"))
     }
 }

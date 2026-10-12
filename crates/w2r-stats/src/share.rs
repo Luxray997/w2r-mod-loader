@@ -58,7 +58,8 @@ fn url_ok(u: &str) -> bool {
 }
 
 pub const FILE: &str = "sharing.json";
-const LEDGER: &str = "upload-state.json";
+/// The ledger of report files; replays keep their own (`w2r_replay::upload`).
+pub const REPORT_LEDGER: &str = "upload-state.json";
 const MAX_BYTES: usize = 64 * 1024;
 const BATCH: usize = 20;
 
@@ -157,7 +158,7 @@ fn write_atomic(path: PathBuf, bytes: &[u8]) -> std::io::Result<()> {
 
 /// What the server decided about one report file; kept so it is never sent again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fate {
+pub enum Fate {
     Sent,
     /// The server refused it for a reason that will not change (it is not retried).
     Rejected,
@@ -166,7 +167,7 @@ enum Fate {
 }
 
 impl Fate {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Fate::Sent => "sent",
             Fate::Rejected => "rejected",
@@ -174,7 +175,7 @@ impl Fate {
         }
     }
 
-    fn parse(s: &str) -> Option<Fate> {
+    pub fn parse(s: &str) -> Option<Fate> {
         match s {
             "sent" => Some(Fate::Sent),
             "rejected" => Some(Fate::Rejected),
@@ -184,12 +185,13 @@ impl Fate {
     }
 }
 
+/// File name to what the server decided, kept in `config\<name>` so nothing is sent twice.
 #[derive(Debug, Default)]
-struct Ledger(BTreeMap<String, Fate>);
+pub struct Ledger(pub BTreeMap<String, Fate>);
 
 impl Ledger {
-    fn load(root: &Path) -> Ledger {
-        let Ok(raw) = fs::read(root.join("config").join(LEDGER)) else {
+    pub fn load(root: &Path, name: &str) -> Ledger {
+        let Ok(raw) = fs::read(root.join("config").join(name)) else {
             return Ledger::default();
         };
         let Ok(doc) = json::parse(&raw) else {
@@ -204,7 +206,7 @@ impl Ledger {
         Ledger(map)
     }
 
-    fn save(&self, root: &Path) -> Result<(), Error> {
+    pub fn save(&self, root: &Path, name: &str) -> Result<(), Error> {
         let files = self
             .0
             .iter()
@@ -215,7 +217,7 @@ impl Ledger {
             ("files".into(), Value::Object(files)),
         ]);
         fs::create_dir_all(root.join("config"))?;
-        write_atomic(root.join("config").join(LEDGER), doc.to_json().as_bytes())?;
+        write_atomic(root.join("config").join(name), doc.to_json().as_bytes())?;
         Ok(())
     }
 }
@@ -223,6 +225,15 @@ impl Ledger {
 /// How the reports reach the service. A trait so tests need no network.
 pub trait Poster {
     fn post_json(&self, url: &str, body: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// PUTs `body` with extra headers. Any HTTP status comes back as `Ok((status, answer))`, so
+    /// the caller can tell "try again later" from "never": only transport failures are errors.
+    fn put_bytes(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), Error>;
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -257,7 +268,7 @@ pub fn upload(root: &Path, settings: &Settings, poster: &dyn Poster) -> Result<S
     }
     let endpoint = settings.endpoint()?;
     let queue = Queue::open(&root.join("outbox"))?;
-    let mut ledger = Ledger::load(root);
+    let mut ledger = Ledger::load(root, REPORT_LEDGER);
     let files = queue.list();
     let names: Vec<String> = files
         .iter()
@@ -314,7 +325,7 @@ pub fn upload(root: &Path, settings: &Settings, poster: &dyn Poster) -> Result<S
         }
     }
     summary.pending = todo.len() - summary.sent - summary.rejected;
-    ledger.save(root)?;
+    ledger.save(root, REPORT_LEDGER)?;
     match failure {
         Some(e) => Err(e),
         None => Ok(summary),
@@ -403,6 +414,15 @@ mod tests {
                 .borrow_mut()
                 .push(String::from_utf8_lossy(body).into_owned());
             self.answer.clone().map(String::into_bytes)
+        }
+
+        fn put_bytes(
+            &self,
+            _url: &str,
+            _headers: &[(&str, String)],
+            _body: &[u8],
+        ) -> Result<(u16, Vec<u8>), Error> {
+            Err(Error::new("network", "not used by these tests"))
         }
     }
 
