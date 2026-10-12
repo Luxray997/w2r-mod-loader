@@ -38,7 +38,7 @@ async fn within_limit(env: &Env, binding: &str, key: &str) -> bool {
 }
 
 #[event(fetch)]
-async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
     let path = req.path();
     if path != "/v1/health" {
@@ -59,7 +59,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             crate::api::leaderboard(&env.d1("w2r_stats")?, &req.url()?).await
         }
         (Method::Get, "/v1/games") => crate::api::recent_games(&env.d1("w2r_stats")?, &req.url()?).await,
-        (Method::Post, "/v1/reports") => post_reports(req, env).await,
+        (Method::Post, "/v1/reports") => post_reports(req, env, &ctx).await,
         (Method::Put, "/v1/replays") => put_replay(req, env).await,
         _ => Response::error("not found", 404),
     }
@@ -80,7 +80,7 @@ async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 
 /// Body: `{"reports":[<envelope>, ...]}`. Answer: one verdict per envelope, in order. A report that
 /// is already stored counts as accepted, so a client that lost the answer can safely resend.
-async fn post_reports(mut req: Request, env: Env) -> Result<Response> {
+async fn post_reports(mut req: Request, env: Env, ctx: &Context) -> Result<Response> {
     let bytes = req.bytes().await?;
     if bytes.len() > MAX_BODY {
         return Response::error("too large", 413);
@@ -108,6 +108,17 @@ async fn post_reports(mut req: Request, env: Env) -> Result<Response> {
             }
             // Reasons are fixed ASCII strings without quotes or backslashes.
             Err(why) => format!(r#"{{"ok":false,"why":"{}"}}"#, why.reason()),
+        });
+    }
+    // Judge and rate what arrived without making the player wait: the same work the scheduled job
+    // does, run after the answer is sent. The cron trigger stays as a backup and for the nightly
+    // rebuild. Together with the inserts it stays under a free-plan invocation's 50 D1 queries
+    // (20 reports at most, then about a dozen).
+    if let Ok(db) = env.d1("w2r_stats") {
+        ctx.wait_until(async move {
+            if let Err(e) = crate::jobs::scheduled(&db, now_secs(), false).await {
+                console_error!("after upload: {e}");
+            }
         });
     }
     let mut resp = Response::ok(format!(r#"{{"results":[{}]}}"#, verdicts.join(",")))?;

@@ -149,7 +149,7 @@ fn verdict_stmt(
 ) -> Result<D1PreparedStatement> {
     db.prepare(
         "UPDATE games SET status = ?2, reason = ?3, winner_team = ?4, turns = ?5, reports = ?6, \
-         updated = ?7 WHERE id = ?1",
+         updated = ?7, corroborated = ?8 WHERE id = ?1",
     )
     .bind(&[
         num(id),
@@ -159,7 +159,30 @@ fn verdict_stmt(
         v.turns.map_or(JsValue::NULL, |t| num(f64::from(t))),
         num(reports as f64),
         num(now as f64),
+        num(if v.corroborated { 1.0 } else { 0.0 }),
     ])
+}
+
+/// How many corroborated games each of `keys` has taken part in (what its word is worth in a
+/// dispute).
+async fn trust_of(db: &D1Database, keys: &BTreeSet<String>) -> Result<BTreeMap<String, u32>> {
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let binds: Vec<JsValue> = keys.iter().map(|k| text(k)).collect();
+    let found = rows(
+        db,
+        &format!(
+            "SELECT r.key AS key, COUNT(DISTINCT r.game_id) AS c FROM reports r \
+             JOIN games g ON g.id = r.game_id \
+             WHERE g.corroborated = 1 AND r.phase = 'result' AND r.ignored = 0 AND r.key IN ({}) \
+             GROUP BY r.key",
+            placeholders(binds.len())
+        ),
+        &binds,
+    )
+    .await?;
+    Ok(found.iter().map(|r| (s(r, "key"), n(r, "c") as u32)).collect())
 }
 
 /// Groups loose reports into games and judges the games they touched. Returns how many reports it
@@ -328,6 +351,8 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
     )
     .await?;
     let trusted = trusted(db).await?;
+    let keys: BTreeSet<String> = vote_rows.iter().map(|v| s(v, "key")).collect();
+    let trust = trust_of(db, &keys).await?;
 
     struct Rated {
         id: f64,
@@ -348,7 +373,7 @@ async fn judge_games(db: &D1Database, ids: &BTreeSet<i64>, now: u64) -> Result<(
             .filter(|v| n(v, "game_id") == id)
             .map(vote_of)
             .collect();
-        let verdict = games::judge(&roster, &votes, &trusted);
+        let verdict = games::judge(&roster, &votes, &trusted, &trust);
         statements.push(verdict_stmt(db, id, &verdict, votes.len(), now)?);
         let was_rated = n(g, "rated") != 0.0;
         let same_winner = verdict.winner_team.map(f64::from) == g.get("winner_team").and_then(J::as_f64);
@@ -457,13 +482,28 @@ pub async fn rebuild(db: &D1Database, now: u64) -> Result<usize> {
     let mut standings: BTreeMap<String, Standing> = BTreeMap::new();
     let mut last_seen: BTreeMap<String, u64> = BTreeMap::new();
     let mut statements = Vec::new();
+    // First pass, without track records: which games both sides agree on, and so who has earned
+    // trust. The second pass uses that to settle disputes.
+    let mut trust: BTreeMap<String, u32> = BTreeMap::new();
+    for g in &game_rows {
+        let Some(roster) = games::roster_from_json(&s(g, "roster")) else {
+            continue;
+        };
+        let votes = by_game.get(&(n(g, "id") as i64)).cloned().unwrap_or_default();
+        if games::judge(&roster, &votes, &trusted, &BTreeMap::new()).corroborated {
+            let keys: BTreeSet<&str> = votes.iter().map(|v| v.key.as_str()).collect();
+            for k in keys {
+                *trust.entry(k.to_string()).or_default() += 1;
+            }
+        }
+    }
     for g in &game_rows {
         let id = n(g, "id");
         let Some(roster) = games::roster_from_json(&s(g, "roster")) else {
             continue;
         };
         let votes = by_game.remove(&(id as i64)).unwrap_or_default();
-        let verdict = games::judge(&roster, &votes, &trusted);
+        let verdict = games::judge(&roster, &votes, &trusted, &trust);
         statements.push(verdict_stmt(db, id, &verdict, votes.len(), now)?);
         let (rated, changes) = match (verdict.rated, verdict.winner_team) {
             (true, Some(winner)) => {

@@ -63,11 +63,12 @@ CREATE TABLE IF NOT EXISTS games (
   peasants_only INTEGER,
   fixed_start   INTEGER,
   roster    TEXT    NOT NULL,           -- JSON players: tag, name, kind, team, race
-  status    TEXT    NOT NULL DEFAULT 'unverified',  -- unverified | verified | disputed
+  status    TEXT    NOT NULL DEFAULT 'unverified',  -- verified | disputed | unverified (no result)
   reason    TEXT,
   winner_team INTEGER,
   turns     INTEGER,                    -- median of the reports that back the winner
   reports   INTEGER NOT NULL DEFAULT 0, -- result reports that counted
+  corroborated INTEGER NOT NULL DEFAULT 0, -- 1 when both sides reported and agree
   rated     INTEGER NOT NULL DEFAULT 0, -- 1 once it has moved the ratings
   changes   TEXT,                       -- JSON: who gained or lost how much
   updated   INTEGER NOT NULL DEFAULT 0

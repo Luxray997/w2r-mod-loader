@@ -1,9 +1,14 @@
 //! From several players' reports to one verified game and its rating changes. Pure: rosters and
 //! votes in, a verdict out, so every rule here is tested natively; `app` only moves rows.
 //!
-//! The rule of thumb is the design doc's: **when in doubt, don't rate.** A game is rated only
-//! when its result is agreed by both sides (or vouched for by a trusted key), and any
-//! contradiction makes it `disputed` and keeps it out of the ladder.
+//! The policy while few players run the mod is **lenient**: one reporter's account of a game is
+//! enough to rate it, because most opponents will not be reporting at all, and nobody is assumed to
+//! be cheating yet. Two things make that safe enough:
+//!
+//! - when both sides do report and agree, the game is `corroborated`, and every key that took part
+//!   in such games earns weight (`trust`);
+//! - when reports contradict each other, the side whose reporters have the better track record
+//!   wins (`TRUST_RATIO`), otherwise the game is `disputed` and stays out of the ladder.
 //!
 //! Policy that can be changed in one place:
 //! - `MIN_TURNS`: a result from a game shorter than this decides nothing (an aborted start).
@@ -18,6 +23,10 @@ use w2r_stats::slot::{Kind, OBSERVER_TEAM, Player};
 
 /// A win or loss reported from fewer turns than this decides nothing.
 pub const MIN_TURNS: u32 = 600;
+/// In a dispute, one side's backers must weigh at least this many times the other's to win it.
+pub const TRUST_RATIO: u32 = 3;
+/// The weight of an allowlisted key: more than any track record.
+const TRUSTED_WEIGHT: u32 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -59,7 +68,9 @@ pub struct Verdict {
     pub turns: Option<u32>,
     /// Why the game has this status, a fixed phrase.
     pub reason: &'static str,
-    /// Whether the game goes into the ratings: verified, humans only, two sides.
+    /// Both sides reported and agree. Only then do the reporters earn trust.
+    pub corroborated: bool,
+    /// Whether the game goes into the ratings: accepted, humans only, two sides.
     pub rated: bool,
 }
 
@@ -69,6 +80,7 @@ fn unverified(reason: &'static str) -> Verdict {
         winner_team: None,
         turns: None,
         reason,
+        corroborated: false,
         rated: false,
     }
 }
@@ -103,9 +115,24 @@ fn claim(roster: &[Player], vote: &Vote, other_team: u8) -> Option<u8> {
     }
 }
 
+/// What a key's word is worth in a dispute: 1, plus one for each corroborated game it took part in
+/// (`trust`), or far more for an allowlisted key.
+fn weight(key: &str, trusted: &BTreeSet<String>, trust: &BTreeMap<String, u32>) -> u32 {
+    if trusted.contains(key) {
+        TRUSTED_WEIGHT
+    } else {
+        1 + trust.get(key).copied().unwrap_or(0)
+    }
+}
+
 /// Decides a game from its roster and the votes of its reporters. `trusted` is the set of
-/// allowlisted keys, any of which can verify a game it took part in on its own.
-pub fn judge(roster: &[Player], votes: &[Vote], trusted: &BTreeSet<String>) -> Verdict {
+/// allowlisted keys; `trust` counts each key's corroborated games.
+pub fn judge(
+    roster: &[Player],
+    votes: &[Vote],
+    trusted: &BTreeSet<String>,
+    trust: &BTreeMap<String, u32>,
+) -> Verdict {
     let sides = teams(roster);
     if sides.len() != 2 {
         return unverified("not two teams");
@@ -133,44 +160,69 @@ pub fn judge(roster: &[Player], votes: &[Vote], trusted: &BTreeSet<String>) -> V
         return unverified("no result claimed (left, too short or out of sync)");
     }
     let winners: BTreeSet<u8> = claims.iter().map(|(_, w)| *w).collect();
-    if winners.len() > 1 {
-        return Verdict {
-            status: Status::Disputed,
-            winner_team: None,
-            turns: None,
-            reason: "reports disagree on the winner",
-            rated: false,
-        };
-    }
-    let winner = *winners.iter().next().unwrap();
-    // Each key counts once, from the side it plays on.
-    let mut backing: BTreeMap<&str, &Vote> = BTreeMap::new();
-    for (v, _) in &claims {
-        backing.entry(v.key.as_str()).or_insert(v);
-    }
+    // The weight behind each candidate winner: each key counts once.
+    let backing_of = |w: u8| -> BTreeMap<&str, &Vote> {
+        let mut m = BTreeMap::new();
+        for (v, claimed) in &claims {
+            if *claimed == w {
+                m.entry(v.key.as_str()).or_insert(*v);
+            }
+        }
+        m
+    };
+    let mut settled = false;
+    let winner = if winners.len() > 1 {
+        let mut weights: Vec<(u32, u8)> = winners
+            .iter()
+            .map(|w| {
+                let total = backing_of(*w)
+                    .keys()
+                    .map(|k| weight(k, trusted, trust))
+                    .fold(0u32, u32::saturating_add);
+                (total, *w)
+            })
+            .collect();
+        weights.sort_unstable_by(|x, y| y.cmp(x));
+        let (top, second) = (weights[0], weights[1]);
+        if top.0 >= second.0.saturating_mul(TRUST_RATIO) {
+            settled = true;
+            top.1
+        } else {
+            return Verdict {
+                status: Status::Disputed,
+                winner_team: None,
+                turns: None,
+                reason: "reports disagree on the winner",
+                corroborated: false,
+                rated: false,
+            };
+        }
+    } else {
+        *winners.iter().next().unwrap()
+    };
+    let backing = backing_of(winner);
     let from_winners = backing.values().any(|v| v.team == winner);
     let from_losers = backing.values().any(|v| v.team != winner);
+    let corroborated = from_winners && from_losers && !settled;
     let vouched = backing.keys().any(|k| trusted.contains(*k));
-    let status = if (from_winners && from_losers) || vouched {
-        Status::Verified
-    } else {
-        Status::Unverified
-    };
     let mut turns: Vec<u32> = backing.values().map(|v| v.turns).collect();
     turns.sort_unstable();
     let all_human = roster.iter().all(|p| p.kind == Kind::Human || p.team == OBSERVER_TEAM);
     Verdict {
-        status,
+        status: Status::Verified,
         winner_team: Some(winner),
         turns: Some(turns[turns.len() / 2]),
-        reason: match status {
-            Status::Verified if vouched && !(from_winners && from_losers) => {
-                "vouched for by a trusted key"
-            }
-            Status::Verified => "both sides agree",
-            _ => "only one side has reported",
+        reason: if settled {
+            "settled by the reporters' track record"
+        } else if corroborated {
+            "both sides agree"
+        } else if vouched {
+            "vouched for by a trusted key"
+        } else {
+            "single report, accepted on trust"
         },
-        rated: status == Status::Verified && all_human,
+        corroborated,
+        rated: all_human,
     }
 }
 
@@ -423,18 +475,28 @@ mod tests {
             &duel(),
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "loss", 5002)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!((v.status, v.winner_team, v.rated), (Status::Verified, Some(1), true));
         assert_eq!(v.turns, Some(5002));
     }
 
     #[test]
-    fn one_side_alone_does_not_verify() {
+    fn one_side_alone_is_accepted_on_trust_but_not_called_corroborated() {
         for only in [vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "loss", 5000)] {
-            let v = judge(&duel(), &[only], &none());
-            assert_eq!(v.status, Status::Unverified);
-            assert!(!v.rated);
+            let v = judge(&duel(), &[only], &none(), &BTreeMap::new());
+            assert_eq!((v.status, v.winner_team, v.rated), (Status::Verified, Some(1), true));
+            assert!(!v.corroborated);
+            assert_eq!(v.reason, "single report, accepted on trust");
         }
+        // and both sides agreeing is what earns the label
+        let both = judge(
+            &duel(),
+            &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "loss", 5000)],
+            &none(),
+            &BTreeMap::new(),
+        );
+        assert!(both.corroborated);
     }
 
     #[test]
@@ -443,21 +505,40 @@ mod tests {
             &duel(),
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "win", 5000)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!((v.status, v.winner_team, v.rated), (Status::Disputed, None, false));
     }
 
     #[test]
+    fn a_dispute_goes_to_the_side_with_the_better_track_record() {
+        let votes = [vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "win", 5000)];
+        // Ann's key has taken part in five corroborated games, Bob's in none: 6 against 1.
+        let trust: BTreeMap<String, u32> = [("k1".to_string(), 5)].into();
+        let v = judge(&duel(), &votes, &none(), &trust);
+        assert_eq!((v.status, v.winner_team, v.rated), (Status::Verified, Some(1), true));
+        assert_eq!(v.reason, "settled by the reporters' track record");
+        assert!(!v.corroborated, "a settled dispute earns nobody trust");
+        // A small edge is not enough: 2 against 1 is under the ratio.
+        let small: BTreeMap<String, u32> = [("k1".to_string(), 1)].into();
+        assert_eq!(judge(&duel(), &votes, &none(), &small).status, Status::Disputed);
+        // and an allowlisted key outweighs any record
+        let allow: BTreeSet<String> = ["k2".to_string()].into();
+        let v = judge(&duel(), &votes, &allow, &trust);
+        assert_eq!(v.winner_team, Some(2));
+    }
+
+    #[test]
     fn a_trusted_key_verifies_alone_but_only_for_a_game_it_played() {
         let trusted: BTreeSet<String> = ["k1".to_string()].into();
-        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000)], &trusted);
+        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000)], &trusted, &BTreeMap::new());
         assert_eq!((v.status, v.rated), (Status::Verified, true));
         // the trusted key reporting under a tag that is not in the roster counts for nothing
         let stranger = Vote {
             tag: "Eve#1".into(),
             ..vote("k1", "Eve", 1, "win", 5000)
         };
-        assert_eq!(judge(&duel(), &[stranger], &trusted).status, Status::Unverified);
+        assert_eq!(judge(&duel(), &[stranger], &trusted, &BTreeMap::new()).status, Status::Unverified);
     }
 
     #[test]
@@ -466,6 +547,7 @@ mod tests {
             &duel(),
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "left", 4000)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!((v.status, v.winner_team), (Status::Verified, Some(1)));
         // two on Bob's side: one leaving says nothing about who won
@@ -478,8 +560,10 @@ mod tests {
             &team,
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "left", 4000)],
             &none(),
+            &BTreeMap::new(),
         );
-        assert_eq!(v.status, Status::Unverified);
+        // Ann alone is accepted on trust; Bob's leaving added nothing.
+        assert_eq!((v.status, v.corroborated), (Status::Verified, false));
     }
 
     #[test]
@@ -488,22 +572,24 @@ mod tests {
             &duel(),
             &[vote("k1", "Ann", 1, "win", 100), vote("k2", "Bob", 2, "loss", 100)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!(short.status, Status::Unverified);
         let desync = Vote {
             sync_mismatch: 1,
             ..vote("k2", "Bob", 2, "loss", 5000)
         };
-        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000), desync], &none());
-        assert_eq!(v.status, Status::Unverified);
+        // Bob's out-of-sync report is ignored; Ann's win stands alone.
+        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000), desync], &none(), &BTreeMap::new());
+        assert_eq!((v.status, v.corroborated, v.reason), (Status::Verified, false, "single report, accepted on trust"));
     }
 
     #[test]
     fn a_reporter_must_be_in_the_roster_under_that_tag_and_team() {
         let wrong_team = vote("k2", "Bob", 1, "loss", 5000);
-        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000), wrong_team], &none());
-        assert_eq!(v.status, Status::Unverified);
-        let v = judge(&duel(), &[], &none());
+        let v = judge(&duel(), &[vote("k1", "Ann", 1, "win", 5000), wrong_team], &none(), &BTreeMap::new());
+        assert!(!v.corroborated, "the vote under the wrong team does not count");
+        let v = judge(&duel(), &[], &none(), &BTreeMap::new());
         assert_eq!(v.reason, "no reporter in the roster");
     }
 
@@ -519,6 +605,7 @@ mod tests {
             &roster,
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "loss", 5000)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!((v.status, v.rated), (Status::Verified, false));
     }
@@ -531,6 +618,7 @@ mod tests {
             &roster,
             &[vote("k1", "Ann", 1, "win", 5000), vote("k2", "Bob", 2, "loss", 5000)],
             &none(),
+            &BTreeMap::new(),
         );
         assert_eq!((v.status, v.rated), (Status::Verified, true));
         let mut s = BTreeMap::new();

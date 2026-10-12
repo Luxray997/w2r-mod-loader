@@ -69,23 +69,34 @@ Not captured yet: AI difficulty, per-player tallies over time (derivable from re
 
 ## Games, ratings and the read API
 
-Uploads only store reports. A scheduled job (`server/worker/src/jobs.rs`, every 5 minutes, plus a
-nightly rebuild at 03:00 UTC) does the rest, because a free-plan invocation may run at most 50 D1
-queries. So a game is judged up to five minutes after its last report arrives.
+Uploads store reports and then, after the answer is sent, run the judging job in the background
+(`ctx.wait_until`; `server/worker/src/jobs.rs`), because a free-plan invocation may run at most 50
+D1 queries, so the job works in a few batched queries. The same job runs from a cron trigger every
+5 minutes as a backup, and a nightly one (03:00 UTC) rebuilds every rating. (On 2026-10-12 the cron
+triggers had not fired in the first 20 minutes after deploying; the post-upload run does not
+depend on them.)
 
 - **Binding:** a key speaks for the first BattleTag it reported under (`bindings`). Reports under
   any other tag are kept but `ignored`.
 - **Grouping:** reports with the same roster hash that began within 300 s of each other are one
   `games` row (`games::plan`). The same people playing again an hour later is a new game.
-- **Judging** (`games::judge`, all in one place, with tests): a vote is a result report from a
+- **Judging** (`games::judge`, all in one place, with tests). The policy is **lenient while few
+  players run the mod**: most opponents will not be reporting, so one reporter's account of a game
+  is enough to rate it, and nobody is assumed to be cheating yet. A vote is a result report from a
   reporter who is in the roster under that tag and team, with no desync flag and at least 600 turns
   (`MIN_TURNS`). `win` means that team won, `loss` means the other one did, and `left` counts as a
   loss only when the leaver was the last human on their side. Then:
-  - **verified**: both sides back the same winner (one reporter from each), or a key in
-    `trusted_keys` is among the reporters;
-  - **disputed**: reports name different winners (kept out of the ratings);
-  - **unverified**: anything else, mostly "only one side has reported" or three-way games.
-- **Rated** means verified, two sides, no computers. Observers are never rated.
+  - **verified** (rated): the votes name one winner. If one reporter from each side agrees the game
+    is also **corroborated**; otherwise the reason reads "single report, accepted on trust";
+  - **trust:** a key's weight is 1 plus the number of corroborated games it has taken part in (an
+    allowlisted key in `trusted_keys` outweighs any record). Only corroborated games earn it;
+  - **dispute:** when reports name different winners, the side whose reporters weigh at least 3
+    times the other's (`TRUST_RATIO`) wins ("settled by the reporters' track record", not itself
+    corroborated); otherwise the game is **disputed** and stays out of the ratings;
+  - **unverified**: no usable result (too short, left, out of sync), or not two sides.
+- **Rated** means verified, two sides, no computers. Observers are never rated. A single report
+  that is later contradicted by the other side turns the game into a dispute (or settles it by
+  track record), and the next rebuild takes the rating back.
 - **Ratings:** TrueSkill (`w2r_stats::rating`), applied as games become verified. A game that is
   older than one already rated, or a verdict that later reverses, sets `meta.rebuild`; the job then
   recomputes every rating from the games in time order (at most once an hour, and every night). A
@@ -101,8 +112,8 @@ queries. So a game is judged up to five minutes after its last report arrives.
   once). With a handful of known players that is acceptable; the trusted list and `ignored`
   are the tools if it is abused.
 
-Migration `0005` adds the columns and tables and asks for a first rebuild, which also groups the
-reports already stored. The manager has a sharing switch on its Settings tab (same file as the
+Migrations `0005` (columns and tables) and `0006` (the `corroborated` flag) ask for a rebuild, which
+also groups the reports already stored. The manager has a sharing switch on its Settings tab (same file as the
 in-game checkbox).
 
 ## Local testing (done 2026-10-11)
