@@ -75,17 +75,17 @@ fn load(reg: &mut Registry, id: &str, path: &Path) -> Result<usize, LoadError> {
 }
 
 #[test]
-fn hello_plugin_logs_on_load_and_receives_its_events() {
+fn basic_plugin_logs_on_load_and_receives_its_events() {
     let (mut reg, log) = registry();
-    load(&mut reg, "hello", &dll("hello_plugin")).unwrap();
-    assert!(log.has("[1] hello: hello from hello_plugin"));
+    load(&mut reg, "basic", &dll("basic_plugin")).unwrap();
+    assert!(log.has("[1] basic: basic from basic_plugin"));
 
     reg.dispatch(W2R_EVT_LOBBY_LEAVE, core::ptr::null());
     assert_eq!(log.count("event 1"), 0);
-    assert_eq!(log.count("[1] hello: event 2"), 1);
+    assert_eq!(log.count("[1] basic: event 2"), 1);
     reg.dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
-    assert!(log.has("[1] hello: event 1"));
-    assert!(reg.find("hello").unwrap().is_active());
+    assert!(log.has("[1] basic: event 1"));
+    assert!(reg.find("basic").unwrap().is_active());
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn a_crashing_dll_is_disabled_and_the_game_and_other_plugins_go_on() {
     let (mut reg, log) = registry();
     // The crasher comes first so dispatch has to carry on past it.
     load(&mut reg, "crash", &dll("crash_plugin")).unwrap();
-    load(&mut reg, "hello", &dll("hello_plugin")).unwrap();
+    load(&mut reg, "basic", &dll("basic_plugin")).unwrap();
 
     reg.dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
     reg.dispatch(W2R_EVT_LOBBY_ENTER, core::ptr::null());
@@ -111,8 +111,8 @@ fn a_crashing_dll_is_disabled_and_the_game_and_other_plugins_go_on() {
         "disabled plugin was called again"
     );
     assert!(!log.has("unreachable"));
-    assert_eq!(log.count("[1] hello: event 1"), 2);
-    assert!(reg.find("hello").unwrap().is_active());
+    assert_eq!(log.count("[1] basic: event 1"), 2);
+    assert!(reg.find("basic").unwrap().is_active());
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn entry_and_load_failures_are_refused_with_the_spec_codes() {
     assert!(err.detail.starts_with("cannot open"), "{err}");
 
     let err = reg
-        .load_dll("badpin", &dll("hello_plugin"), &[0u8; 32], &[])
+        .load_dll("badpin", &dll("basic_plugin"), &[0u8; 32], &[])
         .unwrap_err();
     assert_eq!(err.code, "E_HASH");
     assert!(err.detail.contains("differs from pin 0000"), "{err}");

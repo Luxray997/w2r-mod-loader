@@ -75,7 +75,7 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    `lobby.rs` turns the lobby window into `LOBBY_ENTER`/`LEAVE`, and `chat.rs` implements
    `chat_send` (lobby chat input + send, rate-limited). The hello-world fixture says hello on
    lobby entry. Verified in the live game on 2026-10-03: guard 197/197 at a relocated base,
-   plugins loaded on the main thread, crash-plugin disabled on its fault, hello-plugin's
+   plugins loaded on the main thread, crash-plugin disabled on its fault, basic-plugin's
    `chat_send` returned OK.
 5. Lobby message service: size, rate and lobby-only limits for every plugin; per-plugin
    subsystem ids. **Done:** `peer.rs` (envelope, tag routing, 32/s per plugin and 128/s
@@ -107,7 +107,7 @@ DLL like the game does. Build and test the host with `--target i686-pc-windows-m
    `W2R_ROOT` must be absolute; `install_dev.ps1` backs up `state.json` and only removes a
    `version.dll` that is ours. Documented, not fixed: the pin covers the entry DLL only, and a
    junction in the plugin path is inside the same-user exclusion (`load-policy.md`).
-Exit: a hello-world plugin prints a chat line on lobby entry and survives a deliberate crash.
+Exit: a basic plugin prints a chat line on lobby entry and survives a deliberate crash.
 
 ### 3. Port wc2r-plus features as first-party plugins
 Status: in progress. Order: handshake, chat, lobby policy, map download. Fix the known review
@@ -206,7 +206,7 @@ from the manager, the specs and the plugin repo. The index is plain JSON on GitH
 is HTTPS plus the SHA-256 and size per package ([index.md](index.md), "Trust"). The old scheme is in
 git history.
 Status, repo at `D:\Tools\w2r-plugins`: `plugins/w2r-chat` (moved from this repo's `crates/chat-plugin`, removed 2026-10-08) and
-`plugins/hello-example`; `tools/w2r-publish` (`check`, `package`, `index`, `verify`); CI and a release
+`tools/w2r-publish` (`check`, `package`, `index`, `verify`); CI and a release
 workflow that builds the packages and publishes the index. **Left:** make `w2r-plugins` public (Pages
 on a private repo needs a paid plan, and users must reach the packages; making `w2rpm` public too
 removes the CI read token), the first publish to `gh-pages`, `crates/chat-plugin` is gone and

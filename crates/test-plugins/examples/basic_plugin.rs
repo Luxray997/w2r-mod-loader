@@ -1,12 +1,12 @@
-//! Logs on load and on lobby events, and shows a few widgets on the plugin screen. The Phase 2
-//! "hello world"; it no longer posts to the lobby chat.
+//! Logs on load and on lobby events, and shows a few widgets on the plugin screen. The basic
+//! well-behaved fixture; it does not post to the lobby chat.
 
 use w2r_abi::*;
 use w2r_test_plugins as tp;
 
 unsafe extern "C" fn on_load(host: *const W2rHost) -> W2rStatus {
     tp::set_host(host);
-    tp::log(W2R_LOG_INFO, "hello from hello_plugin");
+    tp::log(W2R_LOG_INFO, "basic from basic_plugin");
     tp::subscribe(W2R_EVT_LOBBY_LEAVE);
     tp::subscribe(W2R_EVT_LOBBY_ENTER)
 }
@@ -23,20 +23,20 @@ unsafe extern "C" fn on_ui(ui: *const W2rUi) {
     use std::sync::atomic::Ordering::Relaxed;
     let ui = unsafe { &*ui };
     unsafe {
-        (ui.label)(ui.ctx, tp::str("hello_plugin says hi"));
+        (ui.label)(ui.ctx, tp::str("basic_plugin is loaded"));
         let mut greet = GREET.load(Relaxed);
         if (ui.checkbox)(ui.ctx, tp::str("Example option"), &mut greet) != 0 {
             GREET.store(greet, Relaxed);
             tp::log(W2R_LOG_INFO, &format!("greet set to {greet}"));
         }
         let mut volume = VOLUME.load(Relaxed);
-        if (ui.slider_int)(ui.ctx, tp::str("Enthusiasm"), &mut volume, 0, 10) != 0 {
+        if (ui.slider_int)(ui.ctx, tp::str("Level"), &mut volume, 0, 10) != 0 {
             VOLUME.store(volume, Relaxed);
         }
         if (ui.button)(ui.ctx, tp::str("Log a line")) != 0 {
             tp::log(
                 W2R_LOG_INFO,
-                &format!("button pressed, enthusiasm {volume}"),
+                &format!("button pressed, level {volume}"),
             );
         }
     }

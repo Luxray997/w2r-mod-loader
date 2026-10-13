@@ -177,12 +177,12 @@ fn running() -> Build {
 
 #[test]
 fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
-    let mut m = manifest("hello-plugin", "hello_plugin.dll");
+    let mut m = manifest("basic-plugin", "basic_plugin.dll");
     set(&mut m, "capabilities", arr(vec![s("chat.write")]));
-    let mut hello = Plugin::new("hello-plugin", "hello_plugin", m);
+    let mut basic = Plugin::new("basic-plugin", "basic_plugin", m);
     // A stale approval from an older version must not widen the plugin: it gets what its
     // manifest declares, which check 6 proved is within the approvals.
-    hello.approved = vec!["chat.write", "game.read"];
+    basic.approved = vec!["chat.write", "game.read"];
     let off = Plugin {
         enabled: false,
         ..Plugin::new(
@@ -191,18 +191,18 @@ fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
             manifest("off-plugin", "crash_plugin.dll"),
         )
     };
-    let root = root_with("ok", &[hello, off]);
+    let root = root_with("ok", &[basic, off]);
 
     let log = Rc::new(Lines::default());
     let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
     assert_eq!(reg.len(), 1, "{}", log.dump());
-    let slot = reg.find("hello-plugin").unwrap();
+    let slot = reg.find("basic-plugin").unwrap();
     assert!(slot.is_active());
     assert!(slot.has_cap("chat.write"));
     assert!(!slot.has_cap("game.read"), "approved but not declared");
     assert!(!slot.has_cap("hooks.raw"));
     assert!(
-        log.has("[1] hello-plugin: hello from hello_plugin"),
+        log.has("[1] basic-plugin: basic from basic_plugin"),
         "{}",
         log.dump()
     );
@@ -220,35 +220,35 @@ fn an_enabled_valid_plugin_loads_with_the_capabilities_it_declares() {
 /// `hooks.raw` count, in id order, as (id, version, DLL hash); nothing else does.
 #[test]
 fn the_fingerprint_covers_simulation_and_raw_hook_plugins_only() {
-    let mut sim = manifest("sim-plugin", "hello_plugin.dll");
+    let mut sim = manifest("sim-plugin", "basic_plugin.dll");
     set(&mut sim, "affects_simulation", Value::Bool(true));
     set(&mut sim, "version", s("2.1.0"));
-    let mut hooks = manifest("hooky", "hello_plugin.dll");
+    let mut hooks = manifest("hooky", "basic_plugin.dll");
     set(&mut hooks, "capabilities", arr(vec![s("hooks.raw")]));
-    let mut hooky = Plugin::new("hooky", "hello_plugin", hooks);
+    let mut hooky = Plugin::new("hooky", "basic_plugin", hooks);
     hooky.approved = vec!["hooks.raw"];
     let plain = Plugin::new(
         "plain",
-        "hello_plugin",
-        manifest("plain", "hello_plugin.dll"),
+        "basic_plugin",
+        manifest("plain", "basic_plugin.dll"),
     );
-    let mut off = manifest("off-sim", "hello_plugin.dll");
+    let mut off = manifest("off-sim", "basic_plugin.dll");
     set(&mut off, "affects_simulation", Value::Bool(true));
     let off = Plugin {
         enabled: false,
-        ..Plugin::new("off-sim", "hello_plugin", off)
+        ..Plugin::new("off-sim", "basic_plugin", off)
     };
     // Refused before loading (bad pin): not part of the session, so not in the fingerprint.
-    let mut refused_m = manifest("refused", "hello_plugin.dll");
+    let mut refused_m = manifest("refused", "basic_plugin.dll");
     set(&mut refused_m, "affects_simulation", Value::Bool(true));
     let refused = Plugin {
         pin: Some("00".repeat(32)),
-        ..Plugin::new("refused", "hello_plugin", refused_m)
+        ..Plugin::new("refused", "basic_plugin", refused_m)
     };
     let root = root_with(
         "fingerprint",
         &[
-            Plugin::new("sim-plugin", "hello_plugin", sim),
+            Plugin::new("sim-plugin", "basic_plugin", sim),
             hooky,
             plain,
             off,
@@ -265,7 +265,7 @@ fn the_fingerprint_covers_simulation_and_raw_hook_plugins_only() {
     let dll = root
         .join("plugins")
         .join("sim-plugin")
-        .join("hello_plugin.dll");
+        .join("basic_plugin.dll");
     let sha = sha256_of(&dll).unwrap();
     let expected = fingerprint::compute(&[
         fingerprint::Entry {
@@ -295,17 +295,17 @@ fn the_fingerprint_covers_simulation_and_raw_hook_plugins_only() {
 
 #[test]
 fn each_check_refuses_with_its_code_and_leaves_no_slot() {
-    let mut old_build = manifest("old-build", "hello_plugin.dll");
+    let mut old_build = manifest("old-build", "basic_plugin.dll");
     set(
         &mut old_build,
         "game_builds",
         arr(vec![s("1.0.0.1-1.0.2.2817")]),
     );
-    let mut new_abi = manifest("new-abi", "hello_plugin.dll");
+    let mut new_abi = manifest("new-abi", "basic_plugin.dll");
     set(&mut new_abi, "abi", n(2));
-    let mut needs_caps = manifest("needs-caps", "hello_plugin.dll");
+    let mut needs_caps = manifest("needs-caps", "basic_plugin.dll");
     set(&mut needs_caps, "capabilities", arr(vec![s("hooks.raw")]));
-    let mut dep_missing = manifest("dep-missing", "hello_plugin.dll");
+    let mut dep_missing = manifest("dep-missing", "basic_plugin.dll");
     set(
         &mut dep_missing,
         "dependencies",
@@ -317,31 +317,31 @@ fn each_check_refuses_with_its_code_and_leaves_no_slot() {
             manifest: None,
             ..Plugin::new(
                 "no-manifest",
-                "hello_plugin",
-                manifest("no-manifest", "hello_plugin.dll"),
+                "basic_plugin",
+                manifest("no-manifest", "basic_plugin.dll"),
             )
         },
         Plugin {
             manifest: Some(b"{ not json".to_vec()),
-            ..Plugin::new("bad-manifest", "hello_plugin", manifest("x", "x.dll"))
+            ..Plugin::new("bad-manifest", "basic_plugin", manifest("x", "x.dll"))
         },
         Plugin::new(
             "wrong-id",
-            "hello_plugin",
-            manifest("other-id", "hello_plugin.dll"),
+            "basic_plugin",
+            manifest("other-id", "basic_plugin.dll"),
         ),
-        Plugin::new("old-build", "hello_plugin", old_build),
-        Plugin::new("new-abi", "hello_plugin", new_abi),
+        Plugin::new("old-build", "basic_plugin", old_build),
+        Plugin::new("new-abi", "basic_plugin", new_abi),
         Plugin {
             pin: Some("00".repeat(32)),
             ..Plugin::new(
                 "bad-pin",
-                "hello_plugin",
-                manifest("bad-pin", "hello_plugin.dll"),
+                "basic_plugin",
+                manifest("bad-pin", "basic_plugin.dll"),
             )
         },
-        Plugin::new("needs-caps", "hello_plugin", needs_caps),
-        Plugin::new("dep-missing", "hello_plugin", dep_missing),
+        Plugin::new("needs-caps", "basic_plugin", needs_caps),
+        Plugin::new("dep-missing", "basic_plugin", dep_missing),
         Plugin::new(
             "refuses",
             "load_fails",
@@ -363,7 +363,7 @@ fn each_check_refuses_with_its_code_and_leaves_no_slot() {
         ("wrong-id", "E_STATE: manifest id other-id differs"),
         ("old-build", "E_BUILD: game build 1.0.2.2818"),
         ("new-abi", "E_ABI: needs ABI 2"),
-        ("bad-pin", "E_HASH: sha256 of hello_plugin.dll differs"),
+        ("bad-pin", "E_HASH: sha256 of basic_plugin.dll differs"),
         ("needs-caps", "E_CAPS: capability hooks.raw"),
         ("dep-missing", "E_DEP: dependency nope is not loaded"),
         ("refuses", "disabled: E_LOAD: on_load returned -42"),
@@ -388,31 +388,31 @@ fn each_check_refuses_with_its_code_and_leaves_no_slot() {
 
 #[test]
 fn dependencies_load_first_and_version_and_cycles_are_enforced() {
-    let mut needs_hello = manifest("needs-hello", "hello_plugin.dll");
+    let mut needs_basic = manifest("needs-basic", "basic_plugin.dll");
     set(
-        &mut needs_hello,
+        &mut needs_basic,
         "dependencies",
-        arr(vec![dep("hello-plugin", ">=1.0.0,<2.0.0")]),
+        arr(vec![dep("basic-plugin", ">=1.0.0,<2.0.0")]),
     );
-    let mut wants_newer = manifest("wants-newer", "hello_plugin.dll");
+    let mut wants_newer = manifest("wants-newer", "basic_plugin.dll");
     set(
         &mut wants_newer,
         "dependencies",
-        arr(vec![dep("hello-plugin", ">=9.0.0")]),
+        arr(vec![dep("basic-plugin", ">=9.0.0")]),
     );
-    let mut cycle_a = manifest("cycle-a", "hello_plugin.dll");
+    let mut cycle_a = manifest("cycle-a", "basic_plugin.dll");
     set(
         &mut cycle_a,
         "dependencies",
         arr(vec![dep("cycle-b", ">=1.0.0")]),
     );
-    let mut cycle_b = manifest("cycle-b", "hello_plugin.dll");
+    let mut cycle_b = manifest("cycle-b", "basic_plugin.dll");
     set(
         &mut cycle_b,
         "dependencies",
         arr(vec![dep("cycle-a", ">=1.0.0")]),
     );
-    let mut after_crasher = manifest("after-crasher", "hello_plugin.dll");
+    let mut after_crasher = manifest("after-crasher", "basic_plugin.dll");
     set(
         &mut after_crasher,
         "dependencies",
@@ -421,33 +421,33 @@ fn dependencies_load_first_and_version_and_cycles_are_enforced() {
 
     // Listed so that id order alone would load dependents first.
     let plugins = vec![
-        Plugin::new("after-crasher", "hello_plugin", after_crasher),
-        Plugin::new("cycle-a", "hello_plugin", cycle_a),
-        Plugin::new("cycle-b", "hello_plugin", cycle_b),
+        Plugin::new("after-crasher", "basic_plugin", after_crasher),
+        Plugin::new("cycle-a", "basic_plugin", cycle_a),
+        Plugin::new("cycle-b", "basic_plugin", cycle_b),
         Plugin::new(
             "crasher",
             "load_fails",
             manifest("crasher", "load_fails.dll"),
         ),
         Plugin::new(
-            "hello-plugin",
-            "hello_plugin",
-            manifest("hello-plugin", "hello_plugin.dll"),
+            "basic-plugin",
+            "basic_plugin",
+            manifest("basic-plugin", "basic_plugin.dll"),
         ),
-        Plugin::new("needs-hello", "hello_plugin", needs_hello),
-        Plugin::new("wants-newer", "hello_plugin", wants_newer),
+        Plugin::new("needs-basic", "basic_plugin", needs_basic),
+        Plugin::new("wants-newer", "basic_plugin", wants_newer),
     ];
     let root = root_with("deps", &plugins);
     let log = Rc::new(Lines::default());
     let reg = load_all(&root, running(), log.clone(), None, Services::none()).registry;
 
-    let hello = reg.find("hello-plugin").expect("hello loaded");
-    let needs = reg.find("needs-hello").expect("dependent loaded");
-    assert!(hello.is_active() && needs.is_active(), "{}", log.dump());
-    assert!(hello.index < needs.index, "dependency loads first");
+    let basic = reg.find("basic-plugin").expect("basic loaded");
+    let needs = reg.find("needs-basic").expect("dependent loaded");
+    assert!(basic.is_active() && needs.is_active(), "{}", log.dump());
+    assert!(basic.index < needs.index, "dependency loads first");
     assert!(reg.find("wants-newer").is_none());
     assert!(
-        log.has("wants-newer: E_DEP: dependency hello-plugin"),
+        log.has("wants-newer: E_DEP: dependency basic-plugin"),
         "{}",
         log.dump()
     );

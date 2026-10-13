@@ -14,7 +14,7 @@ w2r-abi.workspace = true
 missing_safety_doc = "allow"
 
 [[example]]
-name = "hello_plugin"
+name = "basic_plugin"
 crate-type = ["cdylib"]
 
 [[example]]

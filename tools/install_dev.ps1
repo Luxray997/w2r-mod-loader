@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-Developer install of the w2rpm host into the game, with the hello-world fixture plugin.
+Developer install of the w2rpm host into the game, with the basic fixture plugin.
 
 .DESCRIPTION
 Builds w2r_core.dll (release, i686) and copies it into the game's x86 folder as version.dll.
-Sets up the host root under Saved Games\Warcraft2Remastered\w2r with the hello_plugin fixture
+Sets up the host root under Saved Games\Warcraft2Remastered\w2r with the basic_plugin fixture
 (plugin.json, DLL, pinned hash, chat.write approved). Then launch the game, enter a multiplayer
 lobby, and read logs\w2r.log: the build guard should report PASSED (197/197) and the plugin
-should log "hello from hello_plugin".
+should log "basic from basic_plugin".
 
 .PARAMETER Uninstall
 Removes our version.dll from the game folder and restores version.dll.pre-w2rpm if an earlier
@@ -16,7 +16,7 @@ is left in place.
 
 .PARAMETER WithCrasher
 Also installs the crash_plugin fixture, which faults on lobby entry; the log should show it
-disabled while the game and hello_plugin carry on.
+disabled while the game and basic_plugin carry on.
 
 .PARAMETER WithHostCheck
 Also installs the hostcheck_plugin fixture (game.read and hooks.raw approved; it installs no
@@ -42,7 +42,7 @@ each with its own plugin.json and the capabilities that manifest asks for approv
 -WithChat and -WithBlackRecolor, which need not be passed with it.
 
 .PARAMETER Simulation
-Marks the hello_plugin fixture affects_simulation, so the session's simulation fingerprint is
+Marks the basic_plugin fixture affects_simulation, so the session's simulation fingerprint is
 non-zero and the handshake (Phase 3) has something to compare: the log shows the fingerprint,
 the plugin screen shows it, and a second player whose fingerprint differs gets the lobby
 warning.
@@ -207,7 +207,7 @@ function Install-Fixture([string]$Id, [string]$Example, [string[]]$Capabilities,
 "@
 }
 
-$entries = @(Install-Fixture "hello-plugin" "hello_plugin" @("chat.write") $Simulation.IsPresent)
+$entries = @(Install-Fixture "basic-plugin" "basic_plugin" @("chat.write") $Simulation.IsPresent)
 if ($WithCrasher) { $entries += Install-Fixture "crash-plugin" "crash_plugin" @() }
 if ($WithChat) {
     $release = Join-Path $PluginsRepo "target\i686-pc-windows-msvc\release"

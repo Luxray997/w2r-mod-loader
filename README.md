@@ -75,7 +75,7 @@ folder as `version.dll`. The host writes `w2r.log` under `Saved Games\Warcraft2R
 (or `%W2R_ROOT%\logs`). `cargo test` without `--target` also works for the pure-Rust parts. The
 manager (`cargo run -p w2rpm-cli`, `cargo run -p w2rpm-gui`) is an ordinary 64-bit build.
 
-`tools\install_dev.ps1` does the build and install and sets up the hello-world fixture plugin
+`tools\install_dev.ps1` does the build and install and sets up the basic fixture plugin
 under Saved Games (`-WithChat` adds the chat plugin, `-WithCrasher` the crashing fixture,
 `-Uninstall` removes the DLL). Set `PYTHON=/path/to/python.exe` if `python3` is missing (Windows). The
 32-bit header check uses `gcc -m32` or, on Windows, MSVC located via `vswhere`.
