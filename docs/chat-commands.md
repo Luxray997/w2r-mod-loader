@@ -12,7 +12,8 @@ ordinary chat line, so a host who wants to know can ask, and the player decides 
 Plugins: w2r-chat 1.0.0, w2r-observer 0.1.0
 ```
 
-- Only plugins that are running are listed, with their versions.
+- Only plugins that are running are listed, with their versions. Developer-only research plugins
+  (`w2r-lobby-log`, `w2r-sdk-probe`) are never named.
 - The line is cut at the chat limit (200 bytes) with "+N more". "none" when no plugin runs.
 - The command must be on its own (`/plugins`, any case); anything after it is sent as typed.
 - Nothing is requested or sent automatically: this is the only way the list leaves the machine.

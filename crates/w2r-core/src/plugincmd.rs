@@ -7,6 +7,16 @@
 /// The lobby's chat line is at most this long (`chat::valid_text`).
 pub const MAX_LINE: usize = w2r_abi::W2R_MAX_CHAT_BYTES as usize;
 
+/// Developer-only plugins (marked `dev_only` in the w2r-plugins repository, which does not publish
+/// them). They are never named in chat: they are research tools, and a player who has one
+/// installed should not have it announced. The manifest cannot carry the flag (its schema is
+/// strict), so the host keeps the ids.
+pub const DEV_ONLY: &[&str] = &["w2r-lobby-log", "w2r-sdk-probe"];
+
+pub fn is_dev_only(id: &str) -> bool {
+    DEV_ONLY.contains(&id)
+}
+
 /// True for `/plugins` on its own (any case, surrounding spaces ignored).
 pub fn is_command(text: &[u8]) -> bool {
     text.trim_ascii().eq_ignore_ascii_case(b"/plugins")
@@ -49,6 +59,12 @@ mod tests {
         assert!(!is_command(b"/plugins now"));
         assert!(!is_command(b"plugins"));
         assert!(!is_command(b""));
+    }
+
+    #[test]
+    fn developer_plugins_are_known_by_id() {
+        assert!(is_dev_only("w2r-lobby-log") && is_dev_only("w2r-sdk-probe"));
+        assert!(!is_dev_only("w2r-chat"));
     }
 
     #[test]

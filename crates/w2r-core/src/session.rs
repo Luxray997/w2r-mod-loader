@@ -522,6 +522,7 @@ pub fn plugins_chat_line() -> Option<String> {
             .state
             .plugins
             .iter()
+            .filter(|p| !crate::plugincmd::is_dev_only(&p.id))
             .filter(|p| {
                 session
                     .registry
