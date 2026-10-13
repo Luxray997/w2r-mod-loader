@@ -183,7 +183,6 @@ mod live {
     const MARGIN_RIGHT: f32 = 4.0;
     /// Distance from the bottom edge of the screen to the panel's bottom edge.
     const MARGIN_BOTTOM: f32 = 4.0;
-    const BACKGROUND: u32 = rgba(12, 9, 6, 170);
     const LOW: u32 = rgba(232, 72, 56, 255);
 
     struct Game {
@@ -373,8 +372,6 @@ mod live {
             let top = ((g.ui_height)() - MARGIN_BOTTOM - HEIGHT).max(0.0);
             if begin(ctx, c"apm_panel".as_ptr(), x, top, WIDTH, HEIGHT, WINDOW_FLAGS) != 0 {
                 g.kit.space_begin();
-                g.kit
-                    .fill_round(Rect::new(x, top, WIDTH, HEIGHT), 3.0, BACKGROUND);
                 let text = match apm {
                     Some(v) => format!("APM {v}"),
                     None => "APM -".to_string(),
