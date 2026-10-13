@@ -87,6 +87,17 @@ type MenuButtonFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i8;
 type CheckboxFn = unsafe extern "C" fn(*const c_char, *mut u32, u32) -> u8;
 type SliderFn = unsafe extern "C" fn(*mut u32, *mut u32, *mut u32, *mut u32) -> u8;
 type TextEditFn = unsafe extern "C" fn(*mut c_void, u32, *mut c_char, i32, *mut c_void) -> u32;
+/// Found in `BuildOptionsMenuScreen` (0x5429a0) for the pause-menu variant: the popup's
+/// rectangle function `(out x,y,w,h, scale)` and its skin globals (alt flag 1 uses the alt).
+const POPUP_LAYOUT: usize = 0x0054_7320;
+const PAUSE_SKIN: usize = 0x0095_dd84;
+const PAUSE_SKIN_ALT: usize = 0x0095_dd88;
+type PopupLayoutFn = unsafe extern "C" fn(*mut [f32; 4], f32) -> *mut [f32; 4];
+fn rebase(symbols: &Symbols, static_addr: usize) -> usize {
+    symbols.base() + (static_addr - 0x0040_0000)
+}
+/// Frame room around the in-game popup's contents.
+const POPUP_MARGIN: f32 = 60.0;
 type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
 
 /// The game functions the screen needs, resolved once. Plain pointers, so copies are cheap and
@@ -121,6 +132,9 @@ pub struct Nk {
     skin_alt_flag: *const u8,
     skin_content: *const u32,
     skin_card: *const u32,
+    skin_pause: *const u32,
+    skin_pause_alt: *const u32,
+    popup_layout: PopupLayoutFn,
 }
 
 macro_rules! sym {
@@ -160,6 +174,11 @@ impl Nk {
             skin_alt_flag: symbols.address("SkinAltFlag")? as *const u8,
             skin_content: symbols.address("SkinContentPanel")? as *const u32,
             skin_card: symbols.address("SkinLobbyCreationLeft")? as *const u32,
+            skin_pause: rebase(symbols, PAUSE_SKIN) as *const u32,
+            skin_pause_alt: rebase(symbols, PAUSE_SKIN_ALT) as *const u32,
+            popup_layout: unsafe {
+                core::mem::transmute::<usize, PopupLayoutFn>(rebase(symbols, POPUP_LAYOUT))
+            },
         })
     }
 
@@ -169,6 +188,16 @@ impl Nk {
 
     pub(crate) fn push_skin(&self, id: u32) -> u32 {
         unsafe { (self.set_skin)(self.skin_manager, id) }
+    }
+
+    pub(crate) fn pause_skin(&self) -> u32 {
+        unsafe {
+            if *self.skin_alt_flag == 1 {
+                *self.skin_pause_alt
+            } else {
+                *self.skin_pause
+            }
+        }
     }
 
     pub(crate) fn window_skin(&self) -> u32 {
@@ -335,6 +364,9 @@ enum Mode {
 thread_local! {
     static MODE: Cell<Mode> = const { Cell::new(Mode::Game) };
     static LAST_BUILD_MS: Cell<u64> = const { Cell::new(0) };
+    static PAUSE_MS: Cell<u64> = const { Cell::new(0) };
+    /// Set while the plugin screen replaces the pause menu's options (the game is visible behind).
+    static IN_GAME: Cell<bool> = const { Cell::new(false) };
 }
 
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -387,17 +419,26 @@ unsafe extern "C" fn detour(variant: i32) {
     if fresh {
         MODE.with(|m| m.set(Mode::Game));
     }
+    // The game may build the main-menu variant (0) behind the pause menu's (1) in the same frame;
+    // only the visible one gets the button or the plugin screen, or both would draw on top of each
+    // other.
+    if variant == 1 {
+        PAUSE_MS.with(|t| t.set(now));
+    }
+    let shadowed = variant == 0 && now.saturating_sub(PAUSE_MS.with(|t| t.get())) < REENTRY_GAP_MS;
     // Only the main-menu (0) and pause-menu (1) options screens get the button.
-    let ours = (variant == 0 || variant == 1) && MODE.with(|m| m.get()) == Mode::Plugins;
+    let ours =
+        (variant == 0 || variant == 1) && !shadowed && MODE.with(|m| m.get()) == Mode::Plugins;
     if !ours {
         unsafe { original(variant) };
-        if variant == 0 || variant == 1 {
+        if (variant == 0 || variant == 1) && !shadowed {
             if let Err(fault) = guarded(|| crate::session::with_nk(draw_button)) {
                 crate::session::host_fault("options button", &fault);
             }
         }
         return;
     }
+    IN_GAME.with(|g| g.set(variant == 1));
     if let Err(fault) = guarded(|| crate::session::with_nk(draw_screen)) {
         crate::session::host_fault("plugin screen", &fault);
         // Do not leave the user on a screen that cannot draw.
@@ -414,6 +455,9 @@ fn draw_button(nk: &Nk) {
     let width = unsafe { (nk.ui_width)() };
     let x = width - BUTTON_W - 40.0;
     let name = c"w2rpm_button";
+    // The window is only a carrier for the game's menu button: under the game's current skin it
+    // paints a plank of its own behind the button (a double paint), so use the near-clear panel.
+    let prev_skin = nk.push_skin(unsafe { *nk.skin_content });
     unsafe {
         if (nk.begin_window)(
             ctx,
@@ -437,6 +481,7 @@ fn draw_button(nk: &Nk) {
         }
         (nk.end_window)(ctx);
     }
+    nk.push_skin(prev_skin);
 }
 
 /// The plugin screen in place of the game's options screen.
@@ -448,16 +493,49 @@ fn draw_screen(nk: &Nk) {
     let width = unsafe { (nk.ui_width)() }.floor();
     let panel_w = (width * PANEL_WIDTH_PERCENT / 100.0).floor();
     let panel_x = ((width - panel_w) / 2.0).floor();
-    let prev_skin = nk.push_skin(nk.window_skin());
+    let in_game = IN_GAME.with(|g| g.get());
+    // In game the screen is the pause menu's popup, with the game's own rectangle and skin; on
+    // the main menu it fills the screen. `title`/`list` are window-relative.
+    let (window, title_r, list_r) = if in_game {
+        let mut r = [0.0f32; 4];
+        unsafe { (nk.popup_layout)(&mut r, 1.0) };
+        (
+            r,
+            [
+                POPUP_MARGIN,
+                POPUP_MARGIN,
+                r[2] - 2.0 * POPUP_MARGIN,
+                TITLE_HEIGHT,
+            ],
+            [
+                POPUP_MARGIN,
+                POPUP_MARGIN + TITLE_HEIGHT + POPUP_MARGIN / 2.0,
+                r[2] - 2.0 * POPUP_MARGIN,
+                r[3] - TITLE_HEIGHT - 2.5 * POPUP_MARGIN,
+            ],
+        )
+    } else {
+        (
+            [0.0, 0.0, width, UI_HEIGHT],
+            [panel_x, TITLE_TOP, panel_w, TITLE_HEIGHT],
+            [panel_x, PANEL_TOP, panel_w, PANEL_HEIGHT],
+        )
+    };
+    let skin = if in_game {
+        nk.pause_skin()
+    } else {
+        nk.window_skin()
+    };
+    let prev_skin = nk.push_skin(skin);
     let name = c"w2rpm_plugins";
     unsafe {
         if (nk.begin_window)(
             ctx,
             name.as_ptr(),
-            0.0,
-            0.0,
-            width,
-            UI_HEIGHT,
+            window[0],
+            window[1],
+            window[2],
+            window[3],
             WINDOW_NO_SCROLLBAR,
         ) == 0
         {
@@ -466,12 +544,16 @@ fn draw_screen(nk: &Nk) {
             return;
         }
         (nk.space_begin)(ctx, 1, 0.0, 1000);
-        (nk.rect)(ctx, panel_x, TITLE_TOP, panel_w, TITLE_HEIGHT);
+        (nk.rect)(ctx, title_r[0], title_r[1], title_r[2], title_r[3]);
         let title = c"w2rpm Plugins";
         (nk.label)(ctx, title.as_ptr(), ALIGN_TITLE);
 
-        (nk.rect)(ctx, panel_x, PANEL_TOP, panel_w, PANEL_HEIGHT);
-        let prev_content = nk.push_skin(*nk.skin_content);
+        (nk.rect)(ctx, list_r[0], list_r[1], list_r[2], list_r[3]);
+        let prev_content = if in_game {
+            nk.push_skin(skin)
+        } else {
+            nk.push_skin(*nk.skin_content)
+        };
         let group = c"w2rpm_plugins_list";
         let gap_at = (ctx as *mut u8).add(CTX_SPACING_Y).cast::<f32>();
         let gap_before = gap_at.read_unaligned();
