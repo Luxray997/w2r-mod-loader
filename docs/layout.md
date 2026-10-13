@@ -10,7 +10,7 @@ All paths are per-user; nothing needs administrator rights.
         data\                the plugin's own writable data (capability fs.data)
     config\
         state.json           installed plugins: enabled flag, pinned hash, approved capabilities
-        host.json            the host's own settings (require_matching_plugins)
+        host.json            the host's own settings
         <plugin-id>.json     per-plugin settings
     cache\
         index.json           last accepted index
@@ -46,8 +46,8 @@ is the implementation.
 ### `host.json` rules
 
 Strict JSON, at most 64 KiB, exactly `schema` (exactly `1`) and the known fields, each a
-boolean: `require_matching_plugins` (default `false`; the handshake's strict bit, see
-[load-policy.md](load-policy.md)). A missing file is the defaults; a bad file is logged and the
+boolean (`require_matching_plugins` is retired: still accepted in an old file, ignored, and dropped
+when the file is next written; see [load-policy.md](load-policy.md)). A missing file is the defaults; a bad file is logged and the
 defaults are used until the user changes a setting, which rewrites it (temp file, then rename).
 `crates/w2r-core/src/hostcfg.rs` is the implementation.
 

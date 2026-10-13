@@ -41,7 +41,7 @@ logic, tested without the game) driven by `session.rs`.
 | 5 | 1 | protocol version, 1 |
 | 6 | 1 | kind: 1 HELLO, 2 REPLY |
 | 7 | 4 | nonce: chosen on each lobby entry, identifies this instance |
-| 11 | 4 | capabilities: bit 0 handshake, bit 1 **strict** (requires matching fingerprints), bit 2 map sharing |
+| 11 | 4 | capabilities: bit 0 handshake, bit 1 reserved (was "strict"; ignored), bit 2 map sharing |
 | 15 | 4 | simulation fingerprint, the 4 bytes in fingerprint order (wc2r-plus sends zeros) |
 | 19 | 16 | version text, ASCII, NUL-padded: `w2rpm <version>` (wc2r-plus sends its own version) |
 
@@ -50,7 +50,7 @@ append fields. Another protocol version, or fewer than 35 bytes, is ignored (one
 stay in the lobby).
 
 - **HELLO** is broadcast when the local player enters a lobby, when another player appears in
-  the transport's peer list, and when the local capabilities change (strict mode toggled). It is
+  the transport's peer list, and when the local capabilities change (map sharing toggled). It is
   the only message a player without a mod receives; the base game ignores it.
 - **REPLY** goes to the HELLO's sender only, once per nonce. A REPLY is never answered, so two
   instances cannot loop.
@@ -67,24 +67,11 @@ stay in the lobby).
 
 Decided per [load-policy.md](load-policy.md) and carried out here:
 
-- The host compares each announced peer's fingerprint with its own. On a mismatch it logs once
-  and shows a lobby warning; with `require_matching_plugins` on (`config\host.json`, the
-  "strict" bit, togglable on the in-game plugin screen) it removes the player through the
-  game's own kick, once per nonce. Turning strict on inside a lobby refuses peers that already
-  mismatch.
-- A joiner compares its fingerprint with the host's (net slot 0) only; other joiners are not
-  its business. The warning says when the host is strict and will remove it.
-- A player with a non-zero fingerprint also sees a warning for each counterpart (the host for a
-  joiner; every joiner for the host) that has been present for 3 s without announcing: that
-  player does not run a mod, so nothing can be checked against it. Players without the mod are
-  never refused.
-- The warnings are drawn in a small window of the host's own at the top of the lobby screen
-  (after the game's lobby window ends each frame, so it sits above it; it takes no input) and
-  are listed on the plugin screen.
-
-## What the handshake is not
+- The host compares each announced peer's fingerprint with its own and logs a mismatch once. A
+  joiner does the same for the host (net slot 0) only. Nothing is shown to the user and nobody is
+  removed; the fingerprint is used by features that need identical code on every machine.
 
 It does not authenticate anyone and the fingerprint only detects mismatch (a collision at worst
 misses a warning). It does not cover plugin settings; a simulation-affecting plugin must agree
-those itself through peer messages (`'P'`). Hosting with strict mode on does not protect
-against a player without the mod, who is simply not checked.
+those itself through peer messages (`'P'`). A player without the mod is simply not
+checked.

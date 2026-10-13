@@ -305,8 +305,6 @@ pub struct HostRow {
     pub fingerprint: [u8; 4],
     /// The plugins in it, by id.
     pub simulation: Vec<String>,
-    /// `require_matching_plugins` (`host.json`); takes effect at once.
-    pub strict: bool,
     /// `lock_team_changes` and `lock_slot_swaps` (`host.json`); take effect at once when hosting.
     pub lock_teams: bool,
     pub lock_slots: bool,
@@ -323,21 +321,17 @@ pub struct HostRow {
     pub auto_game_name: bool,
     /// `share_match_data` (`sharing.json`); match reports are uploaded from the next match.
     pub share_match_data: bool,
-    /// The handshake's current lobby warnings, if any.
-    pub lobby: Vec<String>,
 }
 
-pub const STRICT_LABEL: &str = "When hosting, remove players whose simulation plugins differ";
-pub const LOCK_TEAMS_LABEL: &str = "When hosting, lock team changes";
-pub const LOCK_SLOTS_LABEL: &str = "When hosting, lock slot swaps";
-pub const CREATE_SCREEN_LABEL: &str = "Use the w2rpm Create Multiplayer Game screen";
-pub const LOBBY_SCREEN_LABEL: &str = "Use the w2rpm multiplayer lobby screen";
-pub const MAP_SHARING_LABEL: &str = "Share maps with other players (send and receive)";
-pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps without asking";
-pub const RECORD_REPLAYS_LABEL: &str = "Save a replay of each game I play";
-pub const AUTO_GAME_NAME_LABEL: &str = "Suggest a game name from the map when I pick one";
-pub const SHARE_LABEL: &str =
-    "Share my match results and replays (including chat) with the stats service";
+pub const LOCK_TEAMS_LABEL: &str = "Lock team changes";
+pub const LOCK_SLOTS_LABEL: &str = "Lock slot swaps";
+pub const CREATE_SCREEN_LABEL: &str = "Custom create game screen";
+pub const LOBBY_SCREEN_LABEL: &str = "Custom lobby screen";
+pub const MAP_SHARING_LABEL: &str = "Share maps with players";
+pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps automatically";
+pub const RECORD_REPLAYS_LABEL: &str = "Save replays";
+pub const AUTO_GAME_NAME_LABEL: &str = "Auto-Name Games by Map";
+pub const SHARE_LABEL: &str = "Contribute Match Data";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -346,7 +340,6 @@ pub enum Action {
     /// The user flipped a plugin's enabled flag.
     Toggle(usize),
     /// The user flipped `require_matching_plugins`.
-    ToggleStrict,
     /// The user flipped one of the lobby locks.
     ToggleLocks,
     /// The user flipped `enhanced_create_screen`.
@@ -376,20 +369,14 @@ pub fn draw_plugin_screen(
     w.label("Host");
     w.row(ROW_H, 1);
     w.label(&format!(
-        "Simulation fingerprint: {} ({})",
+        "Fingerprint: {} ({})",
         crate::fingerprint::hex(&host.fingerprint),
         if host.simulation.is_empty() {
-            "no simulation-affecting plugins".to_owned()
+            "no plugins".to_owned()
         } else {
             host.simulation.join(", ")
         }
     ));
-    w.row(ROW_H, 1);
-    let mut strict = host.strict;
-    if w.checkbox(STRICT_LABEL, &mut strict) {
-        host.strict = strict;
-        action = Action::ToggleStrict;
-    }
     w.row(ROW_H, 1);
     let mut lock_teams = host.lock_teams;
     if w.checkbox(LOCK_TEAMS_LABEL, &mut lock_teams) {
@@ -443,10 +430,6 @@ pub fn draw_plugin_screen(
     if w.checkbox(SHARE_LABEL, &mut share) {
         host.share_match_data = share;
         action = Action::ToggleSharing;
-    }
-    for line in &host.lobby {
-        w.row(ROW_H, 1);
-        w.label(&format!("Lobby: {line}"));
     }
     w.row(HEADING_H, 1);
     w.label(&format!("Plugins ({})", rows.len()));
@@ -699,7 +682,6 @@ mod tests {
         let mut host = HostRow {
             fingerprint: [0xaa, 0xbb, 0xcc, 0xdd],
             simulation: vec!["a".into(), "c".into()],
-            strict: false,
             lock_teams: false,
             lock_slots: false,
             create_screen: false,
@@ -709,36 +691,29 @@ mod tests {
             record_replays: false,
             auto_game_name: false,
             share_match_data: false,
-            lobby: vec!["Player 2 runs different simulation plugins".into()],
         };
         let mut sections = Vec::new();
         let action = draw_plugin_screen(&fake, &mut host, &mut rows, |_, i| sections.push(i));
         // Every row's checkbox flipped; the last flip wins as the reported action.
         assert_eq!(action, Action::Toggle(2));
         assert!(!rows[0].enabled && rows[1].enabled && !rows[2].enabled);
-        assert!(!host.strict, "not flipped");
         assert_eq!(sections, vec![0], "only active plugins draw their section");
         let calls = fake.calls.borrow();
         assert_eq!(calls[1], "label \"Host\"");
         assert_eq!(
             calls[3],
-            "label \"Simulation fingerprint: aabbccdd (a, c)\""
+            "label \"Fingerprint: aabbccdd (a, c)\""
         );
-        assert_eq!(calls[5], format!("checkbox {STRICT_LABEL:?} false"));
-        assert_eq!(calls[7], format!("checkbox {LOCK_TEAMS_LABEL:?} false"));
-        assert_eq!(calls[9], format!("checkbox {LOCK_SLOTS_LABEL:?} false"));
-        assert_eq!(calls[11], format!("checkbox {CREATE_SCREEN_LABEL:?} false"));
-        assert_eq!(calls[13], format!("checkbox {LOBBY_SCREEN_LABEL:?} false"));
-        assert_eq!(calls[15], format!("checkbox {MAP_SHARING_LABEL:?} false"));
-        assert_eq!(calls[17], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
-        assert_eq!(calls[19], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
-        assert_eq!(calls[21], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
-        assert_eq!(calls[23], format!("checkbox {SHARE_LABEL:?} false"));
-        assert_eq!(
-            calls[25],
-            "label \"Lobby: Player 2 runs different simulation plugins\""
-        );
-        assert_eq!(calls[27], "label \"Plugins (3)\"");
+        assert_eq!(calls[5], format!("checkbox {LOCK_TEAMS_LABEL:?} false"));
+        assert_eq!(calls[7], format!("checkbox {LOCK_SLOTS_LABEL:?} false"));
+        assert_eq!(calls[9], format!("checkbox {CREATE_SCREEN_LABEL:?} false"));
+        assert_eq!(calls[11], format!("checkbox {LOBBY_SCREEN_LABEL:?} false"));
+        assert_eq!(calls[13], format!("checkbox {MAP_SHARING_LABEL:?} false"));
+        assert_eq!(calls[15], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
+        assert_eq!(calls[17], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
+        assert_eq!(calls[19], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
+        assert_eq!(calls[21], format!("checkbox {SHARE_LABEL:?} false"));
+        assert_eq!(calls[23], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -759,7 +734,6 @@ mod tests {
         let mut host = HostRow {
             fingerprint: [0; 4],
             simulation: Vec::new(),
-            strict: false,
             lock_teams: false,
             lock_slots: false,
             create_screen: false,
@@ -769,7 +743,6 @@ mod tests {
             record_replays: false,
             auto_game_name: false,
             share_match_data: false,
-            lobby: Vec::new(),
         };
         assert_eq!(
             draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
@@ -780,21 +753,11 @@ mod tests {
         assert!(
             calls
                 .iter()
-                .any(|c| c.contains("00000000 (no simulation-affecting plugins)"))
+                .any(|c| c.contains("00000000 (no plugins)"))
         );
-        assert!(!calls.iter().any(|c| c.starts_with("label \"Lobby:")));
         drop(calls);
 
-        // The strict checkbox is its own action.
-        let fake = FakeWidgets::default();
-        fake.flip.borrow_mut().push(STRICT_LABEL.into());
-        assert_eq!(
-            draw_plugin_screen(&fake, &mut host, &mut [], |_, _| {}),
-            Action::ToggleStrict
-        );
-        assert!(host.strict);
-
-        // So are the two locks.
+        // The two locks are their own action.
         let fake = FakeWidgets::default();
         fake.flip.borrow_mut().push(LOCK_SLOTS_LABEL.into());
         assert_eq!(

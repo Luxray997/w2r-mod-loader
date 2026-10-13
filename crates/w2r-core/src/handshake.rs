@@ -10,7 +10,7 @@
 //! presence come in as arguments, and everything it wants done comes back as [`Out`] values,
 //! so every rule is tested without the game.
 
-use w2r_abi::{W2R_LOG_INFO, W2R_LOG_WARN};
+use w2r_abi::W2R_LOG_INFO;
 
 use crate::fingerprint;
 use crate::peer::{self, BASE_HEADER_LEN, MAX_SLOTS};
@@ -25,9 +25,9 @@ pub const BODY_LEN: usize = 1 + 1 + 4 + 4 + 4 + VERSION_LEN;
 pub const MESSAGE_LEN: usize = BASE_HEADER_LEN + BODY_LEN;
 const _: () = assert!(MESSAGE_LEN == 35, "wc2r-plus sends 35 bytes");
 
-/// Capability bits. wc2r-plus defines 0 and 2; 1 is ours (docs/load-policy.md, "Strict bit").
+/// Capability bits. wc2r-plus defines 0 and 2; 1 is reserved (older w2rpm builds set it for a
+/// "strict" mode that no longer exists; it is ignored).
 pub const CAP_HANDSHAKE: u32 = 1 << 0;
-pub const CAP_STRICT: u32 = 1 << 1;
 pub const CAP_MAP_SHARING: u32 = 1 << 2;
 
 /// What goes in the 16-byte version field. wc2r-plus logs it as "runs wc2r-plus <text>", so
@@ -40,22 +40,18 @@ const _: () = assert!(VERSION_TEXT.len() <= VERSION_LEN);
 pub const NONCE_CHANGE_MIN_MS: u64 = 5_000;
 /// How often the transport's peer list is consulted.
 pub const ROSTER_CHECK_MS: u64 = 1_000;
-/// A player present this long without announcing counts as not running the host.
-pub const UNANNOUNCED_GRACE_MS: u64 = 3_000;
 /// The host is always net slot 0 (wc2r-plus PROTOCOL.md).
 pub const HOST_SLOT: u32 = 0;
 
 /// The local side: what this instance announces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Local {
-    /// `require_matching_plugins` in `host.json`; sets [`CAP_STRICT`].
-    pub strict: bool,
     pub fingerprint: [u8; 4],
 }
 
 impl Local {
     pub fn caps(&self) -> u32 {
-        CAP_HANDSHAKE | if self.strict { CAP_STRICT } else { 0 }
+        CAP_HANDSHAKE
     }
 }
 
@@ -138,14 +134,6 @@ pub struct Peer {
     replied: bool,
     /// The mismatch (if any) was logged for this nonce.
     mismatch_logged: bool,
-    /// The strict refusal went out for this nonce.
-    kicked: bool,
-}
-
-impl Peer {
-    pub fn strict(&self) -> bool {
-        self.caps & CAP_STRICT != 0
-    }
 }
 
 /// What the session must do for the handshake.
@@ -153,8 +141,6 @@ impl Peer {
 pub enum Out {
     Broadcast(Vec<u8>),
     SendTo(u32, Vec<u8>),
-    /// Remove this net slot from the lobby (host only, strict mode).
-    Kick(u32),
     /// A log line, `(level, text)`.
     Log(u32, String),
 }
@@ -248,24 +234,6 @@ impl Handshake {
         self.local.fingerprint = fingerprint;
     }
 
-    /// Flips strict mode. In a lobby this re-announces (the caps changed) and, when hosting,
-    /// refuses peers that already mismatch.
-    pub fn set_strict(&mut self, strict: bool) -> Vec<Out> {
-        if self.local.strict == strict {
-            return Vec::new();
-        }
-        self.local.strict = strict;
-        if !self.in_lobby {
-            return Vec::new();
-        }
-        self.hello_pending = true;
-        let mut out = Vec::new();
-        for slot in 0..MAX_SLOTS {
-            self.enforce(slot, &mut out);
-        }
-        out
-    }
-
     /// The local player entered a lobby. `nonce` identifies this stay (non-zero).
     pub fn enter(&mut self, nonce: u32) {
         self.in_lobby = true;
@@ -355,10 +323,9 @@ impl Handshake {
             out.push(Out::Log(
                 W2R_LOG_INFO,
                 format!(
-                    "announced (nonce {:08x}, fingerprint {}{})",
+                    "announced (nonce {:08x}, fingerprint {})",
                     self.nonce,
                     fingerprint::hex(&self.local.fingerprint),
-                    if self.local.strict { ", strict" } else { "" }
                 ),
             ));
         }
@@ -459,7 +426,6 @@ impl Handshake {
                 version: a.version,
                 replied: false,
                 mismatch_logged: false,
-                kicked: false,
             });
         } else {
             let p = self.peers[s].as_mut().expect("known");
@@ -495,11 +461,10 @@ impl Handshake {
         out
     }
 
-    /// The fingerprint policy for one announced peer: log a mismatch once, and as a strict
-    /// host refuse it once.
+    /// The fingerprint policy for one announced peer: log a mismatch once.
     fn enforce(&mut self, slot: u32, out: &mut Vec<Out>) {
         let ours = self.local.fingerprint;
-        let (is_host, strict) = (self.is_host, self.local.strict);
+        let is_host = self.is_host;
         let who = self.describe(slot);
         let Some(p) = self.peers.get_mut(slot as usize).and_then(Option::as_mut) else {
             return;
@@ -511,20 +476,12 @@ impl Handshake {
         if matters && !p.mismatch_logged {
             p.mismatch_logged = true;
             out.push(Out::Log(
-                W2R_LOG_WARN,
+                W2R_LOG_INFO,
                 format!(
                     "net slot {slot} ({who}) runs different simulation plugins: theirs {}, ours {}",
                     fingerprint::hex(&p.fingerprint),
                     fingerprint::hex(&ours)
                 ),
-            ));
-        }
-        if is_host && strict && !p.kicked {
-            p.kicked = true;
-            out.push(Out::Kick(slot));
-            out.push(Out::Log(
-                W2R_LOG_WARN,
-                format!("removed net slot {slot} ({who}): strict mode, plugins differ"),
             ));
         }
     }
@@ -558,67 +515,6 @@ impl Handshake {
                 || present[s].is_none()
                 || self.peers[s].as_ref().is_some_and(|p| p.fingerprint == ours)
         })
-    }
-
-    /// What the lobby shows the local player right now (docs/load-policy.md, "Policy").
-    pub fn warnings(&self, now: u64) -> Vec<String> {
-        let mut lines = Vec::new();
-        if !self.in_lobby {
-            return lines;
-        }
-        let ours = self.local.fingerprint;
-        let unannounced = |s: usize| -> bool {
-            self.peers[s].is_none()
-                && self.present.is_some_and(|p| {
-                    p[s].is_some_and(|since| now.saturating_sub(since) >= UNANNOUNCED_GRACE_MS)
-                })
-        };
-        if self.is_host {
-            for s in 0..8 {
-                if let Some(p) = &self.peers[s] {
-                    if p.fingerprint != ours && !p.kicked {
-                        lines.push(format!(
-                            "{} runs different simulation plugins ({} vs. your {}){}",
-                            self.describe(s as u32),
-                            fingerprint::hex(&p.fingerprint),
-                            fingerprint::hex(&ours),
-                            if self.local.strict { "; removing" } else { "" }
-                        ));
-                    }
-                } else if ours != [0; 4]
-                    && s as u32 != HOST_SLOT
-                    && Some(s as u32) != self.self_slot
-                    && unannounced(s)
-                {
-                    lines.push(format!(
-                        "{} does not run w2rpm; your simulation plugins cannot be checked against it",
-                        self.describe(s as u32)
-                    ));
-                }
-            }
-        } else {
-            let h = HOST_SLOT as usize;
-            if let Some(host) = &self.peers[h] {
-                if host.fingerprint != ours {
-                    lines.push(format!(
-                        "Your simulation plugins differ from the host's ({} vs. your {}){}",
-                        fingerprint::hex(&host.fingerprint),
-                        fingerprint::hex(&ours),
-                        if host.strict() {
-                            "; the host requires a match and will remove you"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
-            } else if ours != [0; 4] && Some(HOST_SLOT) != self.self_slot && unannounced(h) {
-                lines.push(
-                    "The host does not run w2rpm; your simulation plugins cannot be checked"
-                        .to_owned(),
-                );
-            }
-        }
-        lines
     }
 }
 
@@ -666,15 +562,6 @@ mod tests {
             .collect()
     }
 
-    fn kicks(out: &[Out]) -> Vec<u32> {
-        out.iter()
-            .filter_map(|o| match o {
-                Out::Kick(s) => Some(*s),
-                _ => None,
-            })
-            .collect()
-    }
-
     fn logs(out: &[Out]) -> Vec<&str> {
         out.iter()
             .filter_map(|o| match o {
@@ -686,7 +573,7 @@ mod tests {
 
     #[test]
     fn the_wire_format_is_the_wc2r_plus_one() {
-        let msg = encode(KIND_HELLO, 0x0403_0201, CAP_HANDSHAKE | CAP_STRICT, FP_A);
+        let msg = encode(KIND_HELLO, 0x0403_0201, CAP_HANDSHAKE | (1 << 1), FP_A);
         assert_eq!(msg.len(), 35);
         assert_eq!(&msg[..5], &[0xE7, b'W', b'2', b'R', b'H']);
         assert_eq!(msg[5], 1, "protocol version");
@@ -730,11 +617,9 @@ mod tests {
     #[test]
     fn hello_and_reply_fill_both_rosters_without_a_loop() {
         let mut a = Handshake::new(Local {
-            strict: false,
             fingerprint: FP_A,
         });
         let mut b = Handshake::new(Local {
-            strict: false,
             fingerprint: FP_A,
         });
         assert!(
@@ -775,8 +660,6 @@ mod tests {
         assert!(a.announced(3));
         assert!(sends(&out).is_empty() && broadcasts(&out).is_empty());
         assert!(!a.announced(8), "out of range");
-        assert!(a.warnings(60).is_empty(), "same fingerprints");
-        assert!(b.warnings(60).is_empty());
 
         // Leaving forgets everyone.
         a.leave();
@@ -789,7 +672,6 @@ mod tests {
     #[test]
     fn nonce_cycling_and_garbage_are_throttled() {
         let mut h = Handshake::new(Local {
-            strict: false,
             fingerprint: [0; 4],
         });
         h.enter(0x1111);
@@ -834,7 +716,6 @@ mod tests {
     #[test]
     fn the_roster_drops_leavers_and_re_announces_for_joiners() {
         let mut h = Handshake::new(Local {
-            strict: false,
             fingerprint: [0; 4],
         });
         h.enter(0x1111);
@@ -877,9 +758,8 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_host_removes_a_mismatched_peer_once_and_a_lenient_one_warns() {
+    fn a_mismatched_peer_is_logged_once_and_warned_about_never_removed() {
         let mut host = Handshake::new(Local {
-            strict: true,
             fingerprint: FP_A,
         });
         host.enter(0x1111);
@@ -892,54 +772,23 @@ mod tests {
         );
         let same = encode(KIND_HELLO, 0x2222, CAP_HANDSHAKE, FP_A);
         let differs = encode(KIND_HELLO, 0x3333, CAP_HANDSHAKE, FP_B);
-        assert!(kicks(&host.receive(10, 1, body(&same))).is_empty());
+        assert!(logs(&host.receive(10, 1, body(&same))).iter().all(|m| !m.contains("different")));
         let out = host.receive(10, 2, body(&differs));
-        assert_eq!(kicks(&out), vec![2]);
         let l = logs(&out);
         assert!(l.iter().any(|m| m.contains("Player 5")), "{l:?}");
         assert!(
             l.iter()
                 .any(|m| m.contains("theirs 01020304, ours aabbccdd"))
         );
-        assert!(l.iter().any(|m| m.starts_with("removed net slot 2")));
-        assert!(
-            host.announced(2),
-            "still announced until the transport drops it"
-        );
-        // The same announcement again: no second kick, no second warning line.
+        assert!(!out.iter().any(|o| !matches!(o, Out::Log(..) | Out::SendTo(..))));
+        // The same announcement again: no second warning line.
         let out = host.receive(11, 2, body(&differs));
-        assert!(kicks(&out).is_empty() && logs(&out).is_empty());
-        assert!(host.warnings(20).is_empty(), "a removed peer is not shown");
-
-        let mut lenient = Handshake::new(Local {
-            strict: false,
-            fingerprint: FP_A,
-        });
-        lenient.enter(0x1111);
-        lenient.frame(frame(0, true), || Some(vec![0, 2]));
-        let out = lenient.receive(10, 2, body(&differs));
-        assert!(kicks(&out).is_empty());
-        assert_eq!(
-            lenient.warnings(20),
-            vec!["net slot 2 runs different simulation plugins (01020304 vs. your aabbccdd)"]
-        );
-        // Turning strict on mid-lobby refuses them and announces the new caps.
-        let out = lenient.set_strict(true);
-        assert_eq!(kicks(&out), vec![2]);
-        assert!(lenient.set_strict(true).is_empty(), "no change");
-        let out = lenient.frame(frame(30, true), || None);
-        let hello = broadcasts(&out);
-        assert_eq!(hello.len(), 1);
-        assert_eq!(
-            decode(body(hello[0])).unwrap().caps,
-            CAP_HANDSHAKE | CAP_STRICT
-        );
+        assert!(logs(&out).is_empty());
     }
 
     #[test]
     fn everyone_has_needs_every_present_player_to_announce_the_same_plugins() {
         let mut host = Handshake::new(Local {
-            strict: false,
             fingerprint: FP_A,
         });
         assert!(!host.everyone_has(), "not in a lobby");
@@ -960,14 +809,12 @@ mod tests {
         assert!(host.everyone_has());
         // Alone in the lobby with the plugin, it is fine; without simulation plugins it is not.
         let mut alone = Handshake::new(Local {
-            strict: false,
             fingerprint: FP_A,
         });
         alone.enter(1);
         alone.frame(frame(0, true), || Some(vec![0]));
         assert!(alone.everyone_has());
         let mut none = Handshake::new(Local {
-            strict: false,
             fingerprint: [0; 4],
         });
         none.enter(1);
@@ -978,7 +825,6 @@ mod tests {
     #[test]
     fn a_joiner_is_warned_about_the_host_only() {
         let mut j = Handshake::new(Local {
-            strict: false,
             fingerprint: FP_A,
         });
         j.enter(0x1111);
@@ -987,72 +833,15 @@ mod tests {
         let other = encode(KIND_REPLY, 0x4444, CAP_HANDSHAKE, FP_B);
         let out = j.receive(10, 1, body(&other));
         assert!(logs(&out).iter().all(|m| !m.contains("different")));
-        assert!(j.warnings(20).is_empty());
-        // The host (slot 0) with other plugins, and strict: told what will happen.
-        let host = encode(KIND_REPLY, 0x5555, CAP_HANDSHAKE | CAP_STRICT, FP_B);
+        // The host (slot 0) with other plugins: told.
+        let host = encode(KIND_REPLY, 0x5555, CAP_HANDSHAKE, FP_B);
         let out = j.receive(10, 0, body(&host));
         assert!(logs(&out).iter().any(|m| m.contains("different")));
-        assert_eq!(
-            j.warnings(20),
-            vec![
-                "Your simulation plugins differ from the host's (01020304 vs. your aabbccdd); the host requires a match and will remove you"
-            ]
-        );
-        assert!(kicks(&out).is_empty(), "a joiner never kicks");
-    }
-
-    #[test]
-    fn players_without_the_mod_are_flagged_only_when_the_fingerprint_is_set() {
-        let mut host = Handshake::new(Local {
-            strict: true,
-            fingerprint: FP_A,
-        });
-        host.enter(0x1111);
-        host.frame(frame(0, true), || Some(vec![0, 2]));
-        assert!(host.warnings(1000).is_empty(), "inside the grace period");
-        assert_eq!(
-            host.warnings(UNANNOUNCED_GRACE_MS),
-            vec![
-                "net slot 2 does not run w2rpm; your simulation plugins cannot be checked against it"
-            ]
-        );
-        // Once they announce, the line goes (and with equal fingerprints nothing replaces it).
-        let same = encode(KIND_HELLO, 0x2222, CAP_HANDSHAKE, FP_A);
-        host.receive(4000, 2, body(&same));
-        assert!(host.warnings(5000).is_empty());
-
-        // The joiner's mirror image: a host that does not run the mod.
-        let mut j = Handshake::new(Local {
-            strict: false,
-            fingerprint: FP_A,
-        });
-        j.enter(0x1111);
-        j.frame(frame(0, false), || Some(vec![0, 3]));
-        j.receive(
-            5,
-            3,
-            body(&encode(KIND_HELLO, j.nonce(), CAP_HANDSHAKE, FP_A)),
-        );
-        assert_eq!(j.self_slot(), Some(3));
-        assert_eq!(
-            j.warnings(UNANNOUNCED_GRACE_MS),
-            vec!["The host does not run w2rpm; your simulation plugins cannot be checked"]
-        );
-
-        // No simulation plugins: players without the mod are never mentioned.
-        let mut plain = Handshake::new(Local {
-            strict: true,
-            fingerprint: [0; 4],
-        });
-        plain.enter(0x1111);
-        plain.frame(frame(0, true), || Some(vec![0, 2]));
-        assert!(plain.warnings(10_000).is_empty());
     }
 
     #[test]
     fn a_zero_nonce_from_the_game_side_is_fixed_up_and_own_echo_is_not_a_peer() {
         let mut h = Handshake::new(Local {
-            strict: false,
             fingerprint: [0; 4],
         });
         h.enter(0);
@@ -1071,7 +860,6 @@ mod tests {
     #[test]
     fn map_sharing_is_announced_as_capability_bit_two_and_re_announced_when_it_changes() {
         let mut h = Handshake::new(Local {
-            strict: false,
             fingerprint: [0; 4],
         });
         h.enter(1);
@@ -1085,15 +873,10 @@ mod tests {
         h.set_map_sharing(true);
         assert!(!h.hello_pending, "no change, no announcement");
         let mut s = Handshake::new(Local {
-            strict: true,
             fingerprint: [0; 4],
         });
         s.set_map_sharing(true);
-        assert_eq!(
-            s.caps(),
-            CAP_HANDSHAKE | CAP_STRICT | CAP_MAP_SHARING,
-            "it adds to strict, not replaces it"
-        );
+        assert_eq!(s.caps(), CAP_HANDSHAKE | CAP_MAP_SHARING);
         assert!(!s.peer_shares_maps(1), "nobody announced yet");
     }
 }

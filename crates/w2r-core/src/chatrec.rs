@@ -154,6 +154,26 @@ unsafe fn c_bytes(p: *const u8, max: usize) -> Vec<u8> {
 
 unsafe extern "C" fn send_detour(text: *const u8) {
     let original: SendFn = unsafe { core::mem::transmute(ORIG_SEND.load(Ordering::Acquire)) };
+    // `/plugins` goes out as the list of the player's plugins (docs/chat-commands.md).
+    let replaced = guarded(|| {
+        let bytes = unsafe { c_bytes(text, LOCAL_MAX) };
+        if !crate::plugincmd::is_command(&bytes) {
+            return None;
+        }
+        let mut line = crate::session::plugins_chat_line()?.into_bytes();
+        line.truncate(LOCAL_MAX - 1);
+        line.push(0);
+        Some(line)
+    })
+    .ok()
+    .flatten();
+    if let Some(line) = replaced {
+        return unsafe { send_detour_inner(original, line.as_ptr()) };
+    }
+    unsafe { send_detour_inner(original, text) }
+}
+
+unsafe fn send_detour_inner(original: SendFn, text: *const u8) {
     // Read what the game is about to use before it runs: it changes the mask around the call.
     let seen = guarded(|| {
         let a = ADDRS.get()?;

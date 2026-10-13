@@ -249,4 +249,4 @@ if (Test-Path $statePath) {
 
 Write-Host "host root: $root"
 Write-Host "now launch the game, enter a multiplayer lobby, then read $root\logs\w2r.log"
-Write-Host "the handshake logs 'announced (nonce ...)' on lobby entry; config\host.json holds require_matching_plugins"
+Write-Host "the handshake logs 'announced (nonce ...)' on lobby entry; config\host.json holds the host settings"

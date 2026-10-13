@@ -1,5 +1,4 @@
-//! The host's own settings, `config\host.json` (docs/layout.md). One field so far:
-//! `require_matching_plugins`, the handshake's strict bit (docs/load-policy.md). Read once at
+//! The host's own settings, `config\host.json` (docs/layout.md). Read once at
 //! startup under the same strict JSON rules as the other files; a bad file is logged and
 //! replaced by the defaults in memory (it is rewritten only when the user changes a setting).
 
@@ -13,8 +12,6 @@ pub const MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostConfig {
-    /// When hosting, refuse players whose simulation fingerprint differs from ours.
-    pub require_matching_plugins: bool,
     /// When hosting, refuse other players' team changes (docs/lobby-policy.md).
     pub lock_team_changes: bool,
     /// When hosting, refuse other players' slot swaps.
@@ -39,7 +36,6 @@ impl Default for HostConfig {
     /// docs/lobby-screen.md).
     fn default() -> Self {
         HostConfig {
-            require_matching_plugins: false,
             lock_team_changes: false,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
@@ -71,8 +67,10 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
                 }
                 seen_schema = true;
             }
+            // Retired setting (a strict host used to remove mismatched players); files that still
+            // have it are accepted and it is dropped on the next write.
             "require_matching_plugins" => {
-                cfg.require_matching_plugins = value.as_bool().ok_or("bad_field")?;
+                value.as_bool().ok_or("bad_field")?;
             }
             "lock_team_changes" => cfg.lock_team_changes = value.as_bool().ok_or("bad_field")?,
             "lock_slot_swaps" => cfg.lock_slot_swaps = value.as_bool().ok_or("bad_field")?,
@@ -101,10 +99,6 @@ impl HostConfig {
             (
                 "schema".to_owned(),
                 Value::Number(Number { text: "1".into() }),
-            ),
-            (
-                "require_matching_plugins".to_owned(),
-                Value::Bool(self.require_matching_plugins),
             ),
             (
                 "lock_team_changes".to_owned(),
@@ -183,7 +177,6 @@ mod tests {
     #[test]
     fn parses_round_trips_and_refuses_the_unknown() {
         let cfg = HostConfig {
-            require_matching_plugins: true,
             lock_team_changes: true,
             lock_slot_swaps: false,
             enhanced_create_screen: true,
@@ -229,6 +222,11 @@ mod tests {
             Err("bad_schema")
         );
         assert_eq!(parse(b"{\"schema\": 2}"), Err("bad_schema"));
+        // The retired setting is still accepted (and ignored), but only as a boolean.
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"require_matching_plugins\": true}"),
+            Ok(HostConfig::default())
+        );
         assert_eq!(
             parse(b"{\"schema\": 1, \"require_matching_plugins\": 1}"),
             Err("bad_field")
@@ -253,7 +251,6 @@ mod tests {
             "missing is default"
         );
         let cfg = HostConfig {
-            require_matching_plugins: true,
             lock_team_changes: false,
             lock_slot_swaps: true,
             enhanced_create_screen: false,

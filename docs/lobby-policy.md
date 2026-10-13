@@ -42,7 +42,7 @@ messages.
 
 wc2r-plus stores the host's choice from its own Create Multiplayer Game screen, which is a custom
 screen (`lobby_creation_screen.cpp`) and not part of this step. Here the choice is two checkboxes on
-the plugin screen next to the strict-mode one, stored in `config\host.json` as
+the plugin screen, stored in `config\host.json` as
 `lock_team_changes` and `lock_slot_swaps` (both default false; `hostcfg.rs` accepts only known
 fields, so the schema stays 1 and the two fields are added to the known list). They are applied
 once when the player becomes the lobby host, and can be flipped while hosting.

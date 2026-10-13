@@ -88,7 +88,6 @@ impl Net {
     fn idle() -> Net {
         Net {
             handshake: RefCell::new(Handshake::new(handshake::Local {
-                strict: false,
                 fingerprint: [0; 4],
             })),
             transport: Rc::new(NoTransport),
@@ -102,7 +101,6 @@ impl Net {
             let failed = match out {
                 Out::Broadcast(m) => (!self.transport.broadcast(&m)).then_some("broadcast"),
                 Out::SendTo(slot, m) => (!self.transport.send_to(slot, &m)).then_some("send"),
-                Out::Kick(slot) => (!self.transport.kick(slot)).then_some("kick"),
                 Out::Log(level, msg) => {
                     StartupLog.line(level, "handshake", &msg);
                     None
@@ -515,19 +513,24 @@ pub fn with_nk(f: impl FnOnce(&options::Nk)) {
     }
 }
 
-/// What the lobby should tell the local player right now (docs/load-policy.md, "Policy"). Shown
-/// on the plugin screen; the in-lobby banner is parked (docs/PLAN.md, Phase 3 step 1).
-pub fn lobby_warnings() -> Vec<String> {
-    NET.with(|n| {
-        n.borrow()
-            .as_ref()
-            .and_then(|net| {
-                net.handshake
-                    .try_borrow()
-                    .ok()
-                    .map(|h| h.warnings(chat::now_ms()))
+/// The chat line `/plugins` is replaced by: the plugins that are running, with versions. `None` before the session exists.
+pub fn plugins_chat_line() -> Option<String> {
+    SESSION.with(|cell| {
+        let slot = cell.try_borrow().ok()?;
+        let session = slot.as_ref()?;
+        let entries: Vec<String> = session
+            .state
+            .plugins
+            .iter()
+            .filter(|p| {
+                session
+                    .registry
+                    .find(&p.id)
+                    .is_some_and(|s| matches!(s.state(), SlotState::Active))
             })
-            .unwrap_or_default()
+            .map(|p| format!("{} {}", p.id, state_version(p)))
+            .collect();
+        Some(crate::plugincmd::line(&entries))
     })
 }
 
@@ -566,7 +569,6 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
         let mut host = HostRow {
             fingerprint: session.fingerprint,
             simulation: session.simulation.clone(),
-            strict: session.config.require_matching_plugins,
             lock_teams: session.config.lock_team_changes,
             lock_slots: session.config.lock_slot_swaps,
             create_screen: session.config.enhanced_create_screen,
@@ -576,7 +578,6 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             record_replays: session.config.record_replays,
             auto_game_name: session.config.auto_game_name,
             share_match_data: crate::uploader::enabled(),
-            lobby: lobby_warnings(),
         };
         let registry = &session.registry;
         let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
@@ -606,30 +607,6 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                         &format!("cannot write state.json: {e}"),
                     ),
                 }
-            }
-            Action::ToggleStrict => {
-                session.config.require_matching_plugins = host.strict;
-                match hostcfg::write(&session.root, &session.config) {
-                    Ok(()) => StartupLog.line(
-                        W2R_LOG_INFO,
-                        "host",
-                        &format!(
-                            "require_matching_plugins {}",
-                            if host.strict { "on" } else { "off" }
-                        ),
-                    ),
-                    Err(e) => StartupLog.line(
-                        W2R_LOG_ERROR,
-                        "host",
-                        &format!("cannot write {}: {e}", hostcfg::FILE),
-                    ),
-                }
-                let net = session.net.clone();
-                let outs = match net.handshake.try_borrow_mut() {
-                    Ok(mut h) => h.set_strict(host.strict),
-                    Err(_) => Vec::new(),
-                };
-                net.run(outs);
             }
             Action::ToggleLocks => {
                 save_locks(session, host.lock_teams, host.lock_slots);
@@ -992,19 +969,11 @@ fn start() -> Session {
     if let Some(w) = warning {
         log.line(W2R_LOG_WARN, "host", &w);
     }
-    if config.require_matching_plugins {
-        log.line(
-            W2R_LOG_INFO,
-            "host",
-            "require_matching_plugins is on: when hosting, mismatched players are removed",
-        );
-    }
     let symbols = Symbols::new(startup.game_base);
     let game = startup.image.clone().map(|image| Game { image, symbols });
     let transport = transport(&symbols, &*log);
     let net = Rc::new(Net {
         handshake: RefCell::new(Handshake::new(handshake::Local {
-            strict: config.require_matching_plugins,
             fingerprint: [0; 4],
         })),
         transport: transport.clone(),
@@ -1038,6 +1007,8 @@ fn start() -> Session {
         crate::replayplay::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::chatrec::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::plugincmd::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::hudpanel::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]

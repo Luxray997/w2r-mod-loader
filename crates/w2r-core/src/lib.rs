@@ -92,6 +92,7 @@ pub mod matchend;
 pub mod matchstart;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod options;
+pub mod plugincmd;
 #[cfg(windows)]
 pub mod paths;
 #[cfg(windows)]
