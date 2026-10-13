@@ -78,6 +78,8 @@ static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 /// The player the recording was made as; the view starts there and Home returns to it.
 static HOME: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
+/// The map view follows the recorded player's camera (while that player is the one watched).
+static FOLLOW: AtomicBool = AtomicBool::new(true);
 /// Which watched keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
 /// The scoreboard under the panel: 0 now, 1 totals, 2 rates, 3 hidden.
@@ -135,6 +137,11 @@ struct Addrs {
     race_flag: usize,
     /// `PlayerRaces`: each player's race.
     races: usize,
+    cam_x: usize,
+    cam_y: usize,
+    view_w: usize,
+    view_h: usize,
+    clamp_camera: usize,
 }
 
 struct Play {
@@ -413,6 +420,16 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
+    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera)) = (
+        get("CameraScrollX"),
+        get("CameraScrollY"),
+        get("ViewportWidth"),
+        get("ViewportHeight"),
+        get("ClampCamera"),
+    ) else {
+        log.line(W2R_LOG_ERROR, "host", "replay follow view: symbols missing");
+        return false;
+    };
     let _ = ADDRS.set(Addrs {
         slot_type,
         team_change,
@@ -438,6 +455,11 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         sync_init,
         race_flag,
         races,
+        cam_x,
+        cam_y,
+        view_w,
+        view_h,
+        clamp_camera,
     });
     let mut ok = true;
     // SAFETY: each detour matches its target's cdecl signature (Ghidra, build 2818; the call
@@ -802,7 +824,7 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
             }
             log(
                 W2R_LOG_INFO,
-                "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision;                  Page Up/Down speed, End pause, Delete step",
+                "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision, backslash follows the recorded player's camera;                  Page Up/Down speed, End pause, Delete step",
             );
         }
     }
@@ -920,8 +942,10 @@ const KEY_SLOWER: u16 = 32;
 const KEY_PAUSE: u16 = 64;
 const KEY_STEP: u16 = 128;
 const KEY_BOARD: u16 = 256;
+const KEY_FOLLOW: u16 = 512;
 /// `[`, `]`, Home and Insert.
-const WATCHED: [(u16, i32); 9] = [
+const WATCHED: [(u16, i32); 10] = [
+    (KEY_FOLLOW, 0xDC),
     (KEY_BOARD, 0xC0),
     (KEY_FASTER, 0x21),
     (KEY_SLOWER, 0x22),
@@ -1367,6 +1391,47 @@ pub fn poll() {
         return;
     }
     let _ = guarded(poll_keys);
+    let _ = guarded(follow_camera);
+}
+
+/// Once per frame: moves the map view towards where the recorded player was looking at this
+/// turn, easing between the turn-sized steps. Only while that player is the one being watched
+/// (nobody else's camera was recorded) and the view has not been switched off with `\`.
+fn follow_camera() {
+    let Some(a) = ADDRS.get() else { return };
+    let real = REAL.load(Ordering::Acquire);
+    if real >= 8 || !FOLLOW.load(Ordering::Acquire) {
+        return;
+    }
+    let viewed = VIEWED.load(Ordering::Acquire);
+    let watching = if viewed < 8 { viewed } else { real };
+    if watching != HOME.load(Ordering::Acquire) {
+        return;
+    }
+    // SAFETY: the turn counter is a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) };
+    let Some(target) = PLAY
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|p| w2r_replay::camera::at(&p.replay.cameras, turn)))
+    else {
+        return;
+    };
+    // SAFETY: the camera scroll is two i32 and the view size two u16 in the game's data section;
+    // `ClampCamera` takes nothing and keeps the scroll inside the map. Main thread, between ticks.
+    unsafe {
+        let x = a.cam_x as *mut i32;
+        let y = a.cam_y as *mut i32;
+        let w = u32::from(core::ptr::read_unaligned(a.view_w as *const u16));
+        let h = u32::from(core::ptr::read_unaligned(a.view_h as *const u16));
+        let goal = w2r_replay::camera::origin(target, w, h);
+        let from = (core::ptr::read_unaligned(x), core::ptr::read_unaligned(y));
+        // A jump of more than a view's width is taken at once (the first frame, a map alert).
+        let (nx, ny) = w2r_replay::camera::ease(from, goal, w.max(h) as i32);
+        core::ptr::write_unaligned(x, nx);
+        core::ptr::write_unaligned(y, ny);
+        core::mem::transmute::<usize, VoidFn>(a.clamp_camera)();
+    }
 }
 
 fn poll_keys() {
@@ -1410,7 +1475,21 @@ fn poll_keys() {
         let next = (BOARD.load(Ordering::Acquire) + 1) % 4;
         BOARD.store(next, Ordering::Release);
     }
-    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD) == 0 {
+    if pressed & KEY_FOLLOW != 0 {
+        let has_camera = PLAY
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|p| !p.replay.cameras.is_empty()))
+            .unwrap_or(false);
+        if !has_camera {
+            say(a, "This recording has no camera data (made before it was kept)");
+        } else if FOLLOW.fetch_xor(true, Ordering::AcqRel) {
+            say(a, "Camera follow off");
+        } else {
+            say(a, "Camera follows the recorded player (backslash to stop)");
+        }
+    }
+    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD | KEY_FOLLOW) == 0 {
         return;
     }
     let list = players(a);
@@ -1458,6 +1537,7 @@ fn reset_view() {
     VIEWED.store(NONE, Ordering::Release);
     HOME.store(NONE, Ordering::Release);
     FULL_VISION.store(false, Ordering::Release);
+    FOLLOW.store(true, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
     BOARD.store(0, Ordering::Release);

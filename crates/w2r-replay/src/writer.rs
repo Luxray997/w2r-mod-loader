@@ -5,7 +5,7 @@
 use std::io::{self, Write};
 
 use crate::format::{
-    Footer, Header, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, REC_CHAT, REC_FOOTER, REC_TURN,
+    Footer, Header, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, REC_CAMERA, REC_CHAT, REC_FOOTER, REC_TURN,
     VERSION, put_varint,
 };
 
@@ -86,6 +86,19 @@ impl<W: Write> Writer<W> {
         put_varint(b, u64::from(duration_ms));
         put_varint(b, text.len() as u64);
         b.extend_from_slice(text);
+        self.out.write_all(b)
+    }
+
+    /// Where the recorded player's camera was looking (the centre of the map view, in map
+    /// pixels) when `turn` was the next to run. Written only when it moved; the camera is not part
+    /// of the simulation, so it is kept in its own records for the follow view.
+    pub fn camera(&mut self, turn: u32, x: u32, y: u32) -> io::Result<()> {
+        let b = &mut self.scratch;
+        b.clear();
+        b.push(REC_CAMERA);
+        put_varint(b, u64::from(turn));
+        put_varint(b, u64::from(x));
+        put_varint(b, u64::from(y));
         self.out.write_all(b)
     }
 
@@ -300,6 +313,27 @@ mod tests {
         // a cut inside the last chat keeps everything before it
         let r = Replay::parse(&full[..full.len() - 3]).unwrap();
         assert_eq!((r.turns.len(), r.chats.len()), (2, 1));
+    }
+
+    #[test]
+    fn camera_records_round_trip_and_survive_a_cut() {
+        let mut w = Writer::new(Vec::new(), &header()).unwrap();
+        w.turn(0, &[(0, &[5])]).unwrap();
+        w.camera(1, 640, 480).unwrap();
+        w.turn(1, &[(0, &[5])]).unwrap();
+        w.camera(2, 100_000, 7).unwrap();
+        let full = w.out.clone();
+        let r = Replay::parse(&full).unwrap();
+        assert_eq!(r.turns.len(), 2);
+        assert_eq!(
+            r.cameras,
+            [
+                crate::Camera { turn: 1, x: 640, y: 480 },
+                crate::Camera { turn: 2, x: 100_000, y: 7 }
+            ]
+        );
+        let r = Replay::parse(&full[..full.len() - 1]).unwrap();
+        assert_eq!(r.cameras.len(), 1);
     }
 
     #[test]

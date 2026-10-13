@@ -4,6 +4,7 @@
 //! Rust with no game or Windows calls, so everything is tested without the game.
 
 pub mod activity;
+pub mod camera;
 pub mod catalog;
 pub mod chat;
 pub mod format;
@@ -13,5 +14,5 @@ pub mod upload;
 pub mod writer;
 
 pub use format::{Footer, Header};
-pub use reader::{Chat, Replay, Turn};
+pub use reader::{Camera, Chat, Replay, Turn};
 pub use writer::Writer;

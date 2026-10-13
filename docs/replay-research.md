@@ -174,3 +174,21 @@ contradictory in the decompile and need a look at the disassembly.
    same game: confirms the stream is complete.
 3. **Playback:** 0x49d130 injection, local-only start, controls.
 4. **Browser + `w2rpm replays` CLI/GUI listing, then sharing.**
+
+## Follow camera (2026-10-13)
+
+The camera is not in the turn packets, so the recorder writes it itself: record `0x04` (turn,
+centre x, centre y in map pixels), only when it moved. Scroll = `CameraScrollX/Y` 0x91ad80/84
+(i32 pixels, top-left), view size = `ViewportWidth/Height` 0x91cb08/0c (u16), clamp = `ClampCamera`
+0x4afd00. Playback (`replayplay::follow_camera`, once per frame) eases towards the sample in force
+at `NetTurnCounter`, only while the recorded player is the one watched; `\` toggles it. Pure part:
+`w2r-replay/src/camera.rs`. Hint rows on the HUD panel draw the key in yellow.
+
+## Roadmap
+
+- **Ghost cursor (not started):** record the recorded player's mouse position (and cursor frame:
+  arrow / move / attack) like the camera, and draw a ghost of it during playback. Reuse the game's
+  own cursor sprite at runtime by calling its cursor draw routine at the recorded position (nothing
+  is copied or shipped); fall back to a tinted shape if it cannot be called twice per frame. Needs
+  Ghidra first: the mouse x/y globals and the cursor draw routine. Optionally record clicks and
+  flash a ring where an order was given. Store map pixels over the map, screen pixels over the HUD.

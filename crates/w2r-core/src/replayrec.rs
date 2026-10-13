@@ -68,6 +68,10 @@ struct Addrs {
     names: usize,
     seed: usize,
     rng: usize,
+    cam_x: usize,
+    cam_y: usize,
+    view_w: usize,
+    view_h: usize,
 }
 
 struct Config {
@@ -81,6 +85,8 @@ struct Rec {
     path: PathBuf,
     last_turn: u32,
     flushed_at: u64,
+    /// The camera centre last written, so only movement is recorded.
+    camera: Option<(u32, u32)>,
 }
 
 fn log(level: u32, text: &str) {
@@ -147,6 +153,15 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay recording: symbols missing");
         return false;
     };
+    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h)) = (
+        get("CameraScrollX"),
+        get("CameraScrollY"),
+        get("ViewportWidth"),
+        get("ViewportHeight"),
+    ) else {
+        log.line(W2R_LOG_ERROR, "host", "replay recording: camera symbols missing");
+        return false;
+    };
     let _ = ADDRS.set(Addrs {
         ptrs,
         lens,
@@ -158,6 +173,10 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         names,
         seed,
         rng,
+        cam_x,
+        cam_y,
+        view_w,
+        view_h,
     });
     // SAFETY: `detour` matches ProcessNetworkTurn's cdecl `u32()` signature (Ghidra, build 2818).
     let result = unsafe {
@@ -316,6 +335,22 @@ fn capture() {
     }
     let now = crate::matchend::now_secs();
     let mut ok = rec.writer.turn(turn, &packets).is_ok();
+    // Where the player is looking for the next turn: its own record, only when it moved. The
+    // camera is not simulation state; it is kept so a replay can follow it.
+    if ok {
+        // SAFETY: the camera scroll is two i32 and the view size two u16 in the game's data section.
+        let centre = unsafe {
+            let x = core::ptr::read_unaligned(a.cam_x as *const i32);
+            let y = core::ptr::read_unaligned(a.cam_y as *const i32);
+            let w = i32::from(core::ptr::read_unaligned(a.view_w as *const u16));
+            let h = i32::from(core::ptr::read_unaligned(a.view_h as *const u16));
+            ((x + w / 2).max(0) as u32, (y + h / 2).max(0) as u32)
+        };
+        if rec.camera != Some(centre) {
+            ok = rec.writer.camera(turn.wrapping_add(1), centre.0, centre.1).is_ok();
+            rec.camera = Some(centre);
+        }
+    }
     if ok && now >= rec.flushed_at + FLUSH_EVERY_SECS {
         ok = rec.writer.flush().is_ok();
         rec.flushed_at = now;
@@ -394,6 +429,7 @@ unsafe fn start(a: &Addrs, cfg: &Config, first_turn: u32) -> Option<Rec> {
         path,
         last_turn: first_turn,
         flushed_at: started,
+        camera: None,
     })
 }
 

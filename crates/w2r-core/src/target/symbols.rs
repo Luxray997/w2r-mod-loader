@@ -6,7 +6,7 @@
 
 use super::{Kind, Symbol};
 
-pub const COUNT: usize = 384;
+pub const COUNT: usize = 389;
 
 /// Sorted by `name` (bytewise), so lookups can binary-search.
 pub static SYMBOLS: &[Symbol] = &[
@@ -131,6 +131,18 @@ pub static SYMBOLS: &[Symbol] = &[
         c_type: "int(__cdecl*)(void* ctx, const char* label)",
     },
     Symbol {
+        name: "CameraScrollX",
+        kind: Kind::Object,
+        static_addr: 0x0091ad80,
+        c_type: "int32_t",
+    },
+    Symbol {
+        name: "CameraScrollY",
+        kind: Kind::Object,
+        static_addr: 0x0091ad84,
+        c_type: "int32_t",
+    },
+    Symbol {
         name: "ChatDialog",
         kind: Kind::Object,
         static_addr: 0x00934788,
@@ -188,6 +200,12 @@ pub static SYMBOLS: &[Symbol] = &[
         name: "CheckMatchEnd",
         kind: Kind::Function,
         static_addr: 0x004f4930,
+        c_type: "void(__cdecl*)()",
+    },
+    Symbol {
+        name: "ClampCamera",
+        kind: Kind::Function,
+        static_addr: 0x004afd00,
         c_type: "void(__cdecl*)()",
     },
     Symbol {
@@ -2289,6 +2307,18 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Object,
         static_addr: 0x00922f5a,
         c_type: "uint8_t",
+    },
+    Symbol {
+        name: "ViewportHeight",
+        kind: Kind::Object,
+        static_addr: 0x0091cb0c,
+        c_type: "uint16_t",
+    },
+    Symbol {
+        name: "ViewportWidth",
+        kind: Kind::Object,
+        static_addr: 0x0091cb08,
+        c_type: "uint16_t",
     },
     Symbol {
         name: "VisionMasks",

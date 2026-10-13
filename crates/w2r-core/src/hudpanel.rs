@@ -74,6 +74,7 @@ const TRACK: u32 = rgba(70, 60, 44, 255);
 const FILL: u32 = rgba(226, 184, 68, 255);
 const FILL_PAUSED: u32 = rgba(190, 96, 72, 255);
 const WATCHED_ROW: u32 = rgba(226, 184, 68, 70);
+const KEY_COLOUR: u32 = rgba(255, 214, 64, 255);
 const DIM: u32 = rgba(140, 130, 112, 255);
 const GONE: u32 = rgba(110, 100, 88, 255);
 
@@ -321,6 +322,27 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
         .collect()
 }
 
+/// One line of key hints, centred: each key in yellow followed by what it does. The font has
+/// no width query, so the layout assumes `CHAR_WIDTH` per character.
+fn hint_row(kit: &Kit, y: f32, items: &[(&str, &str)]) {
+    const CHAR_WIDTH: f32 = 7.0;
+    const GAP: usize = 3;
+    let chars: usize = items
+        .iter()
+        .map(|(k, d)| k.len() + 1 + d.len())
+        .sum::<usize>()
+        + GAP * items.len().saturating_sub(1);
+    let mut x = (WIDTH - chars as f32 * CHAR_WIDTH) / 2.0;
+    for (key, what) in items {
+        let key_w = key.len() as f32 * CHAR_WIDTH;
+        kit.label_coloured_at(Rect::new(x, y, key_w * 2.0, 14.0), key, ALIGN_LEFT, KEY_COLOUR);
+        let what_x = x + key_w + CHAR_WIDTH;
+        let what_w = what.len() as f32 * CHAR_WIDTH * 2.0;
+        kit.label_at(Rect::new(what_x, y, what_w, 14.0), what, ALIGN_LEFT);
+        x = what_x + what.len() as f32 * CHAR_WIDTH + GAP as f32 * CHAR_WIDTH;
+    }
+}
+
 /// `x` is the window's left edge: fills use screen coordinates, labels the window's own.
 fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     let Some(panel) = PANEL.get() else { return };
@@ -360,17 +382,18 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
         &progress,
         ALIGN_RIGHT,
     );
-    let hint = if pace.ended {
-        "Open the menu to leave"
-    } else {
-        "PgUp/PgDn speed   End pause   Del step   ` page"
-    };
-    kit.label_at(Rect::new(0.0, 28.0, WIDTH, 14.0), hint, ALIGN_CENTRE);
-    if !pace.ended {
+    if pace.ended {
         kit.label_at(
-            Rect::new(0.0, 42.0, WIDTH, 14.0),
-            "[ ] switch player   Home own view   Ins full vision",
+            Rect::new(0.0, 28.0, WIDTH, 14.0),
+            "Open the menu to leave",
             ALIGN_CENTRE,
+        );
+    } else {
+        hint_row(kit, 28.0, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
+        hint_row(
+            kit,
+            42.0,
+            &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), ("\\", "follow")],
         );
     }
 

@@ -5,7 +5,7 @@ use w2r_stats::slot::{self, SLOT_LEN, SLOTS};
 
 use crate::format::{
     Footer, Header, LOBBY_LEN, MAGIC, SLOT_BACKUP_LEN, MAX_CHAT, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN,
-    OWNER_LEN, REC_CHAT, REC_FOOTER, REC_TURN, VERSION,
+    OWNER_LEN, REC_CAMERA, REC_CHAT, REC_FOOTER, REC_TURN, VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,12 +25,24 @@ pub struct Chat {
     pub text: Vec<u8>,
 }
 
+/// Where the recorded player's camera was looking (see `Writer::camera`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Camera {
+    /// The turn that was next to run when the view was there.
+    pub turn: u32,
+    /// The centre of the map view, in map pixels.
+    pub x: u32,
+    pub y: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replay {
     pub header: Header,
     pub turns: Vec<Turn>,
     /// Chat lines in the order they appeared.
     pub chats: Vec<Chat>,
+    /// The recorded player's camera, in order. Empty in recordings made before it was kept.
+    pub cameras: Vec<Camera>,
     /// The last footer: present once the match produced a result or the recording was closed.
     pub footer: Option<Footer>,
 }
@@ -163,6 +175,15 @@ fn chat_record(r: &mut Cur) -> Option<Chat> {
     })
 }
 
+/// One camera record after its tag byte; `None` if it is cut off or invalid.
+fn camera_record(r: &mut Cur) -> Option<Camera> {
+    Some(Camera {
+        turn: u32::try_from(r.varint()?).ok()?,
+        x: u32::try_from(r.varint()?).ok()?,
+        y: u32::try_from(r.varint()?).ok()?,
+    })
+}
+
 /// One turn record after its tag byte; `None` if it is cut off or invalid.
 fn turn_record(r: &mut Cur, after: Option<u32>) -> Option<Turn> {
     let turn = u32::try_from(r.varint()?).ok()?;
@@ -215,6 +236,7 @@ impl Replay {
         let mut turns: Vec<Turn> = Vec::new();
         let mut footer = None;
         let mut chats: Vec<Chat> = Vec::new();
+        let mut cameras: Vec<Camera> = Vec::new();
         // Each record is read from a copy of the cursor, so a cut-off one is dropped whole.
         loop {
             let mut r = c;
@@ -239,6 +261,10 @@ impl Replay {
                     Some(chat) => chats.push(chat),
                     None => break,
                 },
+                Some(REC_CAMERA) => match camera_record(&mut r) {
+                    Some(cam) => cameras.push(cam),
+                    None => break,
+                },
                 _ => break,
             }
             c = r;
@@ -247,6 +273,7 @@ impl Replay {
             header,
             turns,
             chats,
+            cameras,
             footer,
         })
     }
