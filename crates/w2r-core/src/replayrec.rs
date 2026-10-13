@@ -245,6 +245,7 @@ pub fn recording() -> bool {
 
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
+    crate::apm::reset();
     end(None);
     if let Ok(mut r) = RESULT.lock() {
         *r = None;
@@ -275,6 +276,11 @@ unsafe extern "C" fn detour() -> u32 {
         return 0;
     }
     let done = unsafe { original() };
+    if done == 1 {
+        if let Err(fault) = guarded(crate::apm::on_turn) {
+            crate::session::host_fault("apm counter", &fault);
+        }
+    }
     if done == 1 && (ARMED.load(Ordering::Acquire) || is_recording()) {
         if let Err(fault) = guarded(capture) {
             // Stop recording a match whose tables fault: one report, then silence.

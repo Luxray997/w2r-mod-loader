@@ -319,9 +319,17 @@ pub struct HostRow {
     pub record_replays: bool,
     /// `auto_game_name` (`host.json`); the create screen suggests a game name on its own.
     pub auto_game_name: bool,
+    /// The APM counter (`host.json`, docs/apm.md); every part applies at once.
+    pub apm_display: bool,
+    pub apm_alert_below: u32,
+    pub apm_color_text: bool,
+    pub apm_play_sound: bool,
     /// `share_match_data` (`sharing.json`); match reports are uploaded from the next match.
     pub share_match_data: bool,
 }
+
+/// The APM threshold's edit text: whether it was filled from the setting yet, and the bytes.
+static APM_BUFFER: std::sync::Mutex<(bool, [u8; 5])> = std::sync::Mutex::new((false, [0; 5]));
 
 pub const LOCK_TEAMS_LABEL: &str = "Lock team changes";
 pub const LOCK_SLOTS_LABEL: &str = "Lock slot swaps";
@@ -331,6 +339,10 @@ pub const MAP_SHARING_LABEL: &str = "Share maps with players";
 pub const AUTO_DOWNLOAD_LABEL: &str = "Download missing maps automatically";
 pub const RECORD_REPLAYS_LABEL: &str = "Save replays";
 pub const AUTO_GAME_NAME_LABEL: &str = "Auto-Name Games by Map";
+pub const APM_DISPLAY_LABEL: &str = "Display APM In Game";
+pub const APM_ALERT_LABEL: &str = "Alert when APM falls below";
+pub const APM_COLOR_LABEL: &str = "Color Text";
+pub const APM_SOUND_LABEL: &str = "Play Sound";
 pub const SHARE_LABEL: &str = "Contribute Match Data";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +364,8 @@ pub enum Action {
     ToggleRecording,
     /// The user flipped `auto_game_name`.
     ToggleAutoGameName,
+    /// The user changed one of the APM settings.
+    ChangeApm,
     /// The user flipped `share_match_data`.
     ToggleSharing,
 }
@@ -424,6 +438,44 @@ pub fn draw_plugin_screen(
     if w.checkbox(AUTO_GAME_NAME_LABEL, &mut auto_game_name) {
         host.auto_game_name = auto_game_name;
         action = Action::ToggleAutoGameName;
+    }
+    w.row(ROW_H, 1);
+    let mut apm_display = host.apm_display;
+    if w.checkbox(APM_DISPLAY_LABEL, &mut apm_display) {
+        host.apm_display = apm_display;
+        action = Action::ChangeApm;
+    }
+    // The threshold is typed into a box that keeps its text between frames (the game holds the
+    // buffer's address while it is focused, so it lives in a static).
+    w.row(EDIT_ROW_H, 2);
+    if let Ok(mut buf) = APM_BUFFER.lock() {
+        if !buf.0 {
+            let text = host.apm_alert_below.to_string();
+            buf.1[..text.len()].copy_from_slice(text.as_bytes());
+            buf.0 = true;
+        }
+        if w.text_edit(APM_ALERT_LABEL, &mut buf.1) {
+            // Digits only, and never more than the setting allows.
+            let digits: String = buf.1.iter().take_while(|&&c| c != 0).map(|&c| c as char)
+                .filter(char::is_ascii_digit).collect();
+            let value = digits.parse::<u32>().unwrap_or(0).min(crate::hostcfg::APM_ALERT_MAX);
+            if value != host.apm_alert_below {
+                host.apm_alert_below = value;
+                action = Action::ChangeApm;
+            }
+        }
+    }
+    w.row(ROW_H, 1);
+    let mut apm_color = host.apm_color_text;
+    if w.checkbox(APM_COLOR_LABEL, &mut apm_color) {
+        host.apm_color_text = apm_color;
+        action = Action::ChangeApm;
+    }
+    w.row(ROW_H, 1);
+    let mut apm_sound = host.apm_play_sound;
+    if w.checkbox(APM_SOUND_LABEL, &mut apm_sound) {
+        host.apm_play_sound = apm_sound;
+        action = Action::ChangeApm;
     }
     w.row(ROW_H, 1);
     let mut share = host.share_match_data;
@@ -690,6 +742,10 @@ mod tests {
             auto_download: false,
             record_replays: false,
             auto_game_name: false,
+            apm_display: false,
+            apm_alert_below: 60,
+            apm_color_text: true,
+            apm_play_sound: false,
             share_match_data: false,
         };
         let mut sections = Vec::new();
@@ -712,8 +768,12 @@ mod tests {
         assert_eq!(calls[15], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
         assert_eq!(calls[17], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
         assert_eq!(calls[19], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
-        assert_eq!(calls[21], format!("checkbox {SHARE_LABEL:?} false"));
-        assert_eq!(calls[23], "label \"Plugins (3)\"");
+        assert_eq!(calls[21], format!("checkbox {APM_DISPLAY_LABEL:?} false"));
+        assert_eq!(calls[23], format!("text_edit {APM_ALERT_LABEL:?}"));
+        assert_eq!(calls[25], format!("checkbox {APM_COLOR_LABEL:?} true"));
+        assert_eq!(calls[27], format!("checkbox {APM_SOUND_LABEL:?} false"));
+        assert_eq!(calls[29], format!("checkbox {SHARE_LABEL:?} false"));
+        assert_eq!(calls[31], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -742,6 +802,10 @@ mod tests {
             auto_download: false,
             record_replays: false,
             auto_game_name: false,
+            apm_display: false,
+            apm_alert_below: 60,
+            apm_color_text: true,
+            apm_play_sound: false,
             share_match_data: false,
         };
         assert_eq!(

@@ -28,7 +28,18 @@ pub struct HostConfig {
     pub record_replays: bool,
     /// Create screen: fill the game name from the map while it is empty and on each map change.
     pub auto_game_name: bool,
+    /// Show the player's actions per minute on the game screen (docs/apm.md).
+    pub apm_display: bool,
+    /// Alert when the APM falls below this many; 0 turns the alert off.
+    pub apm_alert_below: u32,
+    /// Alert by colouring the APM text red.
+    pub apm_color_text: bool,
+    /// Alert by playing a sound.
+    pub apm_play_sound: bool,
 }
+
+/// The highest threshold the settings screen accepts.
+pub const APM_ALERT_MAX: u32 = 999;
 
 impl Default for HostConfig {
     /// Everything off except the replacement Create Multiplayer Game and lobby screens, which are
@@ -44,6 +55,10 @@ impl Default for HostConfig {
             auto_download: false,
             record_replays: true,
             auto_game_name: false,
+            apm_display: false,
+            apm_alert_below: 60,
+            apm_color_text: true,
+            apm_play_sound: false,
         }
     }
 }
@@ -78,6 +93,16 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
             "record_replays" => cfg.record_replays = value.as_bool().ok_or("bad_field")?,
             "auto_game_name" => cfg.auto_game_name = value.as_bool().ok_or("bad_field")?,
+            "apm_display" => cfg.apm_display = value.as_bool().ok_or("bad_field")?,
+            "apm_color_text" => cfg.apm_color_text = value.as_bool().ok_or("bad_field")?,
+            "apm_play_sound" => cfg.apm_play_sound = value.as_bool().ok_or("bad_field")?,
+            "apm_alert_below" => {
+                let n = value.as_number().and_then(Number::as_u64).ok_or("bad_field")?;
+                if n > u64::from(APM_ALERT_MAX) {
+                    return Err("bad_field");
+                }
+                cfg.apm_alert_below = n as u32;
+            }
             "enhanced_lobby_screen" => {
                 cfg.enhanced_lobby_screen = value.as_bool().ok_or("bad_field")?;
             }
@@ -125,6 +150,21 @@ impl HostConfig {
             (
                 "auto_game_name".to_owned(),
                 Value::Bool(self.auto_game_name),
+            ),
+            ("apm_display".to_owned(), Value::Bool(self.apm_display)),
+            (
+                "apm_alert_below".to_owned(),
+                Value::Number(Number {
+                    text: self.apm_alert_below.to_string(),
+                }),
+            ),
+            (
+                "apm_color_text".to_owned(),
+                Value::Bool(self.apm_color_text),
+            ),
+            (
+                "apm_play_sound".to_owned(),
+                Value::Bool(self.apm_play_sound),
             ),
         ])
         .to_json()
@@ -185,6 +225,10 @@ mod tests {
             auto_download: true,
             record_replays: false,
             auto_game_name: true,
+            apm_display: true,
+            apm_alert_below: 45,
+            apm_color_text: false,
+            apm_play_sound: true,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -235,6 +279,17 @@ mod tests {
             parse(b"{\"schema\": 1, \"strict\": true}"),
             Err("unknown_field")
         );
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"apm_alert_below\": 1000}"),
+            Err("bad_field"),
+            "an absurd threshold is refused"
+        );
+        assert_eq!(
+            parse(b"{\"schema\": 1, \"apm_alert_below\": \"60\"}"),
+            Err("bad_field")
+        );
+        assert!(!HostConfig::default().apm_display, "the display is opt-in");
+        assert_eq!(HostConfig::default().apm_alert_below, 60);
         assert_eq!(parse(b"[]"), Err("not_object"));
         assert_eq!(parse(b"nope"), Err("not_json"));
         assert_eq!(parse(&vec![b' '; MAX_BYTES + 1]), Err("too_large"));
@@ -259,6 +314,10 @@ mod tests {
             auto_download: false,
             record_replays: true,
             auto_game_name: false,
+            apm_display: false,
+            apm_alert_below: 0,
+            apm_color_text: true,
+            apm_play_sound: false,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

@@ -6,7 +6,7 @@
 
 use super::{Kind, Symbol};
 
-pub const COUNT: usize = 389;
+pub const COUNT: usize = 390;
 
 /// Sorted by `name` (bytewise), so lookups can binary-search.
 pub static SYMBOLS: &[Symbol] = &[
@@ -1731,6 +1731,12 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Function,
         static_addr: 0x00614a90,
         c_type: "void(__cdecl*)(const char* text, int highlight, unsigned durationMs)",
+    },
+    Symbol {
+        name: "QueueCommand",
+        kind: Kind::Function,
+        static_addr: 0x0049ec10,
+        c_type: "void(__cdecl*)(const uint8_t* record, int length)",
     },
     Symbol {
         name: "RaceCurrent",

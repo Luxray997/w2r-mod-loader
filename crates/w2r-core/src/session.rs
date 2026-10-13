@@ -578,6 +578,10 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             auto_download: session.config.auto_download,
             record_replays: session.config.record_replays,
             auto_game_name: session.config.auto_game_name,
+            apm_display: session.config.apm_display,
+            apm_alert_below: session.config.apm_alert_below,
+            apm_color_text: session.config.apm_color_text,
+            apm_play_sound: session.config.apm_play_sound,
             share_match_data: crate::uploader::enabled(),
         };
         let registry = &session.registry;
@@ -653,6 +657,20 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                         "host",
                         &format!("cannot write {}: {e}", hostcfg::FILE),
                     ),
+                }
+            }
+            Action::ChangeApm => {
+                session.config.apm_display = host.apm_display;
+                session.config.apm_alert_below = host.apm_alert_below;
+                session.config.apm_color_text = host.apm_color_text;
+                session.config.apm_play_sound = host.apm_play_sound;
+                crate::apm::configure(&session.config);
+                if let Err(e) = hostcfg::write(&session.root, &session.config) {
+                    StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    );
                 }
             }
             Action::ToggleSharing => {
@@ -1013,6 +1031,8 @@ fn start() -> Session {
         #[cfg(target_arch = "x86")]
         crate::hudpanel::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]
+        crate::apm::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
         crate::ingamekick::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::ingamekick::install_alliances(image, &symbols, &*log);
@@ -1069,6 +1089,7 @@ fn start() -> Session {
             &*host_log,
         );
         crate::replayrec::set_enabled(config.record_replays);
+        crate::apm::configure(&config);
         crate::createscreen::set_auto_game_name(config.auto_game_name);
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }

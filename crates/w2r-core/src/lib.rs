@@ -5,6 +5,7 @@
 
 pub use w2r_formats::{json, manifest, semver, state};
 pub mod alliancelayout;
+pub mod apm;
 pub mod build_guard;
 pub mod chat;
 pub mod createpick;
