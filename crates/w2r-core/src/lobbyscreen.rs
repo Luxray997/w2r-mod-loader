@@ -993,6 +993,8 @@ impl Screen {
                     text,
                     if row.notice {
                         geo::NOTICE_COLOUR
+                    } else if geo::is_presence_line(text) {
+                        geo::PRESENCE_COLOUR
                     } else {
                         colour
                     },

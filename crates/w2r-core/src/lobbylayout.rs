@@ -448,6 +448,15 @@ pub const PANEL_BAR_H: f32 = 24.0;
 pub const WAIT_DOT_MS: u64 = 400;
 /// Notices in the chat history are this colour.
 pub const NOTICE_COLOUR: u32 = pack(232, 196, 96, 255);
+/// The game's "<name> joined" and "<name> left" lines are this colour.
+pub const PRESENCE_COLOUR: u32 = pack(160, 160, 160, 255);
+
+/// Whether a line of the game's chat history is a join or leave line, "<name> Joined" or
+/// "<name> Left", with no `:` (a player's own chat line is "name: text").
+pub fn is_presence_line(text: &str) -> bool {
+    !text.contains(':') && (text.ends_with(" Joined") || text.ends_with(" Left"))
+}
+
 /// Most notices kept; the oldest go first.
 pub const MAX_NOTICES: usize = 32;
 /// The lobby window has to go undrawn this long before notices are forgotten.
@@ -743,6 +752,14 @@ impl ScrollTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_lines_are_told_from_chat() {
+        assert!(is_presence_line("Bob Joined"));
+        assert!(is_presence_line("Bob Left"));
+        assert!(!is_presence_line("Bob: I Left"));
+        assert!(!is_presence_line("Teams locked by host"));
+    }
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 3840.0, 2160.0);
 
