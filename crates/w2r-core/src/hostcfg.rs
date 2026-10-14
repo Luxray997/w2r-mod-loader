@@ -36,6 +36,8 @@ pub struct HostConfig {
     pub apm_color_text: bool,
     /// Alert by playing a sound.
     pub apm_play_sound: bool,
+    /// Minimap pings (docs/minimap-ping.md): Alt+G then a click, or Ctrl+Alt+click.
+    pub minimap_ping: bool,
 }
 
 /// The highest threshold the settings screen accepts.
@@ -59,6 +61,7 @@ impl Default for HostConfig {
             apm_alert_below: 60,
             apm_color_text: true,
             apm_play_sound: false,
+            minimap_ping: true,
         }
     }
 }
@@ -96,6 +99,7 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "apm_display" => cfg.apm_display = value.as_bool().ok_or("bad_field")?,
             "apm_color_text" => cfg.apm_color_text = value.as_bool().ok_or("bad_field")?,
             "apm_play_sound" => cfg.apm_play_sound = value.as_bool().ok_or("bad_field")?,
+            "minimap_ping" => cfg.minimap_ping = value.as_bool().ok_or("bad_field")?,
             "apm_alert_below" => {
                 let n = value.as_number().and_then(Number::as_u64).ok_or("bad_field")?;
                 if n > u64::from(APM_ALERT_MAX) {
@@ -166,6 +170,7 @@ impl HostConfig {
                 "apm_play_sound".to_owned(),
                 Value::Bool(self.apm_play_sound),
             ),
+            ("minimap_ping".to_owned(), Value::Bool(self.minimap_ping)),
         ])
         .to_json()
     }
@@ -229,6 +234,7 @@ mod tests {
             apm_alert_below: 45,
             apm_color_text: false,
             apm_play_sound: true,
+            minimap_ping: false,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -318,6 +324,7 @@ mod tests {
             apm_alert_below: 0,
             apm_color_text: true,
             apm_play_sound: false,
+            minimap_ping: true,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

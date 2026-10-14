@@ -550,6 +550,17 @@ pub mod hook {
                 }
                 true
             }
+            // Minimap pings, during a match.
+            #[cfg(target_arch = "x86")]
+            Packet::Ours {
+                subsystem: crate::ping::SUBSYSTEM,
+                body,
+            } => {
+                if let Err(fault) = guarded(|| crate::ping::deliver(sender, body)) {
+                    crate::session::host_fault("minimap ping", &fault);
+                }
+                true
+            }
             // Map sharing: queued for the next lobby frame (x86 only; elsewhere consumed).
             #[cfg(target_arch = "x86")]
             Packet::Ours {

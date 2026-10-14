@@ -200,6 +200,8 @@ pub fn on_match_start() {
     crate::replayrec::rearm();
     #[cfg(target_arch = "x86")]
     crate::alliancesscreen::on_match_start();
+    #[cfg(target_arch = "x86")]
+    crate::ping::on_match_start();
     SESSION.with(|cell| {
         // Busy means a plugin callback is on the stack and drew something; the event is lost
         // rather than delivered into a half-finished callback.
@@ -240,6 +242,7 @@ pub fn on_window(name: Option<&str>) {
         crate::matchend::note_frame();
         crate::replayplay::poll();
         crate::ingamekick::poll();
+        crate::ping::poll();
     }
     let now = chat::now_ms();
     ensure_started();
@@ -351,6 +354,14 @@ pub fn on_window(name: Option<&str>) {
                     everyone,
                     net.transport.is_host() && net.transport.connected(),
                 );
+            }
+            // The people who run the mod, kept for the match that follows (the roster is cleared
+            // when the lobby is left, and pings travel during the match).
+            if let Ok(h) = net.handshake.try_borrow() {
+                let mask = (0..peer::MAX_SLOTS)
+                    .filter(|&n| h.announced(n))
+                    .fold(0u8, |m, n| m | 1 << n);
+                crate::ping::note_roster(mask);
             }
         }
     });
@@ -582,6 +593,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             apm_alert_below: session.config.apm_alert_below,
             apm_color_text: session.config.apm_color_text,
             apm_play_sound: session.config.apm_play_sound,
+            minimap_ping: session.config.minimap_ping,
             share_match_data: crate::uploader::enabled(),
         };
         let registry = &session.registry;
@@ -657,6 +669,17 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
                         "host",
                         &format!("cannot write {}: {e}", hostcfg::FILE),
                     ),
+                }
+            }
+            Action::ToggleMinimapPing => {
+                session.config.minimap_ping = host.minimap_ping;
+                crate::ping::configure(&session.config);
+                if let Err(e) = hostcfg::write(&session.root, &session.config) {
+                    StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    );
                 }
             }
             Action::ChangeApm => {
@@ -1033,6 +1056,8 @@ fn start() -> Session {
         #[cfg(target_arch = "x86")]
         crate::apm::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
+        crate::ping::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
         crate::ingamekick::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::ingamekick::install_alliances(image, &symbols, &*log);
@@ -1090,6 +1115,7 @@ fn start() -> Session {
         );
         crate::replayrec::set_enabled(config.record_replays);
         crate::apm::configure(&config);
+        crate::ping::configure(&config);
         crate::createscreen::set_auto_game_name(config.auto_game_name);
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }

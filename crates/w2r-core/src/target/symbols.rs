@@ -6,7 +6,7 @@
 
 use super::{Kind, Symbol};
 
-pub const COUNT: usize = 390;
+pub const COUNT: usize = 397;
 
 /// Sorted by `name` (bytewise), so lookups can binary-search.
 pub static SYMBOLS: &[Symbol] = &[
@@ -1343,6 +1343,12 @@ pub static SYMBOLS: &[Symbol] = &[
         c_type: "long long(__cdecl*)()",
     },
     Symbol {
+        name: "MinimapClickRect",
+        kind: Kind::Object,
+        static_addr: 0x008c51cc,
+        c_type: "int16_t",
+    },
+    Symbol {
         name: "MinimapTerrainKeyProc",
         kind: Kind::Function,
         static_addr: 0x004e96f0,
@@ -1365,6 +1371,24 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Object,
         static_addr: 0x0095c504,
         c_type: "void",
+    },
+    Symbol {
+        name: "MouseCursorPos",
+        kind: Kind::Object,
+        static_addr: 0x009650f8,
+        c_type: "uint16_t",
+    },
+    Symbol {
+        name: "MouseHandlerSlots",
+        kind: Kind::Object,
+        static_addr: 0x0091d1f4,
+        c_type: "uint32_t",
+    },
+    Symbol {
+        name: "MousePickHandlers",
+        kind: Kind::Function,
+        static_addr: 0x004c9090,
+        c_type: "void(__cdecl*)()",
     },
     Symbol {
         name: "MpLobbyChatBegin",
@@ -1593,6 +1617,12 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Object,
         static_addr: 0x008cb9c4,
         c_type: "uint32_t",
+    },
+    Symbol {
+        name: "NoOpHandler",
+        kind: Kind::Function,
+        static_addr: 0x004857c0,
+        c_type: "void(__cdecl*)()",
     },
     Symbol {
         name: "OpenNkPopup",
@@ -2319,6 +2349,18 @@ pub static SYMBOLS: &[Symbol] = &[
         kind: Kind::Object,
         static_addr: 0x0091cb0c,
         c_type: "uint16_t",
+    },
+    Symbol {
+        name: "ViewportOrigin",
+        kind: Kind::Object,
+        static_addr: 0x008c1f7c,
+        c_type: "int32_t",
+    },
+    Symbol {
+        name: "ViewportRect",
+        kind: Kind::Object,
+        static_addr: 0x0091cb10,
+        c_type: "int16_t",
     },
     Symbol {
         name: "ViewportWidth",

@@ -324,6 +324,8 @@ pub struct HostRow {
     pub apm_alert_below: u32,
     pub apm_color_text: bool,
     pub apm_play_sound: bool,
+    /// `minimap_ping` (`host.json`).
+    pub minimap_ping: bool,
     /// `share_match_data` (`sharing.json`); match reports are uploaded from the next match.
     pub share_match_data: bool,
 }
@@ -343,6 +345,7 @@ pub const APM_DISPLAY_LABEL: &str = "Display APM In Game";
 pub const APM_ALERT_LABEL: &str = "Alert when APM falls below";
 pub const APM_COLOR_LABEL: &str = "Color Text";
 pub const APM_SOUND_LABEL: &str = "Play Sound";
+pub const MINIMAP_PING_LABEL: &str = "Minimap Pings (Alt+G, click)";
 pub const SHARE_LABEL: &str = "Contribute Match Data";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,6 +369,8 @@ pub enum Action {
     ToggleAutoGameName,
     /// The user changed one of the APM settings.
     ChangeApm,
+    /// The user flipped `minimap_ping`.
+    ToggleMinimapPing,
     /// The user flipped `share_match_data`.
     ToggleSharing,
 }
@@ -476,6 +481,12 @@ pub fn draw_plugin_screen(
     if w.checkbox(APM_SOUND_LABEL, &mut apm_sound) {
         host.apm_play_sound = apm_sound;
         action = Action::ChangeApm;
+    }
+    w.row(ROW_H, 1);
+    let mut ping = host.minimap_ping;
+    if w.checkbox(MINIMAP_PING_LABEL, &mut ping) {
+        host.minimap_ping = ping;
+        action = Action::ToggleMinimapPing;
     }
     w.row(ROW_H, 1);
     let mut share = host.share_match_data;
@@ -746,6 +757,7 @@ mod tests {
             apm_alert_below: 60,
             apm_color_text: true,
             apm_play_sound: false,
+            minimap_ping: true,
             share_match_data: false,
         };
         let mut sections = Vec::new();
@@ -772,8 +784,9 @@ mod tests {
         assert_eq!(calls[23], format!("text_edit {APM_ALERT_LABEL:?}"));
         assert_eq!(calls[25], format!("checkbox {APM_COLOR_LABEL:?} true"));
         assert_eq!(calls[27], format!("checkbox {APM_SOUND_LABEL:?} false"));
-        assert_eq!(calls[29], format!("checkbox {SHARE_LABEL:?} false"));
-        assert_eq!(calls[31], "label \"Plugins (3)\"");
+        assert_eq!(calls[29], format!("checkbox {MINIMAP_PING_LABEL:?} true"));
+        assert_eq!(calls[31], format!("checkbox {SHARE_LABEL:?} false"));
+        assert_eq!(calls[33], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -806,6 +819,7 @@ mod tests {
             apm_alert_below: 60,
             apm_color_text: true,
             apm_play_sound: false,
+            minimap_ping: true,
             share_match_data: false,
         };
         assert_eq!(
