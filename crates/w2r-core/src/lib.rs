@@ -8,6 +8,7 @@ pub mod alliancelayout;
 pub mod apm;
 pub mod camerashare;
 mod director;
+mod obsjoin;
 mod liveapm;
 pub mod ping;
 pub mod pingtable;

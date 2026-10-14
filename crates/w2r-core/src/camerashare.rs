@@ -135,7 +135,9 @@ pub fn set_enabled(on: bool) {
 }
 
 #[cfg(target_arch = "x86")]
-pub use live::{deliver, install, on_match_start, poll};
+pub use live::{
+    broadcast, deliver, in_networked_match, install, is_out, local_player, on_match_start, player_of_net, poll,
+};
 
 #[cfg(target_arch = "x86")]
 mod live {
@@ -171,6 +173,7 @@ mod live {
         turn_flags: usize,
         left_flags: usize,
         owner: usize,
+        result: usize,
         lobby_slots: usize,
         camera: usize,
         view_w: usize,
@@ -184,8 +187,6 @@ mod live {
 
     #[derive(Default)]
     struct State {
-        /// Bit n set: player n is a person on the observer team.
-        observers: u8,
         throttle: Throttle,
     }
 
@@ -209,6 +210,7 @@ mod live {
             Some(turn_flags),
             Some(left_flags),
             Some(owner),
+            Some(result),
             Some(lobby_slots),
             Some(camera),
             Some(view_w),
@@ -223,6 +225,7 @@ mod live {
             get("TurnSlotFlags"),
             get("PeerLeftFlags"),
             get("PlayerOwner"),
+            get("PlayerMatchResult"),
             get("MpLobbySlots"),
             get("CameraScrollX"),
             get("ViewportWidth"),
@@ -244,6 +247,7 @@ mod live {
             turn_flags,
             left_flags,
             owner,
+            result,
             lobby_slots,
             camera,
             view_w,
@@ -316,6 +320,52 @@ mod live {
         }
     }
 
+    /// The local player's seat (the real one while an observer watches someone).
+    pub fn local_player() -> Option<u8> {
+        let g = GAME.get()?;
+        let p = guarded(|| g.local()).ok()?;
+        (p < 8).then_some(p)
+    }
+
+    pub fn in_networked_match() -> bool {
+        let Some(g) = GAME.get() else { return false };
+        guarded(|| g.in_match() && g.u8_at(g.networked, 0) != 0).unwrap_or(false)
+    }
+
+    /// The match is over for `player` (a result was written for them).
+    pub fn is_out(player: u8) -> bool {
+        let Some(g) = GAME.get() else { return false };
+        guarded(|| g.u8_at(g.result, usize::from(player)) != 0).unwrap_or(false)
+    }
+
+    /// The player behind a net slot.
+    pub fn player_of_net(net: u32) -> Option<u8> {
+        let g = GAME.get()?;
+        if net >= 8 {
+            return None;
+        }
+        let p = guarded(|| (g.u32_at(g.player_by_net, net as usize) & 0xff) as u8).ok()?;
+        (p < 8).then_some(p)
+    }
+
+    /// Sends `msg` to every other connected machine in the match that runs the mod.
+    pub fn broadcast(msg: &[u8]) {
+        let Some(g) = GAME.get() else { return };
+        let _ = guarded(|| {
+            for n in 0..8usize {
+                if crate::ping::roster() & (1 << n) == 0
+                    || g.u32_at(g.lobby_by_net, n) & 0xff >= NO_SEAT
+                    || g.u32_at(g.turn_flags, n) & FLAG_IN_MATCH == 0
+                    || g.u32_at(g.left_flags, n) != 0
+                {
+                    continue;
+                }
+                // SAFETY: the game's own send, a reliable message to one connected peer.
+                unsafe { (g.send)(n as u32, msg.as_ptr(), msg.len() as u32) };
+            }
+        });
+    }
+
     fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
         let mut guard = STATE.lock().ok()?;
         Some(f(guard.get_or_insert_with(State::default)))
@@ -336,7 +386,7 @@ mod live {
                 .fold(0u8, |m, i| m | 1 << i)
         })
         .unwrap_or(0);
-        with_state(|s| *s = State { observers, ..State::default() });
+        with_state(|s| *s = State::default());
         crate::observer::set_match_observers(observers);
         if observers != 0 {
             log(W2R_LOG_INFO, &format!("match with observers {observers:#010b}"));
@@ -359,7 +409,7 @@ mod live {
             return;
         }
         let me = g.local();
-        let Some(observers) = with_state(|s| s.observers) else { return };
+        let observers = crate::observer::match_observers();
         // Nothing to say without observers, and observers do not send their own view.
         if observers == 0 || me >= 8 || observers & (1 << me) != 0 {
             return;
@@ -399,7 +449,7 @@ mod live {
         if player >= 8 || me >= 8 {
             return;
         }
-        let observers = with_state(|s| s.observers).unwrap_or(0);
+        let observers = crate::observer::match_observers();
         if observers & (1 << me) == 0 || observers & (1 << player) != 0 {
             return;
         }

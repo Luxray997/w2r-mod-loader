@@ -140,3 +140,13 @@ skip) would play a different simulation and can desync.
   prefixed `[Obs] `, and `LocalPlayer` is set to the real seat for the call (it is the watched player
   while viewing). With no other observer nothing is sent. On a playing machine `ChatReceive` is
   given a `ChatNetMask` without the observer's net slot, so observer lines never show to players.
+
+## Observing mid-game (`/obs`)
+
+A defeated player (their `PlayerMatchResult` entry is non-zero) types `/obs`. `chatrec.rs` catches it
+before `ChatSendLocal`, `obsjoin::start_local` marks them an observer (`observer::set_local_observer`,
+their bit in `observer::match_observers`), starts the live viewing system (`replayplay::live_start`) and
+broadcasts one `'O'` message to the other mod peers; they add the sender's bit (checked against the
+net slot's real player), so camera sharing now sends to the newcomer and observer chat mutes them. The
+simulation is untouched. Limit: per-player fog is tracked only from when viewing starts, so what other
+players explored earlier shows as unexplored until they walk it again.

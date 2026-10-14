@@ -572,6 +572,17 @@ pub mod hook {
                 }
                 true
             }
+            // A defeated player now observes.
+            #[cfg(target_arch = "x86")]
+            Packet::Ours {
+                subsystem: crate::obsjoin::SUBSYSTEM,
+                body,
+            } => {
+                if let Err(fault) = guarded(|| crate::obsjoin::deliver(sender, body)) {
+                    crate::session::host_fault("observer join", &fault);
+                }
+                true
+            }
             // Map sharing: queued for the next lobby frame (x86 only; elsewhere consumed).
             #[cfg(target_arch = "x86")]
             Packet::Ours {

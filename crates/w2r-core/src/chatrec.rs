@@ -154,6 +154,13 @@ unsafe fn c_bytes(p: *const u8, max: usize) -> Vec<u8> {
 
 unsafe extern "C" fn send_detour(text: *const u8) {
     let original: SendFn = unsafe { core::mem::transmute(ORIG_SEND.load(Ordering::Acquire)) };
+    // `/obs` starts observing (once defeated) and is not sent.
+    let obs = guarded(|| crate::obsjoin::is_command(&unsafe { c_bytes(text, LOCAL_MAX) }))
+        .unwrap_or(false);
+    if obs {
+        let _ = guarded(crate::obsjoin::start_local);
+        return;
+    }
     // `/plugins` goes out as the list of the player's plugins (docs/chat-commands.md).
     let replaced = guarded(|| {
         let bytes = unsafe { c_bytes(text, LOCAL_MAX) };
