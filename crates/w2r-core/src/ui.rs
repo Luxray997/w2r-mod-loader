@@ -343,8 +343,8 @@ pub const RECORD_REPLAYS_LABEL: &str = "Save replays";
 pub const AUTO_GAME_NAME_LABEL: &str = "Auto-Name Games by Map";
 pub const APM_DISPLAY_LABEL: &str = "Display APM In Game";
 pub const APM_ALERT_LABEL: &str = "Alert when APM falls below";
-pub const APM_COLOR_LABEL: &str = "Color Text";
-pub const APM_SOUND_LABEL: &str = "Play Sound";
+pub const APM_COLOR_LABEL: &str = "Color APM Text Red When Low";
+pub const APM_SOUND_LABEL: &str = "Play Sound When APM Is Low";
 pub const MINIMAP_PING_LABEL: &str = "Minimap Pings (Alt+G, click)";
 pub const SHARE_LABEL: &str = "Contribute Match Data";
 
@@ -445,6 +445,20 @@ pub fn draw_plugin_screen(
         action = Action::ToggleAutoGameName;
     }
     w.row(ROW_H, 1);
+    let mut ping = host.minimap_ping;
+    if w.checkbox(MINIMAP_PING_LABEL, &mut ping) {
+        host.minimap_ping = ping;
+        action = Action::ToggleMinimapPing;
+    }
+    w.row(ROW_H, 1);
+    let mut share = host.share_match_data;
+    if w.checkbox(SHARE_LABEL, &mut share) {
+        host.share_match_data = share;
+        action = Action::ToggleSharing;
+    }
+    w.row(HEADING_H, 1);
+    w.label("APM Counter");
+    w.row(ROW_H, 1);
     let mut apm_display = host.apm_display;
     if w.checkbox(APM_DISPLAY_LABEL, &mut apm_display) {
         host.apm_display = apm_display;
@@ -481,18 +495,6 @@ pub fn draw_plugin_screen(
     if w.checkbox(APM_SOUND_LABEL, &mut apm_sound) {
         host.apm_play_sound = apm_sound;
         action = Action::ChangeApm;
-    }
-    w.row(ROW_H, 1);
-    let mut ping = host.minimap_ping;
-    if w.checkbox(MINIMAP_PING_LABEL, &mut ping) {
-        host.minimap_ping = ping;
-        action = Action::ToggleMinimapPing;
-    }
-    w.row(ROW_H, 1);
-    let mut share = host.share_match_data;
-    if w.checkbox(SHARE_LABEL, &mut share) {
-        host.share_match_data = share;
-        action = Action::ToggleSharing;
     }
     w.row(HEADING_H, 1);
     w.label(&format!("Plugins ({})", rows.len()));
@@ -780,13 +782,14 @@ mod tests {
         assert_eq!(calls[15], format!("checkbox {AUTO_DOWNLOAD_LABEL:?} false"));
         assert_eq!(calls[17], format!("checkbox {RECORD_REPLAYS_LABEL:?} false"));
         assert_eq!(calls[19], format!("checkbox {AUTO_GAME_NAME_LABEL:?} false"));
-        assert_eq!(calls[21], format!("checkbox {APM_DISPLAY_LABEL:?} false"));
-        assert_eq!(calls[23], format!("text_edit {APM_ALERT_LABEL:?}"));
-        assert_eq!(calls[25], format!("checkbox {APM_COLOR_LABEL:?} true"));
-        assert_eq!(calls[27], format!("checkbox {APM_SOUND_LABEL:?} false"));
-        assert_eq!(calls[29], format!("checkbox {MINIMAP_PING_LABEL:?} true"));
-        assert_eq!(calls[31], format!("checkbox {SHARE_LABEL:?} false"));
-        assert_eq!(calls[33], "label \"Plugins (3)\"");
+        assert_eq!(calls[21], format!("checkbox {MINIMAP_PING_LABEL:?} true"));
+        assert_eq!(calls[23], format!("checkbox {SHARE_LABEL:?} false"));
+        assert_eq!(calls[25], "label \"APM Counter\"");
+        assert_eq!(calls[27], format!("checkbox {APM_DISPLAY_LABEL:?} false"));
+        assert_eq!(calls[29], format!("text_edit {APM_ALERT_LABEL:?}"));
+        assert_eq!(calls[31], format!("checkbox {APM_COLOR_LABEL:?} true"));
+        assert_eq!(calls[33], format!("checkbox {APM_SOUND_LABEL:?} false"));
+        assert_eq!(calls[35], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));

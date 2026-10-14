@@ -1,13 +1,13 @@
 # In-game APM counter
 
-Settings (plugin screen, Host section; stored in `config\host.json`; every change applies at once):
+Settings (plugin screen, "APM Counter" group at the end of the Host section; stored in `config\host.json`; every change applies at once):
 
 | Setting | Field | Default |
 |---|---|---|
 | Display APM In Game | `apm_display` | off |
 | Alert when APM falls below [ ] | `apm_alert_below` (0-999, 0 = no alert) | 60 |
-| Color Text (APM turns red while below the threshold) | `apm_color_text` | on |
-| Play Sound (a two-note chirp while below the threshold) | `apm_play_sound` | off |
+| Color APM Text Red When Low (APM turns red while below the threshold) | `apm_color_text` | on |
+| Play Sound When APM Is Low (a two-note chirp while below the threshold) | `apm_play_sound` | off |
 
 How it counts (`crates/w2r-core/src/apm.rs`): the game's `QueueCommand` (0x49ec10) is hooked; every UI
 order, selection or build the local player queues is one action (records 0x06-0x17; the idle record 05, the
