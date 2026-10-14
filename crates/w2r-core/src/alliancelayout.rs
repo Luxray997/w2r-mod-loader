@@ -63,12 +63,16 @@ pub enum Tint {
     Teammate,
     /// Defeated, victorious or disconnected: out of the match.
     Out,
+    /// Watching on the observer team: not a defeat, so not red.
+    Observer,
 }
 
-/// Out beats teammate; teammates only exist in a team game.
-pub fn tint(out: bool, team_game: bool, is_me: bool, teammate: bool) -> Tint {
+/// Out beats everything, then observer, then teammate; teammates only exist in a team game.
+pub fn tint(out: bool, observer: bool, team_game: bool, is_me: bool, teammate: bool) -> Tint {
     if out {
         Tint::Out
+    } else if observer {
+        Tint::Observer
     } else if team_game && (is_me || teammate) {
         Tint::Teammate
     } else {
@@ -200,11 +204,18 @@ mod tests {
 
     #[test]
     fn out_beats_teammate_and_teammates_need_a_team_game() {
-        assert_eq!(tint(true, true, true, true), Tint::Out);
-        assert_eq!(tint(false, true, true, false), Tint::Teammate);
-        assert_eq!(tint(false, true, false, true), Tint::Teammate);
-        assert_eq!(tint(false, false, true, true), Tint::Plain);
-        assert_eq!(tint(false, true, false, false), Tint::Plain);
+        assert_eq!(tint(true, false, true, true, true), Tint::Out);
+        assert_eq!(tint(false, false, true, true, false), Tint::Teammate);
+        assert_eq!(tint(false, false, true, false, true), Tint::Teammate);
+        assert_eq!(tint(false, false, false, true, true), Tint::Plain);
+        assert_eq!(tint(false, false, true, false, false), Tint::Plain);
+    }
+
+    #[test]
+    fn an_observer_is_blue_unless_they_left() {
+        assert_eq!(tint(false, true, false, false, false), Tint::Observer);
+        assert_eq!(tint(false, true, true, false, true), Tint::Observer);
+        assert_eq!(tint(true, true, false, false, false), Tint::Out);
     }
 
     #[test]

@@ -29,6 +29,9 @@ const _: () = assert!(MESSAGE_LEN == 35, "wc2r-plus sends 35 bytes");
 /// "strict" mode that no longer exists; it is ignored).
 pub const CAP_HANDSHAKE: u32 = 1 << 0;
 pub const CAP_MAP_SHARING: u32 = 1 << 2;
+/// This build supports the observer team and the Observer plugin is loaded. Observers only need
+/// every player to announce it, not identical plugins.
+pub const CAP_OBSERVER: u32 = 1 << 3;
 
 /// What goes in the 16-byte version field. wc2r-plus logs it as "runs wc2r-plus <text>", so
 /// the text names us.
@@ -173,6 +176,7 @@ pub struct Handshake {
     told_bad_message: bool,
     /// Announced as [`CAP_MAP_SHARING`] (`map_sharing` in `host.json`).
     map_sharing: bool,
+    observer: bool,
 }
 
 const NO_PEER: Option<Peer> = None;
@@ -194,12 +198,15 @@ impl Handshake {
             hello_pending: false,
             told_bad_message: false,
             map_sharing: false,
+            observer: false,
         }
     }
 
     /// This player's capabilities as announced: the local ones plus map sharing when it is on.
     fn caps(&self) -> u32 {
-        self.local.caps() | if self.map_sharing { CAP_MAP_SHARING } else { 0 }
+        self.local.caps()
+            | if self.map_sharing { CAP_MAP_SHARING } else { 0 }
+            | if self.observer { CAP_OBSERVER } else { 0 }
     }
 
     /// Map sharing on or off. In a lobby this re-announces (the capabilities changed).
@@ -208,6 +215,17 @@ impl Handshake {
             return;
         }
         self.map_sharing = on;
+        if self.in_lobby {
+            self.hello_pending = true;
+        }
+    }
+
+    /// Observer support on or off (the Observer plugin loaded). In a lobby this re-announces.
+    pub fn set_observer(&mut self, on: bool) {
+        if self.observer == on {
+            return;
+        }
+        self.observer = on;
         if self.in_lobby {
             self.hello_pending = true;
         }
@@ -494,13 +512,12 @@ impl Handshake {
         }
     }
 
-    /// Whether every other player in the lobby announced and runs the same simulation plugins as
-    /// we do, so a feature that needs the same code on every machine (the observer team) may be
-    /// used. False when unsure: not in a lobby, no simulation plugins of our own, the roster not
-    /// read yet, or somebody present who has not announced.
+    /// Whether every other player in the lobby announced observer support (a w2rpm that has it, with
+    /// the Observer plugin loaded), so the observer team may be used. Their other plugins may differ.
+    /// False when unsure: not in a lobby, we have no observer support ourselves, the roster not read
+    /// yet, or somebody present who has not announced.
     pub fn everyone_has(&self) -> bool {
-        let ours = self.local.fingerprint;
-        if !self.in_lobby || ours == [0; 4] {
+        if !self.in_lobby || !self.observer {
             return false;
         }
         let Some(present) = &self.present else {
@@ -513,7 +530,7 @@ impl Handshake {
         (0..8).all(|s| {
             Some(s as u32) == me
                 || present[s].is_none()
-                || self.peers[s].as_ref().is_some_and(|p| p.fingerprint == ours)
+                || self.peers[s].as_ref().is_some_and(|p| p.caps & CAP_OBSERVER != 0)
         })
     }
 }
@@ -787,39 +804,35 @@ mod tests {
     }
 
     #[test]
-    fn everyone_has_needs_every_present_player_to_announce_the_same_plugins() {
+    fn everyone_has_needs_every_present_player_to_announce_observer_support() {
         let mut host = Handshake::new(Local {
             fingerprint: FP_A,
         });
+        host.set_observer(true);
         assert!(!host.everyone_has(), "not in a lobby");
         host.enter(0x1111);
         assert!(!host.everyone_has(), "roster not read yet");
         host.frame(frame(0, true), || Some(vec![0, 1, 2]));
         assert!(!host.everyone_has(), "two players have not announced");
-        let same = encode(KIND_HELLO, 0x2222, CAP_HANDSHAKE, FP_A);
-        let differs = encode(KIND_HELLO, 0x3333, CAP_HANDSHAKE, FP_B);
-        host.receive(10, 1, body(&same));
+        let capable = CAP_HANDSHAKE | CAP_OBSERVER;
+        host.receive(10, 1, body(&encode(KIND_HELLO, 0x2222, capable, FP_A)));
         assert!(!host.everyone_has());
-        host.receive(10, 2, body(&differs));
-        assert!(!host.everyone_has(), "different plugins do not count");
-        host.receive(20_000, 2, body(&encode(KIND_HELLO, 0x4444, CAP_HANDSHAKE, FP_A)));
-        assert!(host.everyone_has());
+        host.receive(10, 2, body(&encode(KIND_HELLO, 0x3333, CAP_HANDSHAKE, FP_A)));
+        assert!(!host.everyone_has(), "a w2rpm without the observer plugin does not count");
+        host.receive(20_000, 2, body(&encode(KIND_HELLO, 0x3333, capable, FP_B)));
+        assert!(host.everyone_has(), "other plugins may differ");
         // A player who leaves no longer counts against it.
         host.frame(frame(2_000, true), || Some(vec![0, 1]));
         assert!(host.everyone_has());
-        // Alone in the lobby with the plugin, it is fine; without simulation plugins it is not.
-        let mut alone = Handshake::new(Local {
-            fingerprint: FP_A,
-        });
-        alone.enter(1);
-        alone.frame(frame(0, true), || Some(vec![0]));
-        assert!(alone.everyone_has());
+        // Without observer support of our own it is never allowed.
         let mut none = Handshake::new(Local {
-            fingerprint: [0; 4],
+            fingerprint: FP_A,
         });
         none.enter(1);
         none.frame(frame(0, true), || Some(vec![0]));
         assert!(!none.everyone_has());
+        none.set_observer(true);
+        assert!(none.everyone_has(), "alone in the lobby with it is fine");
     }
 
     #[test]

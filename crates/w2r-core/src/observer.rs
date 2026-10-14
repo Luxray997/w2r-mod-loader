@@ -1,7 +1,8 @@
 //! The observer team's gate (docs/observer-research.md). Team 9 ("OBS") only works when every
-//! machine in the game runs the same observer code, so it is offered, and accepted, only while
-//! every other player in the lobby has announced the same simulation plugins
-//! (`Handshake::everyone_has`). The decision is recomputed every lobby frame:
+//! machine in the game runs the observer code, so it is offered, and accepted, only while every
+//! other player in the lobby has announced observer support (`Handshake::everyone_has`: a w2rpm
+//! with the Observer plugin loaded; their other plugins may differ). The decision is recomputed
+//! every lobby frame:
 //!
 //! - the OBS entry is shown in the team dropdown only while it is allowed (the list's end pointer
 //!   moves between eight and nine entries);
@@ -15,6 +16,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The lobby team value that marks an observer.
 pub const OBSERVER_TEAM: u8 = 9;
 static ALLOWED: AtomicBool = AtomicBool::new(false);
+/// Whether this machine is an observer in the match that is running (set when it starts).
+static LOCAL_OBSERVER: AtomicBool = AtomicBool::new(false);
+
+/// Whether the local player watches the match that is running instead of playing it.
+pub fn local_is_observer() -> bool {
+    LOCAL_OBSERVER.load(Ordering::Relaxed)
+}
+
+pub fn set_local_observer(on: bool) {
+    LOCAL_OBSERVER.store(on, Ordering::Relaxed);
+}
 
 /// Whether team 9 may be used right now.
 pub fn allowed() -> bool {
@@ -51,6 +63,11 @@ mod game {
     static FIRST: AtomicUsize = AtomicUsize::new(0);
     static SLOTS: AtomicUsize = AtomicUsize::new(0);
     static BROADCAST: AtomicUsize = AtomicUsize::new(0);
+
+    /// Whether the OBS team entry was added, which is when this player announces observer support.
+    pub fn available() -> bool {
+        VECTOR.load(Ordering::Acquire) != 0
+    }
 
     /// Remembers where the extended team option list and the slot table are.
     pub fn installed(vector: usize, first: usize, slots: usize, broadcast: usize) {
@@ -110,7 +127,7 @@ mod game {
 }
 
 #[cfg(all(windows, target_arch = "x86"))]
-pub use game::{frame, installed};
+pub use game::{available, frame, installed};
 
 #[cfg(test)]
 mod tests {

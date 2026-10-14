@@ -315,7 +315,7 @@ mod live {
     /// The game ran a turn: close the count for it. Call inside `guarded`.
     pub fn on_turn() {
         let Some(g) = GAME.get() else { return };
-        if crate::replayplay::is_active() {
+        if crate::replayplay::is_active() || crate::observer::local_is_observer() {
             return;
         }
         // The turns go on while the game is paused (only the simulation stops): a pause is not
@@ -356,7 +356,10 @@ mod live {
     /// `ctx` is the context the game is about to begin `game_hud` in; `begin` is the game's own
     /// `BeginNamedWindow`.
     pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
-        if !DISPLAY.load(Ordering::Acquire) || crate::replayplay::is_active() {
+        if !DISPLAY.load(Ordering::Acquire)
+            || crate::replayplay::is_active()
+            || crate::observer::local_is_observer()
+        {
             return;
         }
         let Some(g) = GAME.get() else { return };
