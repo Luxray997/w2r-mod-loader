@@ -337,6 +337,7 @@ mod live {
         })
         .unwrap_or(0);
         with_state(|s| *s = State { observers, ..State::default() });
+        crate::observer::set_match_observers(observers);
         if observers != 0 {
             log(W2R_LOG_INFO, &format!("match with observers {observers:#010b}"));
         }

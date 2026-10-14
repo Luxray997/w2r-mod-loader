@@ -28,6 +28,19 @@ pub fn set_local_observer(on: bool) {
     LOCAL_OBSERVER.store(on, Ordering::Relaxed);
 }
 
+/// The people on the observer team in the match that is running (bit n: player n), read from the
+/// lobby when it starts.
+static MATCH_OBSERVERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn match_observers() -> u8 {
+    MATCH_OBSERVERS.load(Ordering::Acquire)
+}
+
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+pub fn set_match_observers(mask: u8) {
+    MATCH_OBSERVERS.store(mask, Ordering::Release);
+}
+
 /// Whether team 9 may be used right now.
 pub fn allowed() -> bool {
     ALLOWED.load(Ordering::Relaxed)

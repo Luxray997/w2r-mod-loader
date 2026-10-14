@@ -7,6 +7,8 @@ pub use w2r_formats::{json, manifest, semver, state};
 pub mod alliancelayout;
 pub mod apm;
 pub mod camerashare;
+mod director;
+mod liveapm;
 pub mod ping;
 pub mod pingtable;
 pub mod build_guard;

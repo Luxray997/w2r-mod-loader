@@ -312,7 +312,11 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
                     mined: [u32_at(g.mined_gold), u32_at(g.mined_lumber), u32_at(g.mined_oil)],
                     colour: player_colour(g, p),
                     apm: if member.human {
-                        replayplay::actions_per_minute(member.slot)
+                        if replayplay::is_live() {
+                            crate::liveapm::apm(member.slot)
+                        } else {
+                            replayplay::actions_per_minute(member.slot)
+                        }
                     } else {
                         None
                     },
@@ -321,6 +325,21 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
             }
         })
         .collect()
+}
+
+/// Per player, kills + losses + razed buildings so far, for the auto-director.
+pub fn combat_totals() -> Option<[u32; 8]> {
+    let g = &PANEL.get()?.game;
+    guarded(|| {
+        let mut out = [0u32; 8];
+        for (p, o) in out.iter_mut().enumerate() {
+            // SAFETY: per-player u16 tables of at least 8 entries in the game's data section.
+            let at = |base: usize| u32::from(unsafe { core::ptr::read_unaligned((base + p * 2) as *const u16) });
+            *o = at(g.kills) + at(g.lost) + at(g.razed) + at(g.buildings_lost);
+        }
+        out
+    })
+    .ok()
 }
 
 /// One line of key hints, centred: each key in yellow followed by what it does. The font has
@@ -399,7 +418,7 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
             ALIGN_CENTRE,
         );
     } else if pace.live {
-        hint_row(kit, 28.0, &[("`", "page")]);
+        hint_row(kit, 28.0, &[("`", "page"), ("End", if pace.auto { "auto on" } else { "auto" })]);
         hint_row(
             kit,
             42.0,

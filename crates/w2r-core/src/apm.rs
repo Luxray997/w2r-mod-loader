@@ -143,7 +143,7 @@ pub fn configure(cfg: &HostConfig) {
 }
 
 #[cfg(target_arch = "x86")]
-pub use live::{before_hud, install, on_turn, reset};
+pub use live::{before_hud, install, on_turn, paused, reset};
 
 #[cfg(target_arch = "x86")]
 mod live {
@@ -310,6 +310,13 @@ mod live {
             }
         }
         ran
+    }
+
+    /// The game is paused (turns still run, the simulation does not). Call inside `guarded`.
+    pub fn paused() -> bool {
+        let Some(g) = GAME.get() else { return false };
+        // SAFETY: a byte in the game's data section, read under the caller's `guarded`.
+        unsafe { core::ptr::read_unaligned(g.paused as *const u8) != 0 }
     }
 
     /// The game ran a turn: close the count for it. Call inside `guarded`.

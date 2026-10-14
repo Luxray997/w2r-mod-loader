@@ -59,6 +59,9 @@ static ORIG_SYNC_CHECK: AtomicUsize = AtomicUsize::new(0);
 static SYNC_BAD: AtomicU32 = AtomicU32::new(0);
 /// The map view follows the recorded player's camera (while that player is the one watched).
 static FOLLOW: AtomicBool = AtomicBool::new(true);
+/// Live observing: the auto-director picks the player to watch (End toggles).
+static AUTO: AtomicBool = AtomicBool::new(false);
+static DIRECTOR: Mutex<Option<crate::director::Director>> = Mutex::new(None);
 /// Which playback keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
@@ -835,6 +838,7 @@ pub fn live_start(me: u8) {
     crate::viewer::begin(me, me);
     crate::viewer::log_keys("");
     LIVE.store(true, Ordering::Release);
+    AUTO.store(false, Ordering::Release);
 }
 
 /// The match is over: the view system goes off.
@@ -861,6 +865,7 @@ fn live_pace() -> Option<Pace> {
         turn,
         total: 0,
         live: true,
+        auto: AUTO.load(Ordering::Acquire),
     })
 }
 
@@ -909,6 +914,8 @@ pub struct Pace {
     pub total: usize,
     /// A match being observed live: no progress, no playback controls.
     pub live: bool,
+    /// The auto-director is choosing who to watch.
+    pub auto: bool,
 }
 
 pub fn pace() -> Option<Pace> {
@@ -927,6 +934,7 @@ pub fn pace() -> Option<Pace> {
         turn: turn.min(total),
         total,
         live: false,
+        auto: false,
     })
 }
 
@@ -1038,6 +1046,8 @@ pub fn poll() {
         if is_live() {
             let _ = guarded(crate::viewer::poll_keys);
             let _ = guarded(poll_live_follow_key);
+            let _ = guarded(poll_live_auto_key);
+            let _ = guarded(direct_live);
             let _ = guarded(follow_live_camera);
         }
         return;
@@ -1123,6 +1133,57 @@ fn follow_live_camera() {
         Err(_) => (x, y),
     };
     ease_view_to(a, (target.0 as u32, target.1 as u32));
+}
+
+/// The End key while watching live: turns the auto-director on and off.
+fn poll_live_auto_key() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    static DOWN: AtomicBool = AtomicBool::new(false);
+    if crate::viewer::real() >= 8 || !game_has_focus() {
+        DOWN.store(false, Ordering::Release);
+        return;
+    }
+    // SAFETY: a plain key-state query.
+    let now = unsafe { GetAsyncKeyState(0x23) } as u16 & 0x8000 != 0;
+    if now && !DOWN.swap(true, Ordering::AcqRel) {
+        if AUTO.fetch_xor(true, Ordering::AcqRel) {
+            crate::viewer::say("Auto-director off");
+        } else {
+            if let Ok(mut d) = DIRECTOR.lock() {
+                *d = Some(crate::director::Director::new());
+            }
+            crate::viewer::say("Auto-director on: the view moves to the busiest player");
+        }
+    } else if !now {
+        DOWN.store(false, Ordering::Release);
+    }
+}
+
+/// Once per frame while the auto-director is on: looks at how busy the players are and moves the
+/// view to the busiest when it is clearly worth it.
+fn direct_live() {
+    if !AUTO.load(Ordering::Acquire) {
+        return;
+    }
+    let combat = crate::hudpanel::combat_totals().unwrap_or([0; 8]);
+    let samples: Vec<crate::director::Sample> = crate::viewer::watchable()
+        .into_iter()
+        .map(|p| crate::director::Sample {
+            player: p,
+            apm: crate::liveapm::apm(p),
+            combat: combat[usize::from(p) & 7],
+        })
+        .collect();
+    let current = crate::viewer::watching();
+    let pick = match DIRECTOR.lock() {
+        Ok(mut d) => d
+            .get_or_insert_with(crate::director::Director::new)
+            .tick(crate::chat::now_ms(), current, &samples),
+        Err(_) => None,
+    };
+    if let Some(player) = pick {
+        crate::viewer::watch(player);
+    }
 }
 
 /// The semicolon key while watching live: turns the camera follow on and off.

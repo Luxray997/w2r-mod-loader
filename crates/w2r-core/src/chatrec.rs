@@ -174,6 +174,11 @@ unsafe extern "C" fn send_detour(text: *const u8) {
 }
 
 unsafe fn send_detour_inner(original: SendFn, text: *const u8) {
+    // An observer's chat goes to the other observers only.
+    if crate::observer::local_is_observer() {
+        unsafe { observer_send(original, text) };
+        return;
+    }
     // Read what the game is about to use before it runs: it changes the mask around the call.
     let seen = guarded(|| {
         let a = ADDRS.get()?;
@@ -197,8 +202,71 @@ unsafe fn send_detour_inner(original: SendFn, text: *const u8) {
     }
 }
 
+/// Marks an observer's lines for the other observers.
+const OBSERVER_TAG: &[u8] = b"[Obs] ";
+
+/// Sends an observer's line to the observers in the match and nobody else: the recipient mask
+/// is cut down to them, and the game's idea of who is local is the observer for the call (while an
+/// observer watches a player, `LocalPlayer` is that player).
+///
+/// # Safety
+/// `text` is the NUL-terminated line the game passed to `ChatSendLocal`.
+unsafe fn observer_send(original: SendFn, text: *const u8) {
+    let prepared = guarded(|| {
+        let a = ADDRS.get()?;
+        let real = crate::viewer::real();
+        if real >= 8 {
+            return None;
+        }
+        // SAFETY: bytes in the game's data section; the text is the game's NUL-terminated line.
+        unsafe {
+            let (mask_ptr, local_ptr) = (a.recipients as *mut u8, a.local as *mut u8);
+            let (old_mask, old_local) = (*mask_ptr, *local_ptr);
+            let mask = old_mask & crate::observer::match_observers() & !(1u8 << real);
+            let mut line = OBSERVER_TAG.to_vec();
+            line.extend_from_slice(&c_bytes(text, LOCAL_MAX - OBSERVER_TAG.len()));
+            line.push(0);
+            Some((mask, real, old_mask, old_local, line))
+        }
+    })
+    .ok()
+    .flatten();
+    let Some((mask, real, old_mask, old_local, line)) = prepared else {
+        unsafe { original(text) };
+        return;
+    };
+    if mask == 0 {
+        crate::viewer::say("No other observers to hear you");
+        return;
+    }
+    let a = ADDRS.get();
+    if let Some(a) = a {
+        unsafe {
+            *(a.recipients as *mut u8) = mask;
+            *(a.local as *mut u8) = real;
+        }
+    }
+    unsafe { original(line.as_ptr()) };
+    if let Some(a) = a {
+        unsafe {
+            *(a.recipients as *mut u8) = old_mask;
+            *(a.local as *mut u8) = old_local;
+        }
+    }
+}
+
 unsafe extern "C" fn receive_detour(net_id: u32, message: *const u8, length: u32) -> u32 {
     let original: ReceiveFn = unsafe { core::mem::transmute(ORIG_RECEIVE.load(Ordering::Acquire)) };
+    // A player does not hear the observers, whatever the sender's machine did (an older build, a
+    // modified one): their net slot is left out of the accepted senders for the call.
+    let muted = guarded(|| unsafe { mute_observer(net_id) }).ok().flatten();
+    if let Some(bit) = muted {
+        let done = unsafe { original(net_id, message, length) };
+        if let Some(a) = ADDRS.get() {
+            unsafe { *(a.net_mask as *mut u8) |= bit };
+        }
+        return done;
+    }
     let will_show = guarded(|| unsafe { received_line(net_id, message, length) })
         .ok()
         .flatten();
@@ -207,6 +275,27 @@ unsafe extern "C" fn receive_detour(net_id: u32, message: *const u8, length: u32
         crate::replayrec::note_chat(who, mode, 0, &bytes);
     }
     done
+}
+
+/// When this machine plays and `net_id` belongs to an observer: clears that sender from the accepted
+/// mask and returns the bit to put back.
+///
+/// # Safety
+/// The addresses are the game's.
+unsafe fn mute_observer(net_id: u32) -> Option<u8> {
+    let a = ADDRS.get()?;
+    if net_id >= 8 || crate::observer::local_is_observer() {
+        return None;
+    }
+    let player = unsafe { *((a.slot_player + net_id as usize * 4) as *const u32) };
+    if player >= 8 || crate::observer::match_observers() >> player & 1 == 0 {
+        return None;
+    }
+    let bit = 1u8 << net_id;
+    let mask = a.net_mask as *mut u8;
+    let had = unsafe { *mask } & bit;
+    unsafe { *mask &= !bit };
+    (had != 0).then_some(bit)
 }
 
 /// The line `ChatReceive` will show for this message, if it shows one: `(player, mode, text)`.

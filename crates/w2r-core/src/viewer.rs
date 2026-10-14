@@ -597,6 +597,23 @@ pub fn poll_keys() {
     announce(a);
 }
 
+/// The players that can be watched (people and computers, not observers), in slot order.
+pub fn watchable() -> Vec<u8> {
+    ADDRS.get().map(players).unwrap_or_default()
+}
+
+/// Puts `player`'s view on screen (the auto-director's move, as if the key was pressed).
+pub fn watch(player: u8) {
+    let Some(a) = ADDRS.get().filter(|_| is_viewing()) else { return };
+    if REAL.load(Ordering::Acquire) >= 8 || player >= 8 || watching() == Some(player) {
+        return;
+    }
+    VIEWED.store(player, Ordering::Release);
+    apply_view();
+    refresh_screen(a);
+    announce(a);
+}
+
 /// Back to the real player, nothing watched.
 fn reset_view() {
     crate::fogmaps::disarm();

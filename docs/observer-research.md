@@ -125,3 +125,18 @@ skip) would play a different simulation and can desync.
 - Stats screen: `StatsAddPlayer` 0x4d5c20 is skipped for observers and `StatsBuild` 0x4d56f0 runs with
   observers marked as empty seats in `PlayerOwnerAtStart` 0x918cbc (its "Ally/Enemy" words come from
   the first person in the slot list).
+
+## Live APM, auto-director and observer chat
+
+- **Live APM:** every machine gets every player's command packet each turn, so an observer counts
+  orders per player with `apm::Tracker` (`liveapm.rs`, fed from the turn detour in `replayrec.rs`
+  through `with_turn_packets`; pauses are skipped). The observer scoreboard's APM column reads it.
+- **Auto-director** (`director.rs`, End toggles while observing): every second each player's score is
+  `0.7*old + 0.3*(apm + 90*fighting events)`; fighting is kills + losses + razed + buildings lost from
+  the score tables. The view moves to a new player only if they beat the one on screen by 1.4x + 30
+  and the last move was 8+ s ago.
+- **Observer chat:** `ChatSendLocal` (chatrec.rs) sends to `ChatRecipientMask & ~(1<<local)`. For an
+  observer the mask is cut to the observers in the match (`observer::match_observers`), the text is
+  prefixed `[Obs] `, and `LocalPlayer` is set to the real seat for the call (it is the watched player
+  while viewing). With no other observer nothing is sent. On a playing machine `ChatReceive` is
+  given a `ChatNetMask` without the observer's net slot, so observer lines never show to players.

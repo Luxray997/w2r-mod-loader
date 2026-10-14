@@ -246,6 +246,7 @@ pub fn recording() -> bool {
 /// A new match: record it. A recording still open from the one before is closed as cut off.
 pub fn rearm() {
     crate::apm::reset();
+    crate::liveapm::reset();
     end(None);
     if let Ok(mut r) = RESULT.lock() {
         *r = None;
@@ -280,6 +281,9 @@ unsafe extern "C" fn detour() -> u32 {
         if let Err(fault) = guarded(crate::apm::on_turn) {
             crate::session::host_fault("apm counter", &fault);
         }
+        if let Err(fault) = guarded(crate::liveapm::on_turn) {
+            crate::session::host_fault("live apm", &fault);
+        }
     }
     if done == 1 && (ARMED.load(Ordering::Acquire) || is_recording()) {
         if let Err(fault) = guarded(capture) {
@@ -300,6 +304,31 @@ fn is_recording() -> bool {
 
 /// Copies this turn's packets. Runs right after the game processed the turn, so
 /// `NetTurnCounter - 1` is the turn that was just consumed.
+/// The packets the net layer holds for the turn just run, by net slot (which is the player).
+///
+/// # Safety
+/// Reads the net layer's buffers; call right after a turn ran, inside `guarded`.
+unsafe fn gather<'a>(a: &Addrs) -> Vec<(u8, &'a [u8])> {
+    let mut packets: Vec<(u8, &[u8])> = Vec::new();
+    for slot in 0..SLOTS {
+        let status = unsafe { core::ptr::read_unaligned((a.status + slot * 4) as *const u32) };
+        let ptr = unsafe { core::ptr::read_unaligned((a.ptrs + slot * 4) as *const usize) };
+        let len = unsafe { core::ptr::read_unaligned((a.lens + slot * 4) as *const u32) } as usize;
+        if status & HAS_PACKET != 0 && ptr != 0 && len > 0 && len <= MAX_PACKET {
+            packets.push((slot as u8, unsafe { core::slice::from_raw_parts(ptr as *const u8, len) }));
+        }
+    }
+    packets
+}
+
+/// Hands `f` the packets of the turn that just ran (see `gather`). Call inside `guarded`.
+pub fn with_turn_packets<R>(f: impl FnOnce(&[(u8, &[u8])]) -> R) -> Option<R> {
+    let a = ADDRS.get()?;
+    // SAFETY: as `gather`; the caller wraps this in `guarded` right after a turn ran.
+    let packets = unsafe { gather(a) };
+    Some(f(&packets))
+}
+
 fn capture() {
     let (Some(a), Some(cfg)) = (ADDRS.get(), CONFIG.get()) else {
         return;
