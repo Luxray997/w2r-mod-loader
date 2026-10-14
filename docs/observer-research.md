@@ -64,3 +64,64 @@ fingerprint (so the same simulation plugins, including `w2r-observer`). Recomput
   0x498090) when a player without the plugin joins.
 Not covered: the plugin itself does not re-check at match start, and a host without w2rpm accepts
 team 9 unchecked.
+
+## Stock-client behaviour and the synced-command route (2026-10-13, Ghidra on 2818)
+
+War2Combat (classic) needs the mod on every machine too: its in-game `/obs <color>` sends a repurposed
+cheat packet (bit 13) that every machine handles in lockstep (hidden unplaced peasant, zero resources,
+team 9). Lobby `obs` is the same team-9 byte.
+
+Stock client with a team-9 slot:
+- Receiving: `FUN_00497eb0` (full lobby snapshot, non-host) copies the team byte from the packet with no
+  range check; the single-slot update (type 0x1b, built by `BroadcastLobbySlot`) is assumed the same.
+- Lobby row draw `FUN_00535cb0` reads `labels[team-1]` from the 8-entry array at `0x95d3c8`: team 9 reads
+  past the end (junk text or a crash). The mod's ninth label is what avoids this.
+- Match: alliance matrix is built from team equality on every machine (observer allied only with other
+  observers); `CheckMatchEnd` (0x4f4930) runs per machine and defeats a player with no assets
+  (`PlayerHasAssets` 0x4f4240 reads sim counters at 0x91b38c.., so deterministic). A stock observer is
+  defeated at once.
+
+Sim-consistent route (nothing local-only):
+- Cheat flag word `DAT_0091b270`; applied by `FUN_004b3d20(newBits, playerName)`. The synced path is
+  `FUN_0049c040` (reads 4 bytes at packet+1), called from the lockstep command dispatcher `FUN_004f16f0`
+  (switch on packet+6; unlisted ids are ignored). Known bits: 0x20000 music, 0x4000/0x8000/0x10000 joke
+  messages, 0x100 and sign bit read by CheckMatchEnd. A new bit (e.g. 0x400000) can carry "player N
+  observes"; stock machines would store it and print "cheat enabled".
+- Unit creation: `FUN_004edb10(x_px, y_px, type, owner)` (fails with message_exit_blocked); map spawn loop
+  is `FUN_004d1d60` (8-byte records, sets `_DAT_0091ba4c = 1` around the call). Grid occupancy is written
+  by `FUN_004b4910` (flags in `DAT_0091ad58`, pointers in `DAT_0091ad6c`) and `FUN_004b4a00`; unplace
+  routine not found yet. Unit struct stride 0x98: +0x27 type, +0x2c owner, +0x1e flags, +0x18/+0x1a tile.
+- Plan: hook 4edb10 while `_DAT_0091ba4c == 1`; for an observer owner create one peasant (counted as an
+  asset on every machine) hidden/unplaced and skip the rest, replacing the local PlayerHasAssets and
+  EliminatePlayer hooks. Still to find: unplace/hide, and what sets resources to 0.
+
+### Unplace and resources (2818, same day)
+- **Unplace: `FUN_004b5000(unit)`** (classic `F_UNIT_UNPLACE`). Clears the grid flag (0x100 land / 0x200 air, picked
+  by unit+0x1c bit 4) in `DAT_0091ad58[tile]` and zeroes the unit pointer in `DAT_0091ad6c` / `DAT_0091ad70`
+  when it still points at this unit. Inverse of `FUN_004b4a00`. Used in `FUN_004be570` (unit boards a
+  transport) followed by: `unit+0x1e |= 8`, `unit+0x75 |= 0x10`, `unit+6 |= 0x20`, `FUN_004df750(unit)`
+  (drops it from selection/hotkey groups, arrays at 0x933e18..0x933fc8), `FUN_004f1160(unit)` (releases
+  queued orders). Boarding also links the container (`unit+0x88`), which an observer's peasant does not need.
+- **Resources:** `PlayerGold` 0x919128, `PlayerLumber` 0x9190e8, `PlayerOil` 0x919168, uint32 per player
+  (symbols already in symbols.rs). Zero the observer's three entries after the game sets starting resources.
+- Unknown: whether match start sets starting resources before or after `FUN_004d1d60`; whether `+0x1e |= 8`
+  alone is the right "hidden" marker for a unit with no container (check in game).
+
+### Gate changed to a capability bit (2026-10-14)
+`everyone_has` no longer compares simulation fingerprints. A w2rpm with the Observer plugin loaded
+announces `CAP_OBSERVER` (handshake caps bit 3, set once the OBS team entry was added); OBS is offered
+while every other present player announced it. Other plugins may differ. Consequence: nothing checks the
+Observer plugin's version, so two machines with different builds of it (say with and without the spawn
+skip) would play a different simulation and can desync.
+
+### Observer HUD and camera follow (2026-10-14)
+- `viewer.rs` (shared with replays) is switched on for a live observer by `replayplay::live_start`
+  (called from `alliancesscreen::on_match_start` when the local player is a person on team 9).
+  Keys `[ ] Home Insert backtick`, panel "OBSERVING" with game time, scoreboard without APM.
+- Camera follow: players who run the mod send the centre of their view to the observers' net slots
+  (`camerashare.rs`, subsystem 'V', 10-byte message, at most every 250 ms and only when moved, repeated
+  every 2 s). The observer eases to the watched player's last centre (`replayplay::follow_live_camera`),
+  semicolon (;) toggles. Not sent to anyone who is not an observer; nothing is sent when nobody observes.
+- Stats screen: `StatsAddPlayer` 0x4d5c20 is skipped for observers and `StatsBuild` 0x4d56f0 runs with
+  observers marked as empty seats in `PlayerOwnerAtStart` 0x918cbc (its "Ally/Enemy" words come from
+  the first person in the slot list).

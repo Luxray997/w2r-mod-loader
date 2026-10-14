@@ -277,6 +277,11 @@ pub fn note_roster(mask: u8) {
     ROSTER.store(mask, Ordering::Release);
 }
 
+/// The net slots (bit n) that announced the handshake in the lobby just left.
+pub fn roster() -> u8 {
+    ROSTER.load(Ordering::Acquire)
+}
+
 #[cfg(target_arch = "x86")]
 pub use live::{before_hud, deliver, install, on_match_start, poll};
 

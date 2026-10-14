@@ -11,7 +11,8 @@ use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO};
 
 use crate::guard::guarded;
 use crate::host::Log;
-use crate::replayplay::{self, Member, Pace};
+use crate::replayplay::{self, Pace};
+use crate::viewer::{self, Member};
 use crate::scoreboard::{self, Counts, History};
 use crate::screenkit::game::{Kit, rgba};
 use crate::screenkit::{ALIGN_CENTRE, ALIGN_LEFT, ALIGN_RIGHT, Rect};
@@ -220,7 +221,7 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
     let Some(pace) = replayplay::pace() else { return };
     let Some(panel) = PANEL.get() else { return };
     let result = guarded(|| unsafe {
-        let mode = replayplay::board_mode();
+        let mode = viewer::board_mode();
         // Read every frame, whatever page is up, so income has a history when its page opens.
         let rows = read_board(&panel.game);
         let mut mined = [[0u32; 3]; 8];
@@ -289,7 +290,7 @@ unsafe fn read_board(g: &Game) -> Vec<Row> {
             }
         }
     }
-    replayplay::roster()
+    viewer::roster()
         .into_iter()
         .map(|member| {
             let p = usize::from(member.slot);
@@ -354,28 +355,37 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     } else {
         pace.turn as f32 / pace.total as f32
     };
-    let bar = Rect::new(x + 6.0, TOP + 19.0, WIDTH - 12.0, BAR_HEIGHT);
-    kit.fill_rect(bar, TRACK);
-    let colour = if pace.paused || pace.ended {
-        FILL_PAUSED
-    } else {
-        FILL
-    };
-    kit.fill_rect(Rect::new(bar.x, bar.y, bar.w * fraction, bar.h), colour);
+    if !pace.live {
+        let bar = Rect::new(x + 6.0, TOP + 19.0, WIDTH - 12.0, BAR_HEIGHT);
+        kit.fill_rect(bar, TRACK);
+        let colour = if pace.paused || pace.ended {
+            FILL_PAUSED
+        } else {
+            FILL
+        };
+        kit.fill_rect(Rect::new(bar.x, bar.y, bar.w * fraction, bar.h), colour);
+    }
 
-    let state = if pace.ended {
+    let state = if pace.live {
+        "OBSERVING".to_string()
+    } else if pace.ended {
         "FINISHED".to_string()
     } else if pace.paused {
         format!("PAUSED  {}x", pace.speed)
     } else {
         format!("PLAYING  {}x", pace.speed)
     };
-    let progress = format!(
-        "turn {} / {}   {}%",
-        pace.turn,
-        pace.total,
-        (fraction * 100.0) as u32
-    );
+    let progress = if pace.live {
+        let secs = pace.game_ms / 1000;
+        format!("{}:{:02}", secs / 60, secs % 60)
+    } else {
+        format!(
+            "turn {} / {}   {}%",
+            pace.turn,
+            pace.total,
+            (fraction * 100.0) as u32
+        )
+    };
     kit.label_at(Rect::new(6.0, 2.0, WIDTH * 0.5, 14.0), &state, ALIGN_LEFT);
     kit.label_at(
         Rect::new(WIDTH * 0.5, 2.0, WIDTH * 0.5 - 6.0, 14.0),
@@ -388,17 +398,24 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
             "Open the menu to leave",
             ALIGN_CENTRE,
         );
+    } else if pace.live {
+        hint_row(kit, 28.0, &[("`", "page")]);
+        hint_row(
+            kit,
+            42.0,
+            &[("[ ]", "player"), ("Home", "all"), ("Ins", "vision"), (";", "follow")],
+        );
     } else {
         hint_row(kit, 28.0, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
         hint_row(
             kit,
             42.0,
-            &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), ("\\", "follow")],
+            &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), (";", "follow")],
         );
     }
 
     let Some(rows) = board else { return };
-    let watching = replayplay::watching();
+    let watching = viewer::watching();
     let top = HEADER_HEIGHT;
     let columns: &[(f32, f32, &str)] = match mode {
         1 => &TOTAL_COLUMNS,

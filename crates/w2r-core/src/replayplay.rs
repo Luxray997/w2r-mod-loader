@@ -8,12 +8,9 @@
 //!    turn arrived we overwrite the packet pointers, lengths and "has packet" bits with the
 //!    recorded turn. The net layer still paces the turns.
 //!
-//! Viewing: the screen follows `LocalPlayer` (0x918ccd), the view player (0x922f5a) and the view
-//! bit mask (0x922f23). While a replay plays, `[` and `]` cycle the player you watch as, Home goes
-//! back to the recorded player and Insert toggles full vision (every player's bit in the mask).
-//! The change is applied only while the game's simulation-mode flag (`SetSimMode`, 0x4a01b0) is
-//! 0, i.e. for drawing and input, and the real values are put back whenever the flag goes to 1,
-//! so the simulation never sees which player is being watched.
+//! Viewing (which player is on screen, full vision, per-player fog) is `viewer.rs`, shared with the
+//! observer; this module switches it on for the replay and adds the playback keys (speed, pause,
+//! step) and the camera follow.
 //!
 //! Armed by a one-line file `<root>/replay-play.txt` naming a file in `<root>/replays/`, consumed
 //! when the next game starts (renamed to `.used`), so a replay never plays twice by accident. The
@@ -51,39 +48,19 @@ type SeedFn = unsafe extern "C" fn(u32);
 type VoidFn = unsafe extern "C" fn();
 type SlotRequestFn = unsafe extern "C" fn(*const u8, i32);
 type DisplayChatFn = unsafe extern "C" fn(*const u8, u8, u32, i8);
-type SimModeFn = unsafe extern "C" fn(u32) -> u32;
-type PushFn = unsafe extern "C" fn(*const u8, i32, u32);
 type SyncCheckFn = unsafe extern "C" fn(*const u8) -> u8;
 type GatherFn = unsafe extern "C" fn(i32, i32, *mut u32, *mut u32, *mut u32) -> u32;
 
 static ORIG_START: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SEED: AtomicUsize = AtomicUsize::new(0);
 static ORIG_GATHER: AtomicUsize = AtomicUsize::new(0);
-static ORIG_SIM_MODE: AtomicUsize = AtomicUsize::new(0);
-static ORIG_DRAW_LIST: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SYNC_CHECK: AtomicUsize = AtomicUsize::new(0);
 /// Sync records that disagreed with the game's own hashes during this replay.
 static SYNC_BAD: AtomicU32 = AtomicU32::new(0);
-/// The game's real fog shade map while an all-visible one is swapped in for drawing.
-/// The units' real "hidden from" bits while they are recomputed for a computer player's view.
-static HIDDEN_SAVED: Mutex<Option<Vec<u8>>> = Mutex::new(None);
-static FOG_SAVED: Mutex<Option<(Vec<u8>, Vec<u8>)>> = Mutex::new(None);
-/// The fog shade maps are at most 128 x 128 bytes.
-const FOG_LEN: usize = 0x4000;
-const NONE: u8 = 0xff;
-/// The player the recorded game was played as; `NONE` until the first turn.
-static REAL: AtomicU8 = AtomicU8::new(NONE);
-/// The player being watched; `NONE` means the recorded one.
-static VIEWED: AtomicU8 = AtomicU8::new(NONE);
-/// The player the recording was made as; the view starts there and Home returns to it.
-static HOME: AtomicU8 = AtomicU8::new(NONE);
-static FULL_VISION: AtomicBool = AtomicBool::new(false);
 /// The map view follows the recorded player's camera (while that player is the one watched).
 static FOLLOW: AtomicBool = AtomicBool::new(true);
-/// Which watched keys were down on the previous frame.
+/// Which playback keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
-/// The scoreboard under the panel: 0 now, 1 totals, 2 rates, 3 hidden.
-static BOARD: AtomicU8 = AtomicU8::new(0);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 /// Let one turn through while paused.
 static STEP: AtomicBool = AtomicBool::new(false);
@@ -115,28 +92,13 @@ struct Addrs {
     team_change: usize,
     deadline: usize,
     display_chat: usize,
-    recompute_hidden: usize,
-    fog_vis: usize,
-    fog_explored: usize,
-    relations: usize,
-    fog: usize,
-    refresh: usize,
     local: usize,
-    view_player: usize,
-    view_mask: usize,
-    owner: usize,
-    names: usize,
-    push: usize,
     seed: usize,
     lobby: usize,
     turns: usize,
     rng: usize,
     backup: usize,
     sync_init: usize,
-    /// `SkinAltFlag`: the local player's race (0 human, 1 orc), which the UI skin and sounds follow.
-    race_flag: usize,
-    /// `PlayerRaces`: each player's race.
-    races: usize,
     cam_x: usize,
     cam_y: usize,
     view_w: usize,
@@ -334,11 +296,6 @@ pub fn unqueue() {
     }
 }
 
-/// The player the replay was recorded as (`0xff` until its first turn).
-pub fn real_player() -> u8 {
-    REAL.load(Ordering::Acquire)
-}
-
 pub fn init(root: &Path, fingerprint: [u8; 4]) {
     let _ = CONFIG.set(Config {
         root: root.to_path_buf(),
@@ -359,7 +316,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay playback: symbols missing");
         return false;
     };
-    let (Some(seed_at), Some(lobby), Some(turns), Some(rng), Some(backup), Some(sync_init), Some(sync_check), Some(race_flag), Some(races)) = (
+    let (Some(seed_at), Some(lobby), Some(turns), Some(rng), Some(backup), Some(sync_init), Some(sync_check)) = (
         get("GameSeed"),
         get("MpLobbySlots"),
         get("NetTurnCounter"),
@@ -367,18 +324,11 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         get("SlotBackup"),
         get("SyncRingInit"),
         get("SyncCheck"),
-        get("SkinAltFlag"),
-        get("PlayerRaces"),
     ) else {
         log.line(W2R_LOG_ERROR, "host", "replay playback: symbols missing");
         return false;
     };
-    let (Some(sim_mode), Some(local), Some(view_player), Some(view_mask)) = (
-        get("SetSimMode"),
-        get("LocalPlayer"),
-        get("ViewPlayer"),
-        get("ViewMask"),
-    ) else {
+    let Some(local) = get("LocalPlayer") else {
         log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
@@ -389,35 +339,6 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         get("HandleLobbyTeamChangeRequest"),
     ) else {
         log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
-        return false;
-    };
-    let (Some(recompute_hidden), Some(fog_vis)) = (get("RecomputeHidden"), get("FogVisibilityPtr"))
-    else {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
-        return false;
-    };
-    let Some(fog_explored) = get("FogExploredPtr") else {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
-        return false;
-    };
-    let (Some(fog), Some(relations)) = (get("FogShadePtr"), get("RelationColours")) else {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
-        return false;
-    };
-    let (Some(refresh), Some(draw_list), Some(_sync)) = (
-        get("RefreshView"),
-        get("BuildDrawList"),
-        get("TurnSyncMismatch"),
-    ) else {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
-        return false;
-    };
-    let (Some(owner), Some(names), Some(push)) = (
-        get("PlayerOwner"),
-        get("PlayerNames"),
-        get("PushMapMessage"),
-    ) else {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
         return false;
     };
     let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera)) = (
@@ -435,26 +356,13 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         team_change,
         deadline,
         display_chat,
-        recompute_hidden,
-        fog_vis,
-        fog_explored,
-        relations,
-        fog,
-        refresh,
         local,
-        view_player,
-        view_mask,
-        owner,
-        names,
-        push,
         seed: seed_at,
         lobby,
         turns,
         rng,
         backup,
         sync_init,
-        race_flag,
-        races,
         cam_x,
         cam_y,
         view_w,
@@ -483,22 +391,6 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         );
         ok &= hook(
             image,
-            sim_mode,
-            sim_mode_detour as *mut c_void,
-            "SetSimMode",
-            &ORIG_SIM_MODE,
-            log,
-        );
-        ok &= hook(
-            image,
-            draw_list,
-            draw_list_detour as *mut c_void,
-            "BuildDrawList",
-            &ORIG_DRAW_LIST,
-            log,
-        );
-        ok &= hook(
-            image,
             gather,
             gather_detour as *mut c_void,
             "TurnGather",
@@ -514,15 +406,12 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
             log,
         );
     }
-    ok &= crate::fogtrack::install(image, symbols, log);
-    if !crate::viewmem::init(symbols) {
-        log.line(W2R_LOG_ERROR, "host", "replay viewing: symbols missing");
-        ok = false;
-    }
+    // The view system (hooks, per-player fog, minimap memory) is shared with the observer.
+    ok &= crate::viewer::install(image, symbols, log);
     ok
 }
 
-unsafe fn hook(
+pub(crate) unsafe fn hook(
     image: &Image,
     target: usize,
     detour: *mut c_void,
@@ -656,7 +545,7 @@ fn arm(a: &Addrs, live: Vec<u8>) {
                     next_chat: 0,
                 });
             }
-            crate::fogmaps::arm();
+            crate::viewer::enable();
             ACTIVE.store(true, Ordering::Release);
         }
         Err(why) => log(
@@ -810,21 +699,15 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
             core::ptr::read_unaligned(a.rng as *const u32),
         )
     };
-    if REAL.load(Ordering::Acquire) >= 8 {
+    if crate::viewer::real() >= 8 {
         // SAFETY: a byte in the game's data section; nothing is applied yet, so this is the
         // player the recorded game was played as.
         let local = unsafe { *(a.local as *const u8) };
         if local < 8 {
-            REAL.store(local, Ordering::Release);
             // Start as the player who made the recording, not the seat this game gave the viewer.
-            let home = play.replay.header.local;
-            HOME.store(if home < 8 { home } else { local }, Ordering::Release);
-            if home < 8 && home != local {
-                VIEWED.store(home, Ordering::Release);
-            }
-            log(
-                W2R_LOG_INFO,
-                "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision, backslash follows the recorded player's camera;                  Page Up/Down speed, End pause, Delete step",
+            crate::viewer::begin(local, play.replay.header.local);
+            crate::viewer::log_keys(
+                ", semicolon follows the recorded player's camera; Page Up/Down speed, End pause, Delete step",
             );
         }
     }
@@ -931,276 +814,84 @@ fn show_chat(a: &Addrs, chat: &w2r_replay::Chat) {
     }
 }
 
-// ---- Viewing -------------------------------------------------------------------------------
+// ---- Observing a live match ----------------------------------------------------------------
 
-const KEY_PREV: u16 = 1;
-const KEY_NEXT: u16 = 2;
-const KEY_HOME: u16 = 4;
-const KEY_FULL: u16 = 8;
-const KEY_FASTER: u16 = 16;
-const KEY_SLOWER: u16 = 32;
-const KEY_PAUSE: u16 = 64;
-const KEY_STEP: u16 = 128;
-const KEY_BOARD: u16 = 256;
-const KEY_FOLLOW: u16 = 512;
-/// `[`, `]`, Home and Insert.
-const WATCHED: [(u16, i32); 10] = [
-    (KEY_FOLLOW, 0xDC),
-    (KEY_BOARD, 0xC0),
+/// The local player watches the match that is running (a person on the observer team).
+static LIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_live() -> bool {
+    LIVE.load(Ordering::Acquire)
+}
+
+/// A match is starting and the local player (`me`) only watches it: the view system goes on for
+/// the whole match, with the per-player fog followed from the start, and the player sees the
+/// match as the observer they are (Home) until they pick somebody with `[` or `]`.
+pub fn live_start(me: u8) {
+    if is_active() || me >= 8 {
+        return;
+    }
+    reset_replay();
+    crate::viewer::enable();
+    crate::viewer::begin(me, me);
+    crate::viewer::log_keys("");
+    LIVE.store(true, Ordering::Release);
+}
+
+/// The match is over: the view system goes off.
+pub fn live_end() {
+    if LIVE.swap(false, Ordering::AcqRel) {
+        reset_replay();
+        crate::viewer::disable();
+    }
+}
+
+/// What the panel shows for a match watched live.
+fn live_pace() -> Option<Pace> {
+    if !is_live() {
+        return None;
+    }
+    let a = ADDRS.get()?;
+    // SAFETY: a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) } as usize;
+    Some(Pace {
+        paused: false,
+        ended: false,
+        speed: 1.0,
+        game_ms: GAME_MS.load(Ordering::Acquire),
+        turn,
+        total: 0,
+        live: true,
+    })
+}
+
+/// Once per network turn while watching live: adds the time the game moved its clock on to the
+/// game time shown. The deadline is only read, never moved.
+fn track_live_time() {
+    let Some(a) = ADDRS.get() else { return };
+    // SAFETY: a u32 in the game's data section, read on the main thread between ticks.
+    let now = unsafe { core::ptr::read_unaligned(a.deadline as *const u32) };
+    let last = LAST_DEADLINE.swap(now, Ordering::AcqRel);
+    let step = now.wrapping_sub(last) as i32;
+    if last != 0 && (1..=500).contains(&step) {
+        GAME_MS.fetch_add(step as u32, Ordering::AcqRel);
+    }
+}
+
+// ---- Keys ----------------------------------------------------------------------------------
+
+const KEY_FASTER: u16 = 1;
+const KEY_SLOWER: u16 = 2;
+const KEY_PAUSE: u16 = 4;
+const KEY_STEP: u16 = 8;
+const KEY_FOLLOW: u16 = 16;
+/// Backslash, Page Up, Page Down, End and Delete (the view keys are in `viewer.rs`).
+const WATCHED: [(u16, i32); 5] = [
+    (KEY_FOLLOW, 0xBA),
     (KEY_FASTER, 0x21),
     (KEY_SLOWER, 0x22),
     (KEY_PAUSE, 0x23),
     (KEY_STEP, 0x2E),
-    (KEY_PREV, 0xDB),
-    (KEY_NEXT, 0xDD),
-    (KEY_HOME, 0x24),
-    (KEY_FULL, 0x2D),
 ];
-/// A player's record in `PlayerNames` (0x91ada8): stride, and the longest name.
-const NAME_STRIDE: usize = 0x38;
-const NAME_MAX: usize = 0x19;
-
-/// # Safety
-/// `a` holds the game's addresses; call inside `guarded`.
-unsafe fn write_view(a: &Addrs, player: u8, mask: u8) {
-    unsafe {
-        core::ptr::write_volatile(a.local as *mut u8, player);
-        core::ptr::write_volatile(a.view_player as *mut u8, player);
-        core::ptr::write_volatile(a.view_mask as *mut u8, mask);
-        // The sounds (and UI skin) follow the local player's race, so the watched player's.
-        let race = core::ptr::read_volatile((a.races + usize::from(player & 7)) as *const u8);
-        core::ptr::write_volatile(a.race_flag as *mut u8, race);
-    }
-}
-
-/// The recorded player's own view: what the game itself has when nobody watches anyone else.
-fn restore_view() {
-    let real = REAL.load(Ordering::Acquire);
-    let Some(a) = ADDRS.get() else { return };
-    restore_fog(a);
-    restore_hidden();
-    crate::viewmem::leave();
-    if real < 8 {
-        // SAFETY: symbol-table addresses of single bytes in the game's data section.
-        unsafe { write_view(a, real, 1 << real) };
-    }
-}
-
-/// Full vision shows the whole map: both fog maps the game draws from are swapped for all-lit
-/// ones (0 = lit) while drawing, and the real ones are put back before the simulation runs.
-fn swap_in_clear_fog(a: &Addrs) {
-    swap_in_fog(a, |current, remembered| {
-        current.fill(0);
-        remembered.fill(0);
-    });
-}
-
-/// Swaps in fog maps made by `fill(current, remembered)` for drawing; the real ones are kept to
-/// put back. `current` (0x91ad5c) is what is in sight now, `remembered` (0x91ad60) what has been
-/// explored; both run from 0 (lit) to 0x10 (black) with soft values at the edges.
-fn swap_in_fog(a: &Addrs, fill: impl FnOnce(&mut [u8], &mut [u8])) {
-    let Ok(mut saved) = FOG_SAVED.lock() else {
-        return;
-    };
-    if saved.is_some() {
-        return;
-    }
-    // SAFETY: pointer variables of the game, each pointing at a FOG_LEN-byte map it allocated.
-    let (current, remembered) = unsafe {
-        (
-            core::ptr::read_unaligned(a.fog as *const usize),
-            core::ptr::read_unaligned(a.fog_explored as *const usize),
-        )
-    };
-    if current == 0 || remembered == 0 {
-        return;
-    }
-    // SAFETY: as above; the two maps are separate allocations.
-    unsafe {
-        let cur = core::slice::from_raw_parts_mut(current as *mut u8, FOG_LEN);
-        let rem = core::slice::from_raw_parts_mut(remembered as *mut u8, FOG_LEN);
-        *saved = Some((cur.to_vec(), rem.to_vec()));
-        fill(cur, rem);
-    }
-}
-
-fn restore_fog(a: &Addrs) {
-    let Ok(mut saved) = FOG_SAVED.lock() else {
-        return;
-    };
-    let Some((current, remembered)) = saved.take() else {
-        return;
-    };
-    // SAFETY: as in `swap_in_fog`.
-    unsafe {
-        for (var, real) in [(a.fog, current), (a.fog_explored, remembered)] {
-            let map = core::ptr::read_unaligned(var as *const usize);
-            if map != 0 {
-                core::ptr::copy_nonoverlapping(real.as_ptr(), map as *mut u8, real.len());
-            }
-        }
-    }
-}
-
-/// Draws the map as `player` sees it, from the private maps the game's own code has kept for
-/// them (`fogtrack.rs`).
-fn swap_in_player_fog(a: &Addrs, player: u8) {
-    swap_in_fog(a, |current, remembered| {
-        crate::fogmaps::copy_into(player, current, remembered);
-    });
-}
-
-/// The game never hides anything from a computer player. To watch one as a person would see,
-/// the units' hidden-from bits are made again with the human rule (a unit is seen if a tile under
-/// it is lit for that player) from that player's own dark map, by the game's own routine with
-/// the slot briefly marked human. The real bits come back in `restore_hidden`.
-fn hide_like_a_human(a: &Addrs, player: u8) {
-    // SAFETY: the owner table is in the game's data section.
-    let owner = (a.owner + usize::from(player)) as *mut u8;
-    if unsafe { *owner } != 1 {
-        return;
-    }
-    let Some(dark) = crate::fogmaps::dark_ptr(player) else {
-        return;
-    };
-    if let Ok(mut saved) = HIDDEN_SAVED.lock() {
-        if saved.is_none() {
-            *saved = Some(crate::viewmem::save_hidden());
-        }
-    }
-    // SAFETY: the game's globals; the private map outlives the call; `RecomputeHidden` takes no
-    // arguments. Both are put back straight after.
-    unsafe {
-        let old_dark = core::ptr::read_unaligned(a.fog_vis as *const usize);
-        *owner = 0;
-        core::ptr::write_unaligned(a.fog_vis as *mut usize, dark);
-        let recompute: VoidFn = core::mem::transmute(a.recompute_hidden);
-        recompute();
-        core::ptr::write_unaligned(a.fog_vis as *mut usize, old_dark);
-        *owner = 1;
-    }
-}
-
-fn restore_hidden() {
-    if let Some(saved) = HIDDEN_SAVED.lock().ok().and_then(|mut s| s.take()) {
-        crate::viewmem::restore_hidden(&saved);
-    }
-}
-
-fn apply_view() {
-    let real = REAL.load(Ordering::Acquire);
-    let Some(a) = ADDRS.get() else { return };
-    if real >= 8 {
-        return;
-    }
-    // Always start from the real map, so a view that changed since the last time is rebuilt.
-    restore_fog(a);
-    restore_hidden();
-    let viewed = VIEWED.load(Ordering::Acquire);
-    if FULL_VISION.load(Ordering::Acquire) {
-        swap_in_clear_fog(a);
-        // What the draw pass remembers while it draws goes to this view, not the real player.
-        crate::viewmem::enter(crate::viewmemory::FULL_VISION_SLOT);
-    } else if viewed < 8 && viewed != real {
-        swap_in_player_fog(a, viewed);
-        crate::viewmem::enter(usize::from(viewed));
-        hide_like_a_human(a, viewed);
-    } else {
-        crate::viewmem::leave();
-    }
-    let player = if viewed < 8 { viewed } else { real };
-    // The mask hides objects whose own "hidden from" bits include it: 0 hides nothing.
-    let mask = if FULL_VISION.load(Ordering::Acquire) {
-        0
-    } else {
-        1 << player
-    };
-    // SAFETY: as in `restore_view`.
-    unsafe { write_view(a, player, mask) };
-    // The colours of hover and selection borders (own / allied / enemy) are a table the game
-    // fills from the local player once; refill it for the player being watched. It is only
-    // read for drawing.
-    // SAFETY: `RelationColours` takes no arguments and writes only that table.
-    unsafe {
-        let relation_colours: VoidFn = core::mem::transmute(a.relations);
-        relation_colours();
-    }
-}
-
-/// The game's simulation-mode flag changes around every simulation step: 1 = entering it, so
-/// the real local player goes back for the duration; 0 = leaving it, so the screen shows the
-/// watched player again.
-unsafe extern "C" fn sim_mode_detour(mode: u32) -> u32 {
-    let original: SimModeFn =
-        unsafe { core::mem::transmute(ORIG_SIM_MODE.load(Ordering::Acquire)) };
-    let before = unsafe { original(mode) };
-    if is_active() {
-        let _ = guarded(|| {
-            if mode & 0xff != 0 {
-                restore_view();
-            } else {
-                apply_view();
-            }
-        });
-    }
-    before
-}
-
-/// Building the list of units to draw runs inside the simulation bracket but is display-only: it
-/// follows the player being watched.
-unsafe extern "C" fn draw_list_detour() {
-    let original: VoidFn = unsafe { core::mem::transmute(ORIG_DRAW_LIST.load(Ordering::Acquire)) };
-    let watching = is_active()
-        && REAL.load(Ordering::Acquire) < 8
-        && (VIEWED.load(Ordering::Acquire) < 8 || FULL_VISION.load(Ordering::Acquire));
-    if watching {
-        let _ = guarded(apply_view);
-    }
-    unsafe { original() };
-    if watching {
-        let _ = guarded(restore_view);
-    }
-}
-
-/// Makes the game rebuild what it shows for the local player (fog, minimap): the routine it runs
-/// itself when a player is eliminated.
-fn refresh_screen(a: &Addrs) {
-    // SAFETY: `RefreshView` takes no arguments; called on the main thread outside the simulation.
-    unsafe {
-        let refresh: VoidFn = core::mem::transmute(a.refresh);
-        refresh();
-    }
-}
-
-/// Players that are in the match (a human or a computer), by index.
-fn players(a: &Addrs) -> Vec<u8> {
-    (0..8u8)
-        // SAFETY: the owner table is 0x20 bytes of the game's data section.
-        .filter(|&i| matches!(unsafe { *((a.owner + usize::from(i)) as *const u8) }, 0 | 1))
-        .collect()
-}
-
-fn player_name(a: &Addrs, player: u8) -> String {
-    // SAFETY: the player records are a fixed table in the game's data section.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            (a.names + usize::from(player) * NAME_STRIDE) as *const u8,
-            NAME_MAX,
-        )
-    };
-    let n = bytes.iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
-    String::from_utf8_lossy(&bytes[..n]).into_owned()
-}
-
-fn say(a: &Addrs, text: &str) {
-    let mut c = text.as_bytes().to_vec();
-    c.push(0);
-    // SAFETY: `PushMapMessage` copies the NUL-terminated text it is given; called on the main thread.
-    unsafe {
-        let push: PushFn = core::mem::transmute(a.push);
-        push(c.as_ptr(), 1, 3000);
-    }
-}
 
 /// Whether the game's victory/defeat test should be skipped: while a replay is still playing.
 pub fn match_end_held() -> bool {
@@ -1216,11 +907,13 @@ pub struct Pace {
     pub game_ms: u32,
     pub turn: usize,
     pub total: usize,
+    /// A match being observed live: no progress, no playback controls.
+    pub live: bool,
 }
 
 pub fn pace() -> Option<Pace> {
     if !is_active() {
-        return None;
+        return live_pace();
     }
     let a = ADDRS.get()?;
     let total = PLAY.lock().ok()?.as_ref()?.replay.turns.len();
@@ -1233,31 +926,8 @@ pub fn pace() -> Option<Pace> {
         game_ms: GAME_MS.load(Ordering::Acquire),
         turn: turn.min(total),
         total,
+        live: false,
     })
-}
-
-/// A player in the match, for the scoreboard.
-pub struct Member {
-    pub slot: u8,
-    /// A person (rather than the computer): only people send commands.
-    pub human: bool,
-    pub name: String,
-}
-
-/// The players in the match (a human or a computer), in slot order. Empty off a replay.
-pub fn roster() -> Vec<Member> {
-    let Some(a) = ADDRS.get().filter(|_| is_active()) else {
-        return Vec::new();
-    };
-    players(a)
-        .into_iter()
-        .map(|slot| Member {
-            slot,
-            // SAFETY: the owner table is 0x20 bytes of the game's data section.
-            human: unsafe { *((a.owner + usize::from(slot)) as *const u8) } == 0,
-            name: player_name(a, slot),
-        })
-        .collect()
 }
 
 /// What `slot` did on purpose per game minute, over the last minute played (or all of it, if
@@ -1284,22 +954,6 @@ pub fn actions_per_minute(slot: u8) -> Option<u32> {
     Some((u64::from(now - before) * 60_000 / (window as u64 * per_turn_ms as u64)) as u32)
 }
 
-/// The player whose view is on screen, once the replay has started.
-pub fn watching() -> Option<u8> {
-    let (viewed, real) = (VIEWED.load(Ordering::Acquire), REAL.load(Ordering::Acquire));
-    match (viewed < 8, real < 8) {
-        (true, _) => Some(viewed),
-        (false, true) => Some(real),
-        _ => None,
-    }
-}
-
-/// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 rates,
-/// 3 none.
-pub fn board_mode() -> u8 {
-    BOARD.load(Ordering::Acquire)
-}
-
 fn change_speed(by: i8) {
     let now = SPEED.load(Ordering::Acquire) as i8;
     let to = (now + by).clamp(0, SPEEDS.len() as i8 - 1);
@@ -1311,6 +965,9 @@ fn change_speed(by: i8) {
 /// one frame time after every turn, so each turn's share of that is stretched or squeezed here.
 pub fn hold_turn() -> bool {
     if !is_active() {
+        if is_live() {
+            let _ = guarded(track_live_time);
+        }
         return false;
     }
     if let Some(a) = ADDRS.get() {
@@ -1356,17 +1013,6 @@ pub fn hold_turn() -> bool {
     false
 }
 
-fn announce(a: &Addrs) {
-    let real = REAL.load(Ordering::Acquire);
-    let viewed = VIEWED.load(Ordering::Acquire);
-    let player = if viewed < 8 { viewed } else { real };
-    let mut text = format!("Viewing {} (player {})", player_name(a, player), player + 1);
-    if FULL_VISION.load(Ordering::Acquire) {
-        text.push_str(", full vision");
-    }
-    say(a, &text);
-}
-
 pub(crate) fn game_has_focus() -> bool {
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1384,12 +1030,19 @@ pub(crate) fn game_has_focus() -> bool {
     }
 }
 
-/// Once per game frame: the viewing keys. Only while a replay is playing and the game window is
-/// the one with focus (typing in another program does nothing).
+/// Once per game frame: the playback keys (speed, pause, step, camera) and the camera follow. Only
+/// while a replay is playing and the game window is the one with focus (typing in another program
+/// does nothing). The view keys are polled by `viewer::poll_keys`.
 pub fn poll() {
     if !is_active() {
+        if is_live() {
+            let _ = guarded(crate::viewer::poll_keys);
+            let _ = guarded(poll_live_follow_key);
+            let _ = guarded(follow_live_camera);
+        }
         return;
     }
+    let _ = guarded(crate::viewer::poll_keys);
     let _ = guarded(poll_keys);
     let _ = guarded(follow_camera);
 }
@@ -1399,13 +1052,11 @@ pub fn poll() {
 /// (nobody else's camera was recorded) and the view has not been switched off with `\`.
 fn follow_camera() {
     let Some(a) = ADDRS.get() else { return };
-    let real = REAL.load(Ordering::Acquire);
+    let real = crate::viewer::real();
     if real >= 8 || !FOLLOW.load(Ordering::Acquire) {
         return;
     }
-    let viewed = VIEWED.load(Ordering::Acquire);
-    let watching = if viewed < 8 { viewed } else { real };
-    if watching != HOME.load(Ordering::Acquire) {
+    if crate::viewer::watching() != Some(crate::viewer::home()) {
         return;
     }
     // SAFETY: the turn counter is a u32 in the game's data section.
@@ -1417,6 +1068,11 @@ fn follow_camera() {
     else {
         return;
     };
+    ease_view_to(a, target);
+}
+
+/// One frame of easing the map view towards a view centred on `target` (map pixels).
+fn ease_view_to(a: &Addrs, target: (u32, u32)) {
     // SAFETY: the camera scroll is two i32 and the view size two u16 in the game's data section;
     // `ClampCamera` takes nothing and keeps the scroll inside the map. Main thread, between ticks.
     unsafe {
@@ -1434,11 +1090,65 @@ fn follow_camera() {
     }
 }
 
+/// Once per frame while watching live: eases the map view to where the watched player was last
+/// seen looking (`camerashare.rs`). Not for the observer's own all-seeing view, and only while the
+/// follow is on (semicolon).
+fn follow_live_camera() {
+    let Some(a) = ADDRS.get() else { return };
+    let real = crate::viewer::real();
+    if real >= 8 || !FOLLOW.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(watching) = crate::viewer::watching().filter(|&p| p != real) else {
+        return;
+    };
+    let Some((x, y)) = crate::camerashare::latest(watching, crate::chat::now_ms()) else {
+        return;
+    };
+    // Messages arrive in steps; a smoothed point chasing them keeps the scroll gliding between steps.
+    static SMOOTH: Mutex<Option<(i32, i32, u8)>> = Mutex::new(None);
+    let (x, y) = (i32::from(x), i32::from(y));
+    let target = match SMOOTH.lock() {
+        Ok(mut s) => {
+            let (sx, sy) = match *s {
+                Some((px, py, w)) if w == watching => {
+                    let step = |from: i32, to: i32| if (to - from).abs() > 600 { to } else { from + (to - from) / 4 + (to - from).signum() * i32::from(to != from) };
+                    (step(px, x), step(py, y))
+                }
+                _ => (x, y),
+            };
+            *s = Some((sx, sy, watching));
+            (sx, sy)
+        }
+        Err(_) => (x, y),
+    };
+    ease_view_to(a, (target.0 as u32, target.1 as u32));
+}
+
+/// The semicolon key while watching live: turns the camera follow on and off.
+fn poll_live_follow_key() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    static DOWN: AtomicBool = AtomicBool::new(false);
+    if crate::viewer::real() >= 8 || !game_has_focus() {
+        DOWN.store(false, Ordering::Release);
+        return;
+    }
+    // SAFETY: a plain key-state query.
+    let now = unsafe { GetAsyncKeyState(0xBA) } as u16 & 0x8000 != 0;
+    if now && !DOWN.swap(true, Ordering::AcqRel) {
+        if FOLLOW.fetch_xor(true, Ordering::AcqRel) {
+            crate::viewer::say("Camera follow off");
+        } else {
+            crate::viewer::say("Camera follows the player you watch (; to stop)");
+        }
+    } else if !now {
+        DOWN.store(false, Ordering::Release);
+    }
+}
+
 fn poll_keys() {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    let Some(a) = ADDRS.get() else { return };
-    let real = REAL.load(Ordering::Acquire);
-    if real >= 8 {
+    if crate::viewer::real() >= 8 {
         return;
     }
     if !game_has_focus() {
@@ -1456,24 +1166,18 @@ fn poll_keys() {
     if pressed == 0 {
         return;
     }
-    if pressed & (KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP) != 0 {
-        if pressed & KEY_FASTER != 0 {
-            change_speed(1);
-        }
-        if pressed & KEY_SLOWER != 0 {
-            change_speed(-1);
-        }
-        if pressed & KEY_PAUSE != 0 {
-            PAUSED.fetch_xor(true, Ordering::AcqRel);
-        }
-        if pressed & KEY_STEP != 0 {
-            PAUSED.store(true, Ordering::Release);
-            STEP.store(true, Ordering::Release);
-        }
+    if pressed & KEY_FASTER != 0 {
+        change_speed(1);
     }
-    if pressed & KEY_BOARD != 0 {
-        let next = (BOARD.load(Ordering::Acquire) + 1) % 4;
-        BOARD.store(next, Ordering::Release);
+    if pressed & KEY_SLOWER != 0 {
+        change_speed(-1);
+    }
+    if pressed & KEY_PAUSE != 0 {
+        PAUSED.fetch_xor(true, Ordering::AcqRel);
+    }
+    if pressed & KEY_STEP != 0 {
+        PAUSED.store(true, Ordering::Release);
+        STEP.store(true, Ordering::Release);
     }
     if pressed & KEY_FOLLOW != 0 {
         let has_camera = PLAY
@@ -1482,82 +1186,37 @@ fn poll_keys() {
             .and_then(|g| g.as_ref().map(|p| !p.replay.cameras.is_empty()))
             .unwrap_or(false);
         if !has_camera {
-            say(a, "This recording has no camera data (made before it was kept)");
+            crate::viewer::say("This recording has no camera data (made before it was kept)");
         } else if FOLLOW.fetch_xor(true, Ordering::AcqRel) {
-            say(a, "Camera follow off");
+            crate::viewer::say("Camera follow off");
         } else {
-            say(a, "Camera follows the recorded player (backslash to stop)");
+            crate::viewer::say("Camera follows the recorded player (; to stop)");
         }
     }
-    if pressed & !(KEY_FASTER | KEY_SLOWER | KEY_PAUSE | KEY_STEP | KEY_BOARD | KEY_FOLLOW) == 0 {
-        return;
-    }
-    let list = players(a);
-    let current = match VIEWED.load(Ordering::Acquire) {
-        v if v < 8 => v,
-        _ => real,
-    };
-    let step = |forward: bool| {
-        let at = list.iter().position(|&p| p == current).unwrap_or(0);
-        let n = list.len().max(1);
-        let to = if forward {
-            (at + 1) % n
-        } else {
-            (at + n - 1) % n
-        };
-        list.get(to).copied()
-    };
-    if pressed & KEY_NEXT != 0 {
-        if let Some(p) = step(true) {
-            VIEWED.store(p, Ordering::Release);
-        }
-    }
-    if pressed & KEY_PREV != 0 {
-        if let Some(p) = step(false) {
-            VIEWED.store(p, Ordering::Release);
-        }
-    }
-    if pressed & KEY_HOME != 0 {
-        let home = HOME.load(Ordering::Acquire);
-        VIEWED.store(if home < 8 && home != real { home } else { NONE }, Ordering::Release);
-    }
-    if pressed & KEY_FULL != 0 {
-        FULL_VISION.fetch_xor(true, Ordering::AcqRel);
-    }
-    apply_view();
-    refresh_screen(a);
-    announce(a);
 }
 
-/// Back to the recorded player, nothing watched.
-fn reset_view() {
+/// Playback state back to its start.
+fn reset_replay() {
     SYNC_BAD.store(0, Ordering::Release);
-    crate::fogmaps::disarm();
-    crate::viewmem::reset();
-    VIEWED.store(NONE, Ordering::Release);
-    HOME.store(NONE, Ordering::Release);
-    FULL_VISION.store(false, Ordering::Release);
     FOLLOW.store(true, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
-    BOARD.store(0, Ordering::Release);
     STEP.store(false, Ordering::Release);
     SPEED.store(NORMAL_SPEED, Ordering::Release);
     ENDED.store(false, Ordering::Release);
     LAST_DEADLINE.store(0, Ordering::Release);
     GAME_MS.store(0, Ordering::Release);
-    restore_view();
-    REAL.store(NONE, Ordering::Release);
 }
 
 /// Stops driving the game; the live game carries on with its own input.
 fn finish(reason: &str) {
-    reset_view();
+    let bad = SYNC_BAD.swap(0, Ordering::AcqRel);
+    reset_replay();
+    crate::viewer::disable();
     ACTIVE.store(false, Ordering::Release);
     if let Ok(mut p) = PLAY.lock() {
         *p = None;
     }
-    let bad = SYNC_BAD.swap(0, Ordering::AcqRel);
     if bad > 0 {
         log(
             W2R_LOG_INFO,
@@ -1569,6 +1228,7 @@ fn finish(reason: &str) {
 
 /// `RunGame` returned: put the live lobby block back.
 pub fn on_run_game_return() {
+    live_end();
     if is_active() {
         finish("the match ended");
     }

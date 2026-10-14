@@ -561,6 +561,17 @@ pub mod hook {
                 }
                 true
             }
+            // A player's view centre, for the observers.
+            #[cfg(target_arch = "x86")]
+            Packet::Ours {
+                subsystem: crate::camerashare::SUBSYSTEM,
+                body,
+            } => {
+                if let Err(fault) = guarded(|| crate::camerashare::deliver(sender, body)) {
+                    crate::session::host_fault("camera sharing", &fault);
+                }
+                true
+            }
             // Map sharing: queued for the next lobby frame (x86 only; elsewhere consumed).
             #[cfg(target_arch = "x86")]
             Packet::Ours {

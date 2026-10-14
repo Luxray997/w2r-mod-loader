@@ -211,7 +211,7 @@ fn for_each_private(call: impl Fn()) {
     let Some(a) = ADDRS.get() else { return };
     // The recorded player owns the real maps; before it is known, so does the local player.
     // SAFETY: the owner table and the local player byte are in the game's data section.
-    let local = match crate::replayplay::real_player() {
+    let local = match crate::viewer::real() {
         real if real < 8 => real,
         _ => unsafe { *(a.local as *const u8) },
     };

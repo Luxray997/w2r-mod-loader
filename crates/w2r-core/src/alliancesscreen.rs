@@ -45,6 +45,7 @@ const STR_STRIDE: usize = 0x18;
 
 const TEAMMATE: u32 = rgba(0x25, 0xe6, 0x5f, 255);
 const OUT: u32 = rgba(0xe6, 0x40, 0x40, 255);
+const OBSERVER: u32 = rgba(0x6f, 0xb4, 0xff, 255);
 
 type CheckboxFn = unsafe extern "C" fn(*const c_char, *mut u8) -> u8;
 type SendFn = unsafe extern "C" fn();
@@ -221,6 +222,15 @@ pub fn on_match_start() {
     if me < PLAYERS {
         r.teammates_of_me = teammates_at_start(s, me);
     }
+    // Other features (the APM counter) stay quiet for someone who only watches.
+    let observing =
+        me < PLAYERS && r.human & (1 << me) != 0 && r.team[me] == crate::observer::OBSERVER_TEAM;
+    crate::observer::set_local_observer(observing);
+    // An observer gets the viewing system (switch player, per-player fog, scoreboard) for the
+    // whole match.
+    if observing {
+        crate::replayplay::live_start(me as u8);
+    }
     crate::session::log_info(
         "alliances",
         &format!(
@@ -344,12 +354,27 @@ impl Screen {
             if name.is_empty() {
                 name = "?".to_owned();
             }
+            let observer = roster.human & (1 << i) != 0
+                && roster.team[i] == crate::observer::OBSERVER_TEAM;
             out.push(Entry {
                 player: i as u8,
-                team: if roster.team_game { roster.team[i] } else { 0 },
+                team: if observer {
+                    crate::observer::OBSERVER_TEAM
+                } else if roster.team_game {
+                    roster.team[i]
+                } else {
+                    0
+                },
                 name,
                 tint: lay::tint(
-                    self.is_out(roster, i),
+                    // An observer owns nothing, so the game lists them as defeated; only
+                    // leaving the game is red for them.
+                    if observer {
+                        self.has_left(roster, i)
+                    } else {
+                        self.is_out(roster, i)
+                    },
+                    observer,
                     roster.team_game,
                     i == me,
                     roster.teammates_of_me & (1 << i) != 0,
@@ -411,6 +436,7 @@ impl Screen {
             Tint::Plain => None,
             Tint::Teammate => Some(TEAMMATE),
             Tint::Out => Some(OUT),
+            Tint::Observer => Some(OBSERVER),
         };
         if let Some(c) = colour {
             k.set_current_text_colour(c);
@@ -461,7 +487,14 @@ impl Screen {
         };
         let groups = lay::build_groups(self.entries(roster, usize::from(me)), me, my_team);
         let players: usize = groups.iter().map(|g| g.rows.len()).sum();
-        let headers = if roster.team_game { groups.len() } else { 0 };
+        let observers_listed = groups
+            .iter()
+            .any(|g| g.team == crate::observer::OBSERVER_TEAM);
+        let headers = if roster.team_game || observers_listed {
+            groups.len()
+        } else {
+            0
+        };
 
         let kickable = ingamekick::kickable();
         let armed = ingamekick::kick_armed();
@@ -526,7 +559,12 @@ impl Screen {
                 for g in &groups {
                     if headers > 0 {
                         k.row_dynamic(lay::TEAM_HEADER_H, 1);
-                        k.label(&format!("{team_word} {}", g.team), ALIGN_LEFT);
+                        let heading = if g.team == crate::observer::OBSERVER_TEAM {
+                            "Observers".to_owned()
+                        } else {
+                            format!("{team_word} {}", g.team)
+                        };
+                        k.label(&heading, ALIGN_LEFT);
                     }
                     for e in &g.rows {
                         let kick = kick_column.then(|| {

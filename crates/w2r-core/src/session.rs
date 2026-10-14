@@ -202,6 +202,8 @@ pub fn on_match_start() {
     crate::alliancesscreen::on_match_start();
     #[cfg(target_arch = "x86")]
     crate::ping::on_match_start();
+    #[cfg(target_arch = "x86")]
+    crate::camerashare::on_match_start();
     SESSION.with(|cell| {
         // Busy means a plugin callback is on the stack and drew something; the event is lost
         // rather than delivered into a half-finished callback.
@@ -243,6 +245,7 @@ pub fn on_window(name: Option<&str>) {
         crate::replayplay::poll();
         crate::ingamekick::poll();
         crate::ping::poll();
+        crate::camerashare::poll();
     }
     let now = chat::now_ms();
     ensure_started();
@@ -343,7 +346,11 @@ pub fn on_window(name: Option<&str>) {
                 lobby_slots: net.transport.lobby_slots(),
             };
             let outs = match net.handshake.try_borrow_mut() {
-                Ok(mut h) => h.frame(f, || net.transport.peers()),
+                Ok(mut h) => {
+                    #[cfg(target_arch = "x86")]
+                    h.set_observer(crate::observer::available());
+                    h.frame(f, || net.transport.peers())
+                }
                 Err(_) => Vec::new(),
             };
             net.run(outs);
@@ -1057,6 +1064,8 @@ fn start() -> Session {
         crate::apm::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::ping::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
+        crate::camerashare::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::ingamekick::install(&symbols, &*log);
         #[cfg(target_arch = "x86")]

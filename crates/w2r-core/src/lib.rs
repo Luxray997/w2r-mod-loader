@@ -6,6 +6,7 @@
 pub use w2r_formats::{json, manifest, semver, state};
 pub mod alliancelayout;
 pub mod apm;
+pub mod camerashare;
 pub mod ping;
 pub mod pingtable;
 pub mod build_guard;
@@ -79,6 +80,8 @@ pub mod replaypicker;
 pub mod fogtrack;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod viewmem;
+#[cfg(all(windows, target_arch = "x86"))]
+pub mod viewer;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod gameinfopatch;
 #[cfg(all(windows, target_arch = "x86"))]
