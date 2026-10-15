@@ -183,6 +183,18 @@ pub struct App {
     rx: Receiver<Done>,
 }
 
+/// Plugins offered by "Install recommended plugins": every published plugin except the dev and
+/// niche ones (hello-example, w2r-countdown-sound, w2r-lobby-log, w2r-sdk-probe).
+const RECOMMENDED: &[&str] = &[
+    "w2r-black-recolor",
+    "w2r-chat",
+    "w2r-map-preview",
+    "w2r-observer",
+    "w2r-player-colors",
+    "w2r-random-map",
+    "w2r-remember-settings",
+];
+
 impl App {
     pub fn new() -> App {
         let settings = Settings::load();
@@ -417,7 +429,100 @@ impl App {
         }
     }
 
+    /// First-run help for people who just want it to work: install the core mod into the game with
+    /// one click, then point at the Browse tab. Shown until the core is installed and a plugin exists.
+    fn setup_banner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(core) = self.view.core.clone() else {
+            return;
+        };
+        let missing = matches!(core.installed, Some(CoreInstalled::Missing));
+        let no_plugins = self.view.installed.is_empty();
+        if !missing && !(no_plugins && core.installed.is_some()) {
+            return;
+        }
+        let idle = self.busy.is_none();
+        theme::section(ui, "Getting started", |ui| {
+            if missing {
+                ui.label(RichText::new("Step 1: add the mod to your game").strong());
+                match &core.game_dir {
+                    Ok(d) => {
+                        ui.label(theme::muted(format!("Found the game in {}", d.display())));
+                        let why = "Close the game first.";
+                        if ui
+                            .add_enabled(
+                                idle && !self.game_running,
+                                egui::Button::new(RichText::new("Install the mod").strong()),
+                            )
+                            .on_disabled_hover_text(why)
+                            .clicked()
+                        {
+                            self.start(ctx, "Installing the mod", Job::CoreUpdate);
+                        }
+                        if self.game_running {
+                            ui.label(theme::muted("Close Warcraft II first, then click.").small());
+                        }
+                    }
+                    Err(_) => {
+                        ui.label(theme::muted(
+                            "The game folder was not found. Pick the Warcraft II Remastered folder (the one with Warcraft II.exe).",
+                        ));
+                    }
+                }
+                if ui
+                    .add_enabled(idle, egui::Button::new("Choose game folder…"))
+                    .clicked()
+                    && let Some(dir) = rfd::FileDialog::new()
+                        .set_title("Choose the Warcraft II Remastered folder (the one with x86)")
+                        .pick_folder()
+                {
+                    self.start(ctx, "Setting the game folder", Job::CoreGameDir { dir });
+                }
+            } else {
+                ui.label(RichText::new("Step 2: pick your plugins").strong());
+                ui.label(theme::muted(
+                    "The mod is installed. Add plugins such as chat, replays and stats from the Browse tab.",
+                ));
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(RichText::new("Install recommended plugins").strong()),
+                        )
+                        .clicked()
+                    {
+                        self.install_recommended();
+                    }
+                    if ui.button("Browse plugins").clicked() {
+                        self.tab = Tab::Browse;
+                    }
+                });
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    /// Ask once about every recommended plugin that is not installed yet (the usual consent window
+    /// lists what each one may do).
+    fn install_recommended(&mut self) {
+        let Some(idx) = self.view.index.clone() else {
+            self.status = Some(Err("the plugin list has not loaded yet".into()));
+            return;
+        };
+        let manager = self.manager_version();
+        let entries: Vec<VersionEntry> = RECOMMENDED
+            .iter()
+            .filter(|id| !self.view.installed.iter().any(|p| p.id == **id))
+            .filter_map(|id| catalog::latest(idx.plugin(id)?, &manager).cloned())
+            .collect();
+        if entries.is_empty() {
+            self.status = Some(Ok("the recommended plugins are already installed".into()));
+        } else {
+            self.ask_many(entries);
+        }
+    }
+
     fn installed_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.setup_banner(ui, ctx);
         let idle = self.busy.is_none();
         ui.horizontal_wrapped(|ui| {
             if ui
