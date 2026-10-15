@@ -38,6 +38,8 @@ pub enum Job {
     CoreCheck,
     /// Install or update the core mod (`version.dll`); the game must be closed.
     CoreUpdate,
+    /// `CoreUpdate`, also replacing another mod's `version.dll` (moved to a backup, never deleted).
+    CoreReplace,
     /// Swap the previous core back in (again to swap forward).
     CoreRollback,
     /// Remember the folder the user picked as the game folder.
@@ -100,11 +102,13 @@ pub fn run_with_progress(
             let info = session.core_refresh()?;
             Ok(format!("newest core: {}", info.version))
         }
-        Job::CoreUpdate => {
+        Job::CoreUpdate | Job::CoreReplace => {
+            let replace = matches!(job, Job::CoreReplace);
             let game = coremod::resolve_game_dir(&session.root, None)?;
             let now = coremod::installed(&game)?;
             let info = session.core_refresh()?;
-            if !coremod::update_available(&now, &info, &session.manager) {
+            let replacing_other = replace && now == CoreInstalled::Foreign;
+            if !replacing_other && !coremod::update_available(&now, &info, &session.manager) {
                 return match now {
                     CoreInstalled::Foreign => Err(Error::new(
                         "not_ours",
@@ -114,10 +118,17 @@ pub fn run_with_progress(
                 };
             }
             let out = session
-                .core_update_with_progress(&game, &info, progress)
+                .core_install(&game, &info, replace, progress)
                 .map_err(session::hint_io)?;
             coremod::save_game_dir(&session.root, &game)?;
-            Ok(format!("core is now {}", core_version(&out.to)))
+            Ok(match &out.backed_up {
+                Some(b) => format!(
+                    "core is now {}; the other mod's version.dll was kept as {}",
+                    core_version(&out.to),
+                    b.display()
+                ),
+                None => format!("core is now {}", core_version(&out.to)),
+            })
         }
         Job::CoreRollback => {
             let game = coremod::resolve_game_dir(&session.root, None)?;

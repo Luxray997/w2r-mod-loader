@@ -119,7 +119,12 @@ enum CoreAction {
     /// Show the installed core and whether a newer one is published.
     Status,
     /// Install the newest core, or update to it. The game must be closed.
-    Update,
+    Update {
+        /// Also replace another mod's version.dll. It is moved to version.dll.pre-w2rpm (never
+        /// deleted) so you can put it back.
+        #[arg(long)]
+        replace_other: bool,
+    },
     /// Swap back to the core the last update replaced (run again to swap forward).
     Rollback,
 }
@@ -247,7 +252,7 @@ fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
     let game = coremod::resolve_game_dir(&ctx.root, cli.game_dir.as_deref())?;
     let show = |i: &Installed| match i {
         Installed::Missing => "not installed".to_owned(),
-        Installed::Foreign => "another mod's version.dll (not touched)".to_owned(),
+        Installed::Foreign => "another mod's version.dll (not touched; `core update --replace-other` replaces it and keeps a backup)".to_owned(),
         Installed::Ours(Some(v)) => v.to_string(),
         Installed::Ours(None) => "installed (older build, version unknown)".to_owned(),
     };
@@ -266,10 +271,11 @@ fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
                 None => println!("published:   unknown (could not read core.json)"),
             }
         }
-        CoreAction::Update => {
+        CoreAction::Update { replace_other } => {
             let now = coremod::installed(&game)?;
             let info = ctx.core_refresh()?;
-            if !coremod::update_available(&now, &info, &ctx.manager) {
+            let replacing = *replace_other && now == Installed::Foreign;
+            if !replacing && !coremod::update_available(&now, &info, &ctx.manager) {
                 if matches!(now, Installed::Ours(_)) {
                     println!("the core is up to date ({})", show(&now));
                     return Ok(());
@@ -278,10 +284,13 @@ fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
             }
             println!("core {} (game builds: {})", info.version, info.game_builds.join(", "));
             println!("  runs inside the game with your permissions; replaces {}", show(&now));
-            let out = ctx.core_update(&game, &info).map_err(|e| {
-                if e.code == "io" { session::hint_io(e) } else { e }
-            })?;
+            let out = ctx
+                .core_install(&game, &info, *replace_other, &mut |_, _| {})
+                .map_err(|e| if e.code == "io" { session::hint_io(e) } else { e })?;
             coremod::save_game_dir(&ctx.root, &game)?;
+            if let Some(b) = &out.backed_up {
+                println!("the other mod's version.dll was kept as {}", b.display());
+            }
             println!("core is now {}", out.to.map_or("?".to_owned(), |v| v.to_string()));
         }
         CoreAction::Rollback => {

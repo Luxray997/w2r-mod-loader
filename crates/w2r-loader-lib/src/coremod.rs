@@ -282,6 +282,24 @@ pub struct Outcome {
     /// The version replaced (`None` for a first install or an unmarked build).
     pub from: Option<Version>,
     pub to: Option<Version>,
+    /// Where another mod's `version.dll` was moved to, when it was replaced (see `update_with`).
+    pub backed_up: Option<PathBuf>,
+}
+
+/// The name another mod's `version.dll` is moved to when it is replaced; the dev installer's
+/// uninstall restores the same name.
+pub const BACKUP_NAME: &str = "version.dll.pre-w2rpm";
+
+/// A free backup path next to `version.dll`: `BACKUP_NAME`, then `BACKUP_NAME.2`, `.3`, ...
+fn backup_path(game_dir: &Path) -> Result<PathBuf, Error> {
+    let first = game_dir.join(BACKUP_NAME);
+    if !first.exists() {
+        return Ok(first);
+    }
+    (2..1000)
+        .map(|n| game_dir.join(format!("{BACKUP_NAME}.{n}")))
+        .find(|p| !p.exists())
+        .ok_or_else(|| Error::new("io", "too many backups of version.dll in the game folder"))
 }
 
 fn parked_path(root: &Root) -> PathBuf {
@@ -324,6 +342,21 @@ pub fn update(
     bytes: &[u8],
     manager: &Version,
 ) -> Result<Outcome, Error> {
+    update_with(root, game_dir, info, bytes, manager, false)
+}
+
+/// `update`, optionally replacing another mod's `version.dll` (`replace_other`). The other DLL is
+/// never deleted: it is moved next to `version.dll` under `BACKUP_NAME` (a number is added when
+/// that name is taken), and put back if the install fails. Without `replace_other` another mod's
+/// DLL is left alone and the error is `not_ours`.
+pub fn update_with(
+    root: &Root,
+    game_dir: &Path,
+    info: &CoreInfo,
+    bytes: &[u8],
+    manager: &Version,
+    replace_other: bool,
+) -> Result<Outcome, Error> {
     if &info.min_manager > manager {
         return Err(Error::new(
             "needs_newer_manager",
@@ -353,24 +386,39 @@ pub fn update(
         ));
     }
     let target = game_dir.join(DLL_NAME);
+    let mut backup = None;
     let from = match installed(game_dir)? {
-        Installed::Foreign => {
+        Installed::Foreign if !replace_other => {
             return Err(Error::new(
                 "not_ours",
                 format!(
-                    "{} belongs to another mod; move it away first",
+                    "{} belongs to another mod; choose to replace it (a backup is kept) or move it away first",
                     target.display()
                 ),
             ));
+        }
+        Installed::Foreign => {
+            backup = Some(backup_path(game_dir)?);
+            None
         }
         Installed::Missing => None,
         Installed::Ours(v) => v,
     };
     ensure_unlocked(&target)?;
-    swap_in(root, &target, bytes, target.exists())?;
+    match &backup {
+        Some(b) => {
+            fs::rename(&target, b)?;
+            if let Err(e) = swap_in(root, &target, bytes, false) {
+                let _ = fs::rename(b, &target);
+                return Err(e);
+            }
+        }
+        None => swap_in(root, &target, bytes, target.exists())?,
+    }
     Ok(Outcome {
         from,
         to: new_version,
+        backed_up: backup,
     })
 }
 
@@ -430,7 +478,11 @@ pub fn rollback(root: &Root, game_dir: &Path) -> Result<Outcome, Error> {
     };
     ensure_unlocked(&target)?;
     swap_in(root, &target, &old, target.exists())?;
-    Ok(Outcome { from, to })
+    Ok(Outcome {
+        from,
+        to,
+        backed_up: None,
+    })
 }
 
 #[cfg(test)]
@@ -562,6 +614,21 @@ mod tests {
         fs::write(g.join(DLL_NAME), b"MZ wc2r-plus").unwrap();
         assert_eq!(update(&t.0, &g, &info, &v2, &manager()).unwrap_err().code, "not_ours");
         assert_eq!(fs::read(g.join(DLL_NAME)).unwrap(), b"MZ wc2r-plus");
+
+        // Unless the user chose to replace it: it is backed up, never deleted.
+        let out = update_with(&t.0, &g, &info, &v2, &manager(), true).unwrap();
+        assert_eq!(out.backed_up.as_deref(), Some(g.join(BACKUP_NAME).as_path()));
+        assert_eq!(fs::read(g.join(BACKUP_NAME)).unwrap(), b"MZ wc2r-plus");
+        assert_eq!(fs::read(g.join(DLL_NAME)).unwrap(), v2);
+        // A second foreign DLL does not overwrite the first backup.
+        fs::write(g.join(DLL_NAME), b"MZ another").unwrap();
+        let out = update_with(&t.0, &g, &info, &v2, &manager(), true).unwrap();
+        assert_eq!(out.backed_up.as_deref(), Some(g.join(format!("{BACKUP_NAME}.2")).as_path()));
+        assert_eq!(fs::read(g.join(BACKUP_NAME)).unwrap(), b"MZ wc2r-plus");
+        // Replacing our own DLL needs no backup.
+        let out = update_with(&t.0, &g, &info, &v2, &manager(), true).unwrap();
+        assert_eq!(out.backed_up, None);
+        fs::write(g.join(DLL_NAME), b"MZ wc2r-plus").unwrap();
 
         // A folder without the game.
         let empty = std::env::temp_dir().join(format!("w2rpm-nogame-{}", std::process::id()));

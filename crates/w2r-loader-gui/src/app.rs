@@ -429,6 +429,34 @@ impl App {
         }
     }
 
+    /// Another mod's `version.dll` sits in the game folder, so ours cannot be installed next to it
+    /// (the game loads one file of that name). Says so, and offers to replace it with a backup.
+    fn foreign_dll_notice(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let idle = self.busy.is_none();
+        ui.colored_label(
+            theme::WARN,
+            RichText::new("Another mod is already installed in your game").strong(),
+        );
+        ui.label(theme::muted(format!(
+            "The game folder has a version.dll from another mod (for example wc2r-plus). The game loads only one \n             file with that name, so the W2R Mod Loader cannot run alongside it. If you replace it, the old file \n             is kept as {} in the same folder and you can rename it back.",
+            w2r_loader_lib::coremod::BACKUP_NAME
+        )));
+        let why = "Close the game first.";
+        if ui
+            .add_enabled(
+                idle && !self.game_running,
+                egui::Button::new(RichText::new("Replace it and install the mod").strong()),
+            )
+            .on_disabled_hover_text(why)
+            .clicked()
+        {
+            self.start(ctx, "Replacing the other mod and installing", Job::CoreReplace);
+        }
+        if self.game_running {
+            ui.label(theme::muted("Close Warcraft II first, then click.").small());
+        }
+    }
+
     /// First-run help for people who just want it to work: install the core mod into the game with
     /// one click, then point at the Browse tab. Shown until the core is installed and a plugin exists.
     fn setup_banner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -436,13 +464,16 @@ impl App {
             return;
         };
         let missing = matches!(core.installed, Some(CoreInstalled::Missing));
+        let foreign = matches!(core.installed, Some(CoreInstalled::Foreign));
         let no_plugins = self.view.installed.is_empty();
-        if !missing && !(no_plugins && core.installed.is_some()) {
+        if !missing && !foreign && !(no_plugins && core.installed.is_some()) {
             return;
         }
         let idle = self.busy.is_none();
         theme::section(ui, "Getting started", |ui| {
-            if missing {
+            if foreign {
+                self.foreign_dll_notice(ui, ctx);
+            } else if missing {
                 ui.label(RichText::new("Step 1: add the mod to your game").strong());
                 match &core.game_dir {
                     Ok(d) => {
@@ -1118,7 +1149,7 @@ impl App {
         };
         let installed = match &core.installed {
             Some(CoreInstalled::Missing) => "not installed".to_owned(),
-            Some(CoreInstalled::Foreign) => "another mod's version.dll (left alone)".to_owned(),
+            Some(CoreInstalled::Foreign) => "another mod's version.dll".to_owned(),
             Some(CoreInstalled::Ours(Some(v))) => v.to_string(),
             Some(CoreInstalled::Ours(None)) => "an older build (version unknown)".to_owned(),
             None => "unknown".to_owned(),
@@ -1140,6 +1171,15 @@ impl App {
                 theme::badge(ui, "Game is running", theme::WARN);
             }
         });
+        if matches!(core.installed, Some(CoreInstalled::Foreign)) {
+            ui.colored_label(
+                theme::WARN,
+                format!(
+                    "Another mod's version.dll is in the game folder, so the W2R core is not installed. \n                     Replacing it keeps the old file as {} next to it.",
+                    w2r_loader_lib::coremod::BACKUP_NAME
+                ),
+            );
+        }
         let idle = self.busy.is_none();
         let running = self.game_running;
         let why = "Close the game first: it keeps version.dll in use while it runs.";
@@ -1148,17 +1188,19 @@ impl App {
             if ui.add_enabled(idle, egui::Button::new("Check")).clicked() {
                 self.start(ctx, "Checking the core", Job::CoreCheck);
             }
-            let label = if matches!(core.installed, Some(CoreInstalled::Missing)) {
-                "Install core"
-            } else {
-                "Update core"
+            let foreign = matches!(core.installed, Some(CoreInstalled::Foreign));
+            let label = match core.installed {
+                Some(CoreInstalled::Missing) => "Install core",
+                Some(CoreInstalled::Foreign) => "Replace other mod and install",
+                _ => "Update core",
             };
             if ui
                 .add_enabled(idle && !running, egui::Button::new(label))
                 .on_disabled_hover_text(why)
                 .clicked()
             {
-                self.start(ctx, "Updating the core", Job::CoreUpdate);
+                let job = if foreign { Job::CoreReplace } else { Job::CoreUpdate };
+                self.start(ctx, "Updating the core", job);
             }
             if ui
                 .add_enabled(idle && !running, egui::Button::new("Roll back core"))

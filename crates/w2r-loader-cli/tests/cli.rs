@@ -258,4 +258,10 @@ fn core_installs_updates_rolls_back_and_leaves_another_mod_alone() {
     publish_core(&env, 5, "0.4.0");
     assert!(fail(env.cli(&["core", "update"])).contains("not_ours"));
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), b"MZ wc2r-plus");
+
+    // ...unless the user says so: it is moved to a backup, not deleted.
+    let out = ok(env.cli(&["core", "update", "--replace-other"]));
+    assert!(out.contains("core is now 0.4.0") && out.contains("version.dll.pre-w2rpm"), "{out}");
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.4.0"));
+    assert_eq!(fs::read(game.join("version.dll.pre-w2rpm")).unwrap(), b"MZ wc2r-plus");
 }

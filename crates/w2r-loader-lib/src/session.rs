@@ -126,10 +126,22 @@ impl Session {
         info: &coremod::CoreInfo,
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<coremod::Outcome, Error> {
+        self.core_install(game_dir, info, false, progress)
+    }
+
+    /// `core_update_with_progress`; with `replace_other`, another mod's `version.dll` is moved to a
+    /// backup instead of blocking the install (`coremod::update_with`).
+    pub fn core_install(
+        &self,
+        game_dir: &Path,
+        info: &coremod::CoreInfo,
+        replace_other: bool,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<coremod::Outcome, Error> {
         let bytes = self
             .fetcher
             .get_with_progress(&info.url, info.size, progress)?;
-        coremod::update(&self.root, game_dir, info, &bytes, &self.manager)
+        coremod::update_with(&self.root, game_dir, info, &bytes, &self.manager, replace_other)
     }
 
     /// What an install of `entry` would ask and warn about, for the caller to show.
