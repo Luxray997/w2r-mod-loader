@@ -301,7 +301,7 @@ impl App {
                 let url = (!self.settings.index_url.trim().is_empty())
                     .then(|| self.settings.index_url.trim().to_owned());
                 // Development: serve the index and packages from a folder (same checks as ever).
-                let dir = std::env::var_os("W2RPM_INDEX_DIR").map(PathBuf::from);
+                let dir = std::env::var_os("W2R_LOADER_INDEX_DIR").map(PathBuf::from);
                 self.session = Session::new(root.clone(), url, dir)
                     .map(Arc::new)
                     .map_err(|e| self.status = Some(Err(format!("not connected to an index: {e}"))))

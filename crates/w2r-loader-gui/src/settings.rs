@@ -1,5 +1,5 @@
 //! The GUI's own settings: which w2r folder and which index. Kept in
-//! `%APPDATA%\w2rpm\gui.json` (override: `W2RPM_GUI_CONFIG`). Not part of the trust record
+//! `%APPDATA%\w2rpm\gui.json` (override: `W2R_LOADER_GUI_CONFIG`). Not part of the trust record
 //! (`state.json`); a bad file is ignored and the defaults are used.
 
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ fn small(v: &Value, key: &str, max: u64) -> u8 {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("W2RPM_GUI_CONFIG") {
+    if let Some(p) = std::env::var_os("W2R_LOADER_GUI_CONFIG") {
         return Some(PathBuf::from(p));
     }
     std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("w2rpm").join("gui.json"))

@@ -34,7 +34,7 @@ impl Env {
     fn cli_with(&self, args: &[&str], stdin: &str) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_w2r-loader"));
         c.env_remove("W2R_ROOT")
-            .env_remove("W2RPM_INDEX_URL")
+            .env_remove("W2R_LOADER_INDEX_URL")
             .arg("--root")
             .arg(&self.root)
             .arg("--index-dir")

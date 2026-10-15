@@ -277,11 +277,11 @@ pub fn use_heading_font(on: bool) {
 
 /// The body font, read from an installed font file (nothing is bundled): Noto Sans from the
 /// game's `Data\Font` when the game folder is known, else Segoe UI from the Windows fonts folder.
-/// `W2RPM_GUI_FONT` forces one: a file name in the Windows fonts folder (`corbel.ttf`), or one of
+/// `W2R_LOADER_GUI_FONT` forces one: a file name in the Windows fonts folder (`corbel.ttf`), or one of
 /// the game's with a `game:` prefix (`game:NotoSans-Regular.ttf`). Anything missing leaves egui's
 /// default font.
 fn system_body_font(game_dir: Option<&std::path::Path>) -> Option<(Vec<u8>, f32)> {
-    match std::env::var("W2RPM_GUI_FONT") {
+    match std::env::var("W2R_LOADER_GUI_FONT") {
         Ok(spec) => read_font(&spec, game_dir),
         Err(_) => read_font("game:NotoSans-Regular.ttf", game_dir)
             .or_else(|| read_font("segoeui.ttf", game_dir)),

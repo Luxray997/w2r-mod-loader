@@ -2,7 +2,7 @@
 //!
 //!   cargo run -p w2r-loader-gui --example demo_repo -- <dir>
 //!
-//! then run the GUI with `W2RPM_GUI_CONFIG=<dir>/gui.json` and `W2RPM_INDEX_DIR=<dir>/repo`.
+//! then run the GUI with `W2R_LOADER_GUI_CONFIG=<dir>/gui.json` and `W2R_LOADER_INDEX_DIR=<dir>/repo`.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -22,7 +22,7 @@ struct Cli {
     #[arg(long, env = "W2R_ROOT", global = true)]
     root: Option<PathBuf>,
     /// Where the index is published (`index.json`).
-    #[arg(long, env = "W2RPM_INDEX_URL", global = true)]
+    #[arg(long, env = "W2R_LOADER_INDEX_URL", global = true)]
     index_url: Option<String>,
     /// Development: serve the index and packages from a folder instead of the network.
     #[arg(long, global = true, hide = true)]

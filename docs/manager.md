@@ -27,7 +27,7 @@ All five slices are written and tested (2026-10-04); the exit criterion is met b
 w2r-loader --index-url https://.../index.json <command>
 ```
 
-`--root` (or `W2R_ROOT`, absolute) moves the w2r folder; `W2RPM_INDEX_URL` is the environment form of `--index-url`. Commands:
+`--root` (or `W2R_ROOT`, absolute) moves the w2r folder; `W2R_LOADER_INDEX_URL` is the environment form of `--index-url`. Commands:
 
 - `list`: installed plugins, `(update available: x)` from the cached index only (no network).
 - `search [term]`, `refresh`: read or refresh the index. `install`, `update` and `search` use the
