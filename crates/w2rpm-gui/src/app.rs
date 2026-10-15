@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32, RichText};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use w2rpm_lib::catalog;
+use w2rpm_lib::coremod::Installed as CoreInstalled;
 use w2rpm_lib::index::VersionEntry;
 use w2rpm_lib::session::{Preflight, Session, capability_note};
 use w2rpm_lib::store::Root;
@@ -262,7 +263,7 @@ impl App {
         )
     }
 
-    fn settings_tab(&mut self, ui: &mut egui::Ui) {
+    fn settings_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Settings");
         ui.horizontal(|ui| {
             let shown = match jobs::root_of(self.draft.root.as_ref()) {
@@ -304,7 +305,63 @@ impl App {
             "Leave the index URL empty to use the built-in one (once the plugin repository is \
              published).",
         );
+        self.core_section(ui, ctx);
         self.sharing_section(ui);
+    }
+
+    /// The core mod (`version.dll` in the game folder): installed version, newest published,
+    /// update and rollback. Updating needs the game closed.
+    fn core_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Core mod");
+        let Some(core) = self.view.core.clone() else {
+            ui.label("Connect to an index first.");
+            return;
+        };
+        match &core.game_dir {
+            Ok(d) => ui.label(format!("Game folder: {}", d.display())),
+            Err(e) => ui.colored_label(egui::Color32::RED, e),
+        };
+        let installed = match &core.installed {
+            Some(CoreInstalled::Missing) => "not installed".to_owned(),
+            Some(CoreInstalled::Foreign) => "another mod's version.dll (left alone)".to_owned(),
+            Some(CoreInstalled::Ours(Some(v))) => v.to_string(),
+            Some(CoreInstalled::Ours(None)) => "an older build (version unknown)".to_owned(),
+            None => "unknown".to_owned(),
+        };
+        let published = core
+            .published
+            .as_ref()
+            .map_or_else(|| "unknown (press Check)".to_owned(), |v| v.to_string());
+        ui.label(format!("Installed: {installed}    Published: {published}"));
+        if core.update {
+            ui.colored_label(egui::Color32::from_rgb(0, 140, 60), "A core update is available.");
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Check").clicked() {
+                self.start(ctx, "Checking the core", Job::CoreCheck);
+            }
+            let label = if matches!(core.installed, Some(CoreInstalled::Missing)) {
+                "Install core"
+            } else {
+                "Update core"
+            };
+            if ui.button(label).clicked() {
+                self.start(ctx, "Updating the core", Job::CoreUpdate);
+            }
+            if ui.button("Roll back core").clicked() {
+                self.start(ctx, "Rolling back the core", Job::CoreRollback);
+            }
+            if ui.button("Choose game folder…").clicked()
+                && let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose the Warcraft II Remastered folder (the one with x86)")
+                    .pick_folder()
+            {
+                self.start(ctx, "Setting the game folder", Job::CoreGameDir { dir });
+            }
+        });
+        ui.label("Close the game before updating: it keeps the file in use while it runs.");
     }
 
     /// The match-data sharing switch (the same setting as the checkbox on the in-game Plugins
@@ -497,7 +554,7 @@ impl eframe::App for App {
                 |ui| match self.tab {
                     Tab::Installed => self.installed_tab(ui, ctx),
                     Tab::Browse => self.browse_tab(ui, ctx),
-                    Tab::Settings => self.settings_tab(ui),
+                    Tab::Settings => self.settings_tab(ui, ctx),
                 },
             );
         });

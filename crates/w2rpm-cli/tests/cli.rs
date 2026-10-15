@@ -200,3 +200,62 @@ fn install_warns_about_game_builds_and_missing_dependencies() {
     let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
     assert!(!out.contains("WARNING"), "{out}");
 }
+
+fn fake_core(version: &str) -> Vec<u8> {
+    let mut b = b"MZ..".to_vec();
+    b.extend_from_slice(b"=== w2rpm host attached W2R-CORE-VERSION:");
+    b.extend_from_slice(version.as_bytes());
+    b.extend_from_slice(b";");
+    b
+}
+
+fn publish_core(env: &Env, serial: u64, version: &str) {
+    let dll = fake_core(version);
+    fs::create_dir_all(&env.repo).unwrap();
+    fs::write(env.repo.join("version.dll"), &dll).unwrap();
+    fs::write(
+        env.repo.join("core.json"),
+        format!(
+            r#"{{"schema":1,"serial":{serial},"version":"{version}","url":"https://dev.invalid/version.dll","sha256":"{}","size":{},"min_manager":"0.1.0","game_builds":["1.0.2.2818"]}}"#,
+            w2rpm_lib::package::sha256_hex(&dll),
+            dll.len()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn core_installs_updates_rolls_back_and_leaves_another_mod_alone() {
+    let env = Env::new("core");
+    let game = env.root.parent().unwrap().join("game");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("Warcraft II.exe"), b"exe").unwrap();
+    let g = game.to_str().unwrap();
+
+    publish_core(&env, 1, "0.1.0");
+    let out = ok(env.w2rpm(&["--game-dir", g, "core", "update"]));
+    assert!(out.contains("core is now 0.1.0"), "{out}");
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
+
+    // Same version again: nothing to do. The folder was remembered, so no --game-dir.
+    assert!(ok(env.w2rpm(&["core", "update"])).contains("up to date"));
+
+    publish_core(&env, 2, "0.2.0");
+    assert!(ok(env.w2rpm(&["core", "status"])).contains("an update is available"));
+    assert!(ok(env.w2rpm(&["core", "update"])).contains("core is now 0.2.0"));
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.2.0"));
+
+    assert!(ok(env.w2rpm(&["core", "rollback"])).contains("core is now 0.1.0"));
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
+
+    // An older core.json is a replay: refused, nothing changes.
+    publish_core(&env, 1, "0.3.0");
+    assert!(fail(env.w2rpm(&["core", "update"])).contains("rollback"));
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
+
+    // Someone else's version.dll is never replaced.
+    fs::write(game.join("version.dll"), b"MZ wc2r-plus").unwrap();
+    publish_core(&env, 5, "0.4.0");
+    assert!(fail(env.w2rpm(&["core", "update"])).contains("not_ours"));
+    assert_eq!(fs::read(game.join("version.dll")).unwrap(), b"MZ wc2r-plus");
+}

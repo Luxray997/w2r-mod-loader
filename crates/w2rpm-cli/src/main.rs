@@ -27,6 +27,9 @@ struct Cli {
     /// Development: serve the index and packages from a folder instead of the network.
     #[arg(long, global = true, hide = true)]
     index_dir: Option<PathBuf>,
+    /// The game's x86 folder (the one holding Warcraft II.exe), for `core`. Remembered once it works.
+    #[arg(long, env = "W2R_GAME_DIR", global = true)]
+    game_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -81,6 +84,11 @@ enum Cmd {
     },
     /// Re-check installed files against the pins in state.json.
     Verify,
+    /// The core mod (version.dll in the game folder): show, install or update, roll back.
+    Core {
+        #[command(subcommand)]
+        action: CoreAction,
+    },
     /// Your results so far, from the signed reports in the outbox folder (nothing is uploaded).
     Stats {
         /// How many of the latest matches to list.
@@ -104,6 +112,16 @@ enum Cmd {
         #[arg(long)]
         with_computers: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum CoreAction {
+    /// Show the installed core and whether a newer one is published.
+    Status,
+    /// Install the newest core, or update to it. The game must be closed.
+    Update,
+    /// Swap back to the core the last update replaced (run again to swap forward).
+    Rollback,
 }
 
 #[derive(Subcommand)]
@@ -223,6 +241,57 @@ fn parse_spec(spec: &str) -> Result<(&str, Option<Version>), Error> {
     }
 }
 
+fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
+    use w2rpm_lib::coremod::{self, Installed};
+    let ctx = context(cli)?;
+    let game = coremod::resolve_game_dir(&ctx.root, cli.game_dir.as_deref())?;
+    let show = |i: &Installed| match i {
+        Installed::Missing => "not installed".to_owned(),
+        Installed::Foreign => "another mod's version.dll (not touched)".to_owned(),
+        Installed::Ours(Some(v)) => v.to_string(),
+        Installed::Ours(None) => "installed (older build, version unknown)".to_owned(),
+    };
+    match action {
+        CoreAction::Status => {
+            println!("game folder: {}", game.display());
+            let now = coremod::installed(&game)?;
+            println!("installed:   {}", show(&now));
+            match ctx.core_refresh().ok().or_else(|| coremod::load_cached(&ctx.root)) {
+                Some(info) => {
+                    println!("published:   {}", info.version);
+                    if coremod::update_available(&now, &info, &ctx.manager) {
+                        println!("an update is available: run `w2rpm core update`");
+                    }
+                }
+                None => println!("published:   unknown (could not read core.json)"),
+            }
+        }
+        CoreAction::Update => {
+            let now = coremod::installed(&game)?;
+            let info = ctx.core_refresh()?;
+            if !coremod::update_available(&now, &info, &ctx.manager) {
+                if matches!(now, Installed::Ours(_)) {
+                    println!("the core is up to date ({})", show(&now));
+                    return Ok(());
+                }
+                return Err(Error::new("not_ours", show(&now)));
+            }
+            println!("core {} (game builds: {})", info.version, info.game_builds.join(", "));
+            println!("  runs inside the game with your permissions; replaces {}", show(&now));
+            let out = ctx.core_update(&game, &info).map_err(|e| {
+                if e.code == "io" { session::hint_io(e) } else { e }
+            })?;
+            coremod::save_game_dir(&ctx.root, &game)?;
+            println!("core is now {}", out.to.map_or("?".to_owned(), |v| v.to_string()));
+        }
+        CoreAction::Rollback => {
+            let out = coremod::rollback(&ctx.root, &game)?;
+            println!("core is now {}", out.to.map_or("unknown".to_owned(), |v| v.to_string()));
+        }
+    }
+    Ok(())
+}
+
 fn run(cli: &Cli) -> Result<bool, Error> {
     match &cli.cmd {
         Cmd::Remove { id, purge } => {
@@ -249,6 +318,7 @@ fn run(cli: &Cli) -> Result<bool, Error> {
             }
             return Ok(findings.is_empty());
         }
+        Cmd::Core { action } => core(cli, action)?,
         Cmd::Stats { recent } => return stats(cli, *recent),
         Cmd::Replays { play } => return replays(cli, play.as_deref()),
         Cmd::Share { action } => share(cli, action)?,

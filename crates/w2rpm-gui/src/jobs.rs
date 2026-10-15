@@ -7,6 +7,7 @@ use w2r_formats::semver::Version;
 use w2rpm_lib::index::Index;
 use w2rpm_lib::session::{self, Session};
 use w2rpm_lib::store::{self, Finding, Root};
+use w2rpm_lib::coremod::{self, Installed as CoreInstalled};
 use w2rpm_lib::{Error, catalog, install};
 
 #[derive(Clone, Debug)]
@@ -32,6 +33,14 @@ pub enum Job {
     },
     /// Re-check installed files against their pins (also done after every other job).
     Verify,
+    /// Fetch `core.json` to see what is published.
+    CoreCheck,
+    /// Install or update the core mod (`version.dll`); the game must be closed.
+    CoreUpdate,
+    /// Swap the previous core back in (again to swap forward).
+    CoreRollback,
+    /// Remember the folder the user picked as the game folder.
+    CoreGameDir { dir: PathBuf },
 }
 
 pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
@@ -77,6 +86,37 @@ pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
             let v = install::rollback(&session.root, id).map_err(session::hint_io)?;
             Ok(format!("{id} is now {v}"))
         }
+        Job::CoreCheck => {
+            let info = session.core_refresh()?;
+            Ok(format!("newest core: {}", info.version))
+        }
+        Job::CoreUpdate => {
+            let game = coremod::resolve_game_dir(&session.root, None)?;
+            let now = coremod::installed(&game)?;
+            let info = session.core_refresh()?;
+            if !coremod::update_available(&now, &info, &session.manager) {
+                return match now {
+                    CoreInstalled::Foreign => Err(Error::new(
+                        "not_ours",
+                        "version.dll belongs to another mod; it is left alone",
+                    )),
+                    _ => Ok("the core is up to date".to_owned()),
+                };
+            }
+            let out = session.core_update(&game, &info).map_err(session::hint_io)?;
+            coremod::save_game_dir(&session.root, &game)?;
+            Ok(format!("core is now {}", core_version(&out.to)))
+        }
+        Job::CoreRollback => {
+            let game = coremod::resolve_game_dir(&session.root, None)?;
+            let out = coremod::rollback(&session.root, &game)?;
+            Ok(format!("core is now {}", core_version(&out.to)))
+        }
+        Job::CoreGameDir { dir } => {
+            let game = coremod::resolve_game_dir(&session.root, Some(dir))?;
+            coremod::save_game_dir(&session.root, &game)?;
+            Ok(format!("game folder: {}", game.display()))
+        }
         Job::Verify => {
             let findings = store::verify(&session.root)?;
             Ok(if findings.is_empty() {
@@ -84,6 +124,41 @@ pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
             } else {
                 format!("{} problem(s) found", findings.len())
             })
+        }
+    }
+}
+
+fn core_version(v: &Option<Version>) -> String {
+    v.as_ref().map_or_else(|| "installed".to_owned(), |v| v.to_string())
+}
+
+/// The core mod as the settings tab shows it, from disk and the cached `core.json`.
+#[derive(Clone, Debug)]
+pub struct CoreView {
+    /// The game folder, or why none is known.
+    pub game_dir: Result<PathBuf, String>,
+    pub installed: Option<CoreInstalled>,
+    pub published: Option<Version>,
+    pub update: bool,
+}
+
+impl CoreView {
+    pub fn load(root: &Root, manager: &Version) -> CoreView {
+        let game_dir = coremod::resolve_game_dir(root, None).map_err(|e| e.detail);
+        let installed = game_dir
+            .as_ref()
+            .ok()
+            .and_then(|d| coremod::installed(d).ok());
+        let info = coremod::load_cached(root);
+        let update = match (&installed, &info) {
+            (Some(i), Some(info)) => coremod::update_available(i, info, manager),
+            _ => false,
+        };
+        CoreView {
+            game_dir,
+            installed,
+            published: info.map(|i| i.version),
+            update,
         }
     }
 }
@@ -110,11 +185,15 @@ pub struct View {
     /// Why the installed list or the index is not available.
     pub notes: Vec<String>,
     pub findings: Vec<Finding>,
+    pub core: Option<CoreView>,
 }
 
 impl View {
     pub fn load(root: &Root, session: Option<&Session>) -> View {
         let mut v = View::default();
+        if let Some(s) = session {
+            v.core = Some(CoreView::load(root, &s.manager));
+        }
         let state = match root.load_state() {
             Ok(s) => Some(s),
             Err(e) => {

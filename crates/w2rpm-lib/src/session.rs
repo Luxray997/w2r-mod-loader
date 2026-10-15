@@ -6,7 +6,7 @@ use crate::Error;
 use crate::fetch::{self, DirFetcher, Fetcher, Https, Source};
 use crate::index::{Index, VersionEntry};
 use crate::store::Root;
-use crate::{catalog, check, install};
+use crate::{catalog, check, coremod, install};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,7 +50,17 @@ pub struct Session {
     pub root: Root,
     pub fetcher: Arc<dyn Fetcher + Send + Sync>,
     pub source: Source,
+    /// Where `core.json` is published: next to the index.
+    pub core_url: String,
     pub manager: Version,
+}
+
+/// `core.json` lives in the same folder as `index.json`.
+pub fn core_url_for(index_url: &str) -> String {
+    match index_url.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/core.json"),
+        None => "https://dev.invalid/core.json".to_owned(),
+    }
 }
 
 impl Session {
@@ -68,10 +78,12 @@ impl Session {
                 (None, Some(url)) => (Arc::new(Https::default()), url),
                 (None, None) => (Arc::new(Https::default()), DEFAULT_INDEX_URL.to_owned()),
             };
+        let core_url = core_url_for(&index_url);
         Ok(Session {
             root,
             fetcher,
             source: Source { index_url },
+            core_url,
             manager: Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version is SemVer"),
         })
     }
@@ -91,6 +103,21 @@ impl Session {
 
     pub fn refresh(&self) -> Result<Index, Error> {
         fetch::refresh(&self.root, self.fetcher.as_ref(), &self.source)
+    }
+
+    /// The newest core, freshly fetched.
+    pub fn core_refresh(&self) -> Result<coremod::CoreInfo, Error> {
+        coremod::refresh(&self.root, self.fetcher.as_ref(), &self.core_url)
+    }
+
+    /// Downloads, verifies and installs the core into `game_dir` (the game must be closed).
+    pub fn core_update(
+        &self,
+        game_dir: &Path,
+        info: &coremod::CoreInfo,
+    ) -> Result<coremod::Outcome, Error> {
+        let bytes = self.fetcher.get(&info.url, info.size)?;
+        coremod::update(&self.root, game_dir, info, &bytes, &self.manager)
     }
 
     /// What an install of `entry` would ask and warn about, for the caller to show.

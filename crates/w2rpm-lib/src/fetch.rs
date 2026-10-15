@@ -104,7 +104,7 @@ pub fn cached_serial(root: &Root) -> u64 {
 }
 
 /// Temp file, then rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let tmp = path.with_extension("tmp");
     let mut f = fs::File::create(&tmp)?;
     f.write_all(bytes)?;

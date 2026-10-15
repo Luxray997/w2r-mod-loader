@@ -38,6 +38,7 @@ impl From<std::io::Error> for Error {
     }
 }
 pub mod catalog;
+pub mod coremod;
 pub mod check;
 #[cfg(feature = "dev-repo")]
 pub mod devrepo;

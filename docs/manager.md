@@ -38,6 +38,7 @@ w2rpm --index-url https://.../index.json <command>
   highest non-pre-release this manager can install (`min_manager`).
 - `update [id]`: installs the newer version; only newly added capabilities are asked about; an
   update that removes capabilities shrinks the approval without a prompt.
+- `core status|update|rollback`: the core mod (`version.dll`) itself, see [core.md](core.md).
 - `remove id [--purge]`, `enable id`, `disable id`, `rollback id`, `verify` (exit code 1 on any
   finding).
 

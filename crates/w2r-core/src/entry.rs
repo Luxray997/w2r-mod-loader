@@ -20,6 +20,11 @@ use crate::paths;
 use crate::pe::Image;
 use crate::symbols::Symbols;
 
+/// The manager reads this out of `version.dll` to tell which core is installed (docs/core.md);
+/// `#[used]` keeps it in the binary although nothing reads it at run time.
+#[used]
+static CORE_VERSION_MARKER: &str = concat!("W2R-CORE-VERSION:", env!("CARGO_PKG_VERSION"), ";");
+
 const DLL_PROCESS_ATTACH: u32 = 1;
 
 /// What startup established; the main-thread session reads it.

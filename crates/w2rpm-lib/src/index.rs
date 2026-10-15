@@ -74,20 +74,20 @@ pub fn parse_index(raw: &[u8], cached_serial: u64) -> Result<Index, Reason> {
 }
 
 /// A field `keys` already proved present.
-fn field<'a>(v: &'a Value, key: &str) -> &'a Value {
+pub(crate) fn field<'a>(v: &'a Value, key: &str) -> &'a Value {
     v.get(key).unwrap_or(&Value::Null)
 }
 
-fn is_int(v: &Value) -> bool {
+pub(crate) fn is_int(v: &Value) -> bool {
     v.as_number().is_some_and(|n| n.is_integer())
 }
 
 /// An integer that is non-negative and fits `u64`; `None` for negatives, floats, other types.
-fn int(v: &Value) -> Option<u64> {
+pub(crate) fn int(v: &Value) -> Option<u64> {
     v.as_number().and_then(|n| n.as_u64())
 }
 
-fn keys(obj: &Value, required: &[&str], optional: &[&str]) -> Result<(), Reason> {
+pub(crate) fn keys(obj: &Value, required: &[&str], optional: &[&str]) -> Result<(), Reason> {
     let pairs = obj.as_object().ok_or("bad_type")?;
     if pairs
         .iter()
@@ -173,7 +173,7 @@ pub fn parse_time(s: &str) -> Option<i64> {
     Some(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
 }
 
-fn time(v: &Value) -> Result<i64, Reason> {
+pub(crate) fn time(v: &Value) -> Result<i64, Reason> {
     v.as_str().and_then(parse_time).ok_or("bad_time")
 }
 
@@ -296,7 +296,7 @@ fn check_version(id: &str, v: &Value, seen: &[VersionEntry]) -> Result<VersionEn
 }
 
 /// 64 lowercase hex characters.
-fn hex32(s: &str) -> Option<[u8; 32]> {
+pub(crate) fn hex32(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64
         || !s
             .bytes()
