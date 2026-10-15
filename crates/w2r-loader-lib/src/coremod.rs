@@ -327,7 +327,7 @@ pub fn update(
     if &info.min_manager > manager {
         return Err(Error::new(
             "needs_newer_manager",
-            format!("this core needs w2rpm {} or newer", info.min_manager),
+            format!("this core needs W2R Mod Loader {} or newer", info.min_manager),
         ));
     }
     if bytes.len() as u64 != info.size {
@@ -338,7 +338,7 @@ pub fn update(
     }
     let new_version = match inspect(bytes) {
         Some(v) => v,
-        None => return Err(Error::new("not_core", "the download is not the w2rpm core")),
+        None => return Err(Error::new("not_core", "the download is not the W2R core")),
     };
     if new_version.as_ref() != Some(&info.version) {
         return Err(Error::new(
@@ -415,7 +415,7 @@ pub fn rollback(root: &Root, game_dir: &Path) -> Result<Outcome, Error> {
             }
         })?;
     let Some(to) = inspect(&old) else {
-        return Err(Error::new("not_core", "the kept file is not the w2rpm core"));
+        return Err(Error::new("not_core", "the kept file is not the W2R core"));
     };
     let target = game_dir.join(DLL_NAME);
     let from = match installed(game_dir)? {

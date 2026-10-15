@@ -4,11 +4,11 @@
 use eframe::egui;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
-use w2rpm_gui::app::App;
-use w2rpm_gui::jobs::{self, Job};
-use w2rpm_lib::devrepo::{self, Plugin};
-use w2rpm_lib::session::Session;
-use w2rpm_lib::store::Root;
+use w2r_loader_gui::app::App;
+use w2r_loader_gui::jobs::{self, Job};
+use w2r_loader_lib::devrepo::{self, Plugin};
+use w2r_loader_lib::session::Session;
+use w2r_loader_lib::store::Root;
 
 fn frame(ctx: &egui::Context, app: &mut App) {
     let input = egui::RawInput {
@@ -23,7 +23,7 @@ fn frame(ctx: &egui::Context, app: &mut App) {
 
 #[test]
 fn every_screen_draws() {
-    let base = std::env::temp_dir().join(format!("w2rpm-gui-smoke-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("w2r-loader-gui-smoke-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     fs::create_dir_all(&base).unwrap();
     let repo = base.join("repo");
@@ -67,7 +67,7 @@ fn every_screen_draws() {
 
     let mut app = App::with_session(session);
     let ctx = egui::Context::default();
-    w2rpm_gui::theme::apply(&ctx);
+    w2r_loader_gui::theme::apply(&ctx);
     for tab in 0..3 {
         app.select_tab(tab);
         for _ in 0..3 {
@@ -83,7 +83,7 @@ fn every_screen_draws() {
 
 #[test]
 fn a_missing_dependency_joins_the_install() {
-    let base = std::env::temp_dir().join(format!("w2rpm-gui-deps-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("w2r-loader-gui-deps-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     let repo = base.join("repo");
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;

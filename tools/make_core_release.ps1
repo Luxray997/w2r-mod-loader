@@ -5,7 +5,7 @@ Builds the core mod and writes the two files that publish it: w2r-core-<version>
 .DESCRIPTION
 Builds w2r_core.dll (release, i686) and writes, into OutDir, the DLL as w2r-core-<version>.dll and
 a core.json that points at it (docs/core.md). Upload both next to index.json (the gh-pages branch
-of w2r-plugins). Players get it with `w2rpm core update` or the Core mod section of the GUI.
+of w2r-plugins). Players get it with `w2r-loader core update` or the Core mod section of the GUI.
 
 Bump `version` in crates\w2r-core\Cargo.toml first: the manager only offers a core whose version is
 higher than the installed one. The serial must also rise with every publish (default: the current

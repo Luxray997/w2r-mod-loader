@@ -52,7 +52,7 @@ pub fn install(
     if &entry.min_manager > manager {
         return Err(Error::new(
             "manager_too_old",
-            format!("needs w2rpm {} or newer", entry.min_manager),
+            format!("needs W2R Mod Loader {} or newer", entry.min_manager),
         ));
     }
     let id = Id::new(&entry.manifest.id)?;

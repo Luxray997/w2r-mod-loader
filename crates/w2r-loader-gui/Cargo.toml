@@ -1,19 +1,19 @@
 [package]
-name = "w2rpm-gui"
+name = "w2r-loader-gui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "W2R Mod Loader: desktop app that installs mods and plugins for Warcraft II Remastered"
 
 [[bin]]
-name = "w2rpm-gui"
+name = "w2r-loader-gui"
 path = "src/main.rs"
 
 [dependencies]
-w2rpm-lib = { path = "../w2rpm-lib" }
+w2r-loader-lib = { path = "../w2r-loader-lib" }
 w2r-formats.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
 rfd = { version = "0.15", default-features = false }
 
 [dev-dependencies]
-w2rpm-lib = { path = "../w2rpm-lib", features = ["dev-repo"] }
+w2r-loader-lib = { path = "../w2r-loader-lib", features = ["dev-repo"] }

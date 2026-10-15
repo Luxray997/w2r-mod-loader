@@ -13,7 +13,7 @@ read API are not written. Design background: `docs/stats-reporting.md`.
 | `crates/w2r-stats/src/share.rs` | The uploader logic, shared by host and manager: `config\sharing.json` (off by default), a ledger in `config\upload-state.json`, batches of 20 to `POST {url}/v1/reports`. `DEFAULT_URL` (empty until deployed) is used when `sharing.json` names no URL. |
 | `crates/w2r-core/src/uploader.rs` | **Automatic upload from the game.** WinHTTP transport (system TLS and proxy, nothing linked in). A `w2r-share` thread runs after each result report is queued, 20 s after startup for leftovers, and when the setting is turned on. One line per upload goes to `logs\share.log`. |
 | Plugin screen checkbox | "Share my match results ..." (off by default) writes `sharing.json`. |
-| `w2rpm share status/on/off/url/upload` | Manager CLI for the same file, plus a manual upload. |
+| `w2r-loader share status/on/off/url/upload` | Manager CLI for the same file, plus a manual upload. |
 
 ## Ingest rules (server and client agree)
 
@@ -21,7 +21,7 @@ A report is stored only if its signature verifies, its roster hashes to its `set
 is a human in the roster, **the game has human opponents** (at least two humans on different,
 non-observer teams: games against the computer alone, or humans only allied, are refused),
 **every human has a BattleTag**, and its start time is within 14 days back and 1 hour ahead.
-Computers need no tag. Games against the computer stay in the local outbox and in `w2rpm stats`. Rejections are permanent; the client records them
+Computers need no tag. Games against the computer stay in the local outbox and in `w2r-loader stats`. Rejections are permanent; the client records them
 and does not retry. The client also never sends a game with an untagged human. Re-sending a stored
 report is accepted (`INSERT OR IGNORE` on `(key, rid)`).
 
@@ -53,7 +53,7 @@ BLOBs and moved to R2 on 2026-10-12 (migration 0004), so they do not count again
   same game, and the start times agree (checked on seven games: identical to the second). A replay
   is stored only when the *same key* has reported that game; until then the answer is 409 and the
   client tries again on its next run. This keeps strangers from filling the table.
-- **Client** (`w2r_replay::upload`, used by the host and `w2rpm share upload`): one ledger of its
+- **Client** (`w2r_replay::upload`, used by the host and `w2r-loader share upload`): one ledger of its
   own (`configeplay-upload-state.json`), at most 10 files per run, nothing touched in the last 20
   seconds, nothing while a recording is open (`replayrec::recording`), and `replayrec::end` asks for
   an upload when it closes a file. Skipped for good: no settings block (older recordings), no human
@@ -170,7 +170,7 @@ dev dependency and `worker-build` is installed through cargo. To change the serv
 
 Migrations so far: `0002` (game-settings columns), `0003` (the replays table) and `0004` (replays table without the file column, files in R2; it drops the old
 table, so clients send their replays again: delete `configeplay-upload-state.json`, then run
-`w2rpm share upload`). A database made fresh from `schema.sql` needs none of them, only the
+`w2r-loader share upload`). A database made fresh from `schema.sql` needs none of them, only the
 `w2r-replays` bucket (`npx wrangler r2 bucket create w2r-replays`).
 
 ## Status and open items (2026-10-12)

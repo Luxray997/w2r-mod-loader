@@ -1,15 +1,15 @@
 //! Writes a throwaway repository and w2r folder for looking at the window with data in it:
 //!
-//!   cargo run -p w2rpm-gui --example demo_repo -- <dir>
+//!   cargo run -p w2r-loader-gui --example demo_repo -- <dir>
 //!
 //! then run the GUI with `W2RPM_GUI_CONFIG=<dir>/gui.json` and `W2RPM_INDEX_DIR=<dir>/repo`.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use w2rpm_gui::jobs::{self, Job};
-use w2rpm_lib::devrepo::{self, Plugin};
-use w2rpm_lib::session::Session;
-use w2rpm_lib::store::Root;
+use w2r_loader_gui::jobs::{self, Job};
+use w2r_loader_lib::devrepo::{self, Plugin};
+use w2r_loader_lib::session::Session;
+use w2r_loader_lib::store::Root;
 
 fn main() {
     let dir = PathBuf::from(std::env::args().nth(1).expect("usage: demo_repo <dir>"));

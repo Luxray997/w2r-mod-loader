@@ -1,11 +1,11 @@
-//! End to end: the real `w2rpm` binary against a test repository (the Phase 4 exit).
+//! End to end: the real `w2r-loader` binary against a test repository (the Phase 4 exit).
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use w2rpm_lib::devrepo::{self, Plugin};
+use w2r_loader_lib::devrepo::{self, Plugin};
 
 struct Env {
     repo: PathBuf,
@@ -14,7 +14,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("w2rpm-cli-{name}-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("w2r-loader-cli-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         Env {
@@ -31,8 +31,8 @@ impl Env {
         devrepo::build(&self.repo, now, serial, plugins).unwrap();
     }
 
-    fn w2rpm_with(&self, args: &[&str], stdin: &str) -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_w2rpm"));
+    fn cli_with(&self, args: &[&str], stdin: &str) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_w2r-loader"));
         c.env_remove("W2R_ROOT")
             .env_remove("W2RPM_INDEX_URL")
             .arg("--root")
@@ -53,8 +53,8 @@ impl Env {
         child.wait_with_output().unwrap()
     }
 
-    fn w2rpm(&self, args: &[&str]) -> Output {
-        self.w2rpm_with(args, "")
+    fn cli(&self, args: &[&str]) -> Output {
+        self.cli_with(args, "")
     }
 }
 
@@ -91,20 +91,20 @@ fn install_list_verify_update_rollback_remove() {
     let e = Env::new("flow");
     e.publish(1, &[plugin("1.0.0", &["game.read"], b"dll-1")]);
 
-    assert!(ok(e.w2rpm(&["list"])).contains("no plugins installed"));
-    assert!(ok(e.w2rpm(&["search", "example"])).contains("example-plugin 1.0.0"));
+    assert!(ok(e.cli(&["list"])).contains("no plugins installed"));
+    assert!(ok(e.cli(&["search", "example"])).contains("example-plugin 1.0.0"));
 
-    let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    let out = ok(e.cli(&["install", "example-plugin", "--yes"]));
     assert!(
         out.contains("[new] game.read") && out.contains("installed example-plugin 1.0.0"),
         "{out}"
     );
-    let listed = ok(e.w2rpm(&["list"]));
+    let listed = ok(e.cli(&["list"]));
     assert!(
         listed.contains("example-plugin 1.0.0 by test enabled") && listed.contains("game.read"),
         "{listed}"
     );
-    assert!(ok(e.w2rpm(&["verify"])).contains("ok"));
+    assert!(ok(e.cli(&["verify"])).contains("ok"));
 
     // A newer version that asks for one more capability.
     e.publish(
@@ -114,20 +114,20 @@ fn install_list_verify_update_rollback_remove() {
             plugin("1.1.0", &["game.read", "chat.write"], b"dll-2"),
         ],
     );
-    ok(e.w2rpm(&["refresh"]));
-    assert!(ok(e.w2rpm(&["list"])).contains("update available: 1.1.0"));
-    let out = ok(e.w2rpm(&["update", "--yes"]));
+    ok(e.cli(&["refresh"]));
+    assert!(ok(e.cli(&["list"])).contains("update available: 1.1.0"));
+    let out = ok(e.cli(&["update", "--yes"]));
     assert!(
         out.contains("[new] chat.write") && out.contains("updated example-plugin 1.0.0 -> 1.1.0"),
         "{out}"
     );
-    assert!(ok(e.w2rpm(&["verify"])).contains("ok"));
+    assert!(ok(e.cli(&["verify"])).contains("ok"));
 
-    assert!(ok(e.w2rpm(&["rollback", "example-plugin"])).contains("example-plugin is now 1.0.0"));
-    assert!(ok(e.w2rpm(&["list"])).contains("example-plugin 1.0.0"));
-    ok(e.w2rpm(&["disable", "example-plugin"]));
-    assert!(ok(e.w2rpm(&["list"])).contains("disabled"));
-    ok(e.w2rpm(&["enable", "example-plugin"]));
+    assert!(ok(e.cli(&["rollback", "example-plugin"])).contains("example-plugin is now 1.0.0"));
+    assert!(ok(e.cli(&["list"])).contains("example-plugin 1.0.0"));
+    ok(e.cli(&["disable", "example-plugin"]));
+    assert!(ok(e.cli(&["list"])).contains("disabled"));
+    ok(e.cli(&["enable", "example-plugin"]));
 
     // Out-of-band change to the DLL: verify must say so and exit non-zero.
     fs::write(
@@ -135,28 +135,28 @@ fn install_list_verify_update_rollback_remove() {
         b"swapped",
     )
     .unwrap();
-    assert!(fail(e.w2rpm(&["verify"])).contains("differs from the pinned hash"));
+    assert!(fail(e.cli(&["verify"])).contains("differs from the pinned hash"));
 
-    ok(e.w2rpm(&["remove", "example-plugin"]));
-    assert!(ok(e.w2rpm(&["list"])).contains("no plugins installed"));
+    ok(e.cli(&["remove", "example-plugin"]));
+    assert!(ok(e.cli(&["list"])).contains("no plugins installed"));
 }
 
 #[test]
 fn the_capability_question_is_asked_and_hooks_raw_is_never_silent() {
     let e = Env::new("approval");
     e.publish(1, &[plugin("1.0.0", &["hooks.raw"], b"dll")]);
-    let out = fail(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    let out = fail(e.cli(&["install", "example-plugin", "--yes"]));
     assert!(out.contains("--allow-hooks-raw"), "{out}");
     assert!(!e.root.join("plugins/example-plugin").exists());
 
-    let out = fail(e.w2rpm_with(&["install", "example-plugin"], "n\n"));
+    let out = fail(e.cli_with(&["install", "example-plugin"], "n\n"));
     assert!(
         out.contains("DANGEROUS") && out.contains("declined"),
         "{out}"
     );
     assert!(!e.root.join("plugins/example-plugin").exists());
 
-    ok(e.w2rpm_with(&["install", "example-plugin"], "y\n"));
+    ok(e.cli_with(&["install", "example-plugin"], "y\n"));
     assert!(
         e.root
             .join("plugins/example-plugin/example_plugin.dll")
@@ -169,7 +169,7 @@ fn a_malformed_index_is_refused_and_not_cached() {
     let e = Env::new("badindex");
     e.publish(1, &[plugin("1.0.0", &[], b"dll")]);
     fs::write(e.repo.join("index.json"), b"{").unwrap();
-    let out = fail(e.w2rpm(&["refresh"]));
+    let out = fail(e.cli(&["refresh"]));
     assert!(out.contains("not_json"), "{out}");
     assert!(!e.root.join("cache/index.json").exists());
 }
@@ -187,17 +187,17 @@ fn install_warns_about_game_builds_and_missing_dependencies() {
         dependencies: &[],
     };
     e.publish(1, &[p, lib]);
-    let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    let out = ok(e.cli(&["install", "example-plugin", "--yes"]));
     assert!(out.contains("Built for game builds: 1.0.2.2818"), "{out}");
     assert!(
         out.contains("WARNING: depends on some-library which is not installed")
-            && out.contains("w2rpm install some-library"),
+            && out.contains("w2r-loader install some-library"),
         "{out}"
     );
     // The warning does not block; once the library is in, the next install is quiet.
-    let out = ok(e.w2rpm(&["install", "some-library", "--yes"]));
+    let out = ok(e.cli(&["install", "some-library", "--yes"]));
     assert!(!out.contains("WARNING"), "{out}");
-    let out = ok(e.w2rpm(&["install", "example-plugin", "--yes"]));
+    let out = ok(e.cli(&["install", "example-plugin", "--yes"]));
     assert!(!out.contains("WARNING"), "{out}");
 }
 
@@ -217,7 +217,7 @@ fn publish_core(env: &Env, serial: u64, version: &str) {
         env.repo.join("core.json"),
         format!(
             r#"{{"schema":1,"serial":{serial},"version":"{version}","url":"https://dev.invalid/version.dll","sha256":"{}","size":{},"min_manager":"0.1.0","game_builds":["1.0.2.2818"]}}"#,
-            w2rpm_lib::package::sha256_hex(&dll),
+            w2r_loader_lib::package::sha256_hex(&dll),
             dll.len()
         ),
     )
@@ -233,29 +233,29 @@ fn core_installs_updates_rolls_back_and_leaves_another_mod_alone() {
     let g = game.to_str().unwrap();
 
     publish_core(&env, 1, "0.1.0");
-    let out = ok(env.w2rpm(&["--game-dir", g, "core", "update"]));
+    let out = ok(env.cli(&["--game-dir", g, "core", "update"]));
     assert!(out.contains("core is now 0.1.0"), "{out}");
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
 
     // Same version again: nothing to do. The folder was remembered, so no --game-dir.
-    assert!(ok(env.w2rpm(&["core", "update"])).contains("up to date"));
+    assert!(ok(env.cli(&["core", "update"])).contains("up to date"));
 
     publish_core(&env, 2, "0.2.0");
-    assert!(ok(env.w2rpm(&["core", "status"])).contains("an update is available"));
-    assert!(ok(env.w2rpm(&["core", "update"])).contains("core is now 0.2.0"));
+    assert!(ok(env.cli(&["core", "status"])).contains("an update is available"));
+    assert!(ok(env.cli(&["core", "update"])).contains("core is now 0.2.0"));
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.2.0"));
 
-    assert!(ok(env.w2rpm(&["core", "rollback"])).contains("core is now 0.1.0"));
+    assert!(ok(env.cli(&["core", "rollback"])).contains("core is now 0.1.0"));
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
 
     // An older core.json is a replay: refused, nothing changes.
     publish_core(&env, 1, "0.3.0");
-    assert!(fail(env.w2rpm(&["core", "update"])).contains("rollback"));
+    assert!(fail(env.cli(&["core", "update"])).contains("rollback"));
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), fake_core("0.1.0"));
 
     // Someone else's version.dll is never replaced.
     fs::write(game.join("version.dll"), b"MZ wc2r-plus").unwrap();
     publish_core(&env, 5, "0.4.0");
-    assert!(fail(env.w2rpm(&["core", "update"])).contains("not_ours"));
+    assert!(fail(env.cli(&["core", "update"])).contains("not_ours"));
     assert_eq!(fs::read(game.join("version.dll")).unwrap(), b"MZ wc2r-plus");
 }

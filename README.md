@@ -8,7 +8,7 @@ repository and crates keep the short name `w2rpm`.
   and carries the features ported from [wc2r-plus](https://github.com/Luxray997/wc2r-plus) (by Luxray997): the
   lobby handshake, chat history, lobby policy, map download and sharing, and the enhanced Create
   Multiplayer Game and lobby screens. Plugins get a small C ABI ([docs/abi.md](docs/abi.md)).
-- **Manager** (`w2rpm-lib`, the `w2rpm` CLI and the `w2rpm-gui` egui app): reads a plugin index,
+- **Manager** (`w2r-loader-lib`, the `w2rpm` CLI and the `w2r-loader-gui` egui app): reads a plugin index,
   downloads, checks hashes and installs plugins, and keeps their enabled and approved state.
 - **Plugins** live in a separate repository, [`w2r-plugins`](https://github.com/hastinbe/w2r-plugins),
   with CI that builds the packages and publishes the index.
@@ -38,9 +38,9 @@ crates/
   w2r-abi/       C header and Rust bindings for the plugin ABI
   w2r-formats/   strict parsers shared by host and manager: JSON, SemVer, plugin.json, state.json
   w2r-core/      the in-game host (32-bit cdylib, version.dll proxy)
-  w2rpm-lib/     manager logic: index, download, verify, install
-  w2rpm-cli/     the `w2rpm` command
-  w2rpm-gui/     the egui manager
+  w2r-loader-lib/     manager logic: index, download, verify, install
+  w2r-loader-cli/     the `w2rpm` command
+  w2r-loader-gui/     the egui manager
   test-plugins/  fixture DLLs for the host's tests
 docs/            specs, plan, threat model, per-feature notes
 tools/           spec reference implementations, generators, the dev installer
@@ -75,7 +75,7 @@ cargo build --release -p w2r-core --target i686-pc-windows-msvc
 The result, `target/i686-pc-windows-msvc/release/w2r_core.dll`, goes into the game's `x86`
 folder as `version.dll`. The host writes `w2r.log` under `Saved Games\Warcraft2Remastered\w2r\logs`
 (or `%W2R_ROOT%\logs`). `cargo test` without `--target` also works for the pure-Rust parts. The
-manager (`cargo run -p w2rpm-cli`, `cargo run -p w2rpm-gui`) is an ordinary 64-bit build.
+manager (`cargo run -p w2r-loader-cli`, `cargo run -p w2r-loader-gui`) is an ordinary 64-bit build.
 
 `tools\install_dev.ps1` does the build and install and sets up the basic fixture plugin
 under Saved Games (`-WithChat` adds the chat plugin, `-WithCrasher` the crashing fixture,

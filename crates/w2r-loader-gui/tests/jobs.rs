@@ -4,13 +4,13 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use w2rpm_gui::jobs::{self, Job, View};
-use w2rpm_lib::devrepo::{self, Plugin};
-use w2rpm_lib::session::Session;
-use w2rpm_lib::store::Root;
+use w2r_loader_gui::jobs::{self, Job, View};
+use w2r_loader_lib::devrepo::{self, Plugin};
+use w2r_loader_lib::session::Session;
+use w2r_loader_lib::store::Root;
 
 fn setup(name: &str) -> (PathBuf, Session) {
-    let base = std::env::temp_dir().join(format!("w2rpm-gui-{name}-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("w2r-loader-gui-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     fs::create_dir_all(&base).unwrap();
     let repo = base.join("repo");

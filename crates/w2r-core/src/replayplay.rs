@@ -300,7 +300,7 @@ pub fn fingerprint() -> Option<[u8; 4]> {
     CONFIG.get().map(|c| c.fingerprint)
 }
 
-/// Queues a recording (a file in the replays folder) for the next game, as `w2rpm replays --play`
+/// Queues a recording (a file in the replays folder) for the next game, as `w2r-loader replays --play`
 /// does.
 pub fn queue(file: &str) -> std::io::Result<()> {
     let Some(cfg) = CONFIG.get() else {

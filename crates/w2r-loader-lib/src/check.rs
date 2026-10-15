@@ -19,7 +19,7 @@ pub fn warnings(
     let mut out = Vec::new();
     if m.abi > w2r_abi::W2R_ABI_VERSION {
         out.push(format!(
-            "needs plugin ABI {}, this manager's host speaks {}; update w2rpm and the host",
+            "needs plugin ABI {}, this manager's host speaks {}; update the W2R Mod Loader and the host",
             m.abi,
             w2r_abi::W2R_ABI_VERSION
         ));
@@ -37,7 +37,7 @@ pub fn warnings(
                     })
                     .is_some();
                 let hint = if offered {
-                    format!("; install it with: w2rpm install {}", d.id)
+                    format!("; install it with: w2r-loader install {}", d.id)
                 } else {
                     String::new()
                 };

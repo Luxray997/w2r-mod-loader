@@ -144,7 +144,7 @@ custom game vs AI on the same map (as War2BNE InSight made you do), with replay 
 
 Later: speed control (return 0 from the gather to wait, or call it more often), pause, jump (needs
 snapshots or re-simulation), full-vision / follow-player view by reusing `w2r-observer`'s team 9
-approach, a replay browser (CLI `w2rpm replays`, then an in-game screen next to the create screen),
+approach, a replay browser (CLI `w2r-loader replays`, then an in-game screen next to the create screen),
 bundling or fetching the map (the host already has peer map download) and a map hash in the header.
 
 Comparison with War2BNE InSight (its documented limits):
@@ -173,7 +173,7 @@ contradictory in the decompile and need a look at the disassembly.
 2. **Verify determinism offline:** compare the recorded 0x18 checksums across two clients for the
    same game: confirms the stream is complete.
 3. **Playback:** 0x49d130 injection, local-only start, controls.
-4. **Browser + `w2rpm replays` CLI/GUI listing, then sharing.**
+4. **Browser + `w2r-loader replays` CLI/GUI listing, then sharing.**
 
 ## Follow camera (2026-10-13)
 

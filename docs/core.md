@@ -45,7 +45,7 @@ can ship code that runs in every player's game; that is the accepted trade-off f
 
 ## What the manager does
 
-`w2rpm core update` (and the "Core mod" section of the GUI settings):
+`w2r-loader core update` (and the "Core mod" section of the GUI settings):
 
 1. Resolves the game folder: `--game-dir` / `W2R_GAME_DIR`, else the one remembered in
    `cache\game_dir.txt`, else a few usual install places. A folder is accepted when it, or its
@@ -62,8 +62,8 @@ can ship code that runs in every player's game; that is the accepted trade-off f
 6. Writes `version.dll.new` next to it, copies the current DLL to `cache\core-rollback\`, then
    renames the new file over `version.dll`. A failure before that rename leaves the old DLL.
 
-`w2rpm core rollback` swaps the kept DLL back in; run it again to swap forward.
-`w2rpm core status` shows the folder, the installed and the published version. With no
+`w2r-loader core rollback` swaps the kept DLL back in; run it again to swap forward.
+`w2r-loader core status` shows the folder, the installed and the published version. With no
 `version.dll` the same `update` command installs it, so a player needs no script.
 
 Reason codes added: `no_game_dir`, `not_ours`, `not_core`, `game_running`, `no_rollback`,

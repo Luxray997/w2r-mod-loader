@@ -1,4 +1,4 @@
-//! `w2rpm`: the command-line plugin manager. All logic is in `w2rpm-lib`; this file parses
+//! `w2r-loader`: the command-line interface of the W2R Mod Loader. All logic is in `w2r-loader-lib`; this file parses
 //! arguments, asks the capability question and prints results (docs/manager.md).
 
 use clap::{Args, Parser, Subcommand};
@@ -6,14 +6,14 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use w2r_formats::semver::Version;
-use w2rpm_lib::index::{Index, VersionEntry};
-use w2rpm_lib::session::{self, Session};
-use w2rpm_lib::store::{self, Root};
-use w2rpm_lib::{Error, catalog, install};
+use w2r_loader_lib::index::{Index, VersionEntry};
+use w2r_loader_lib::session::{self, Session};
+use w2r_loader_lib::store::{self, Root};
+use w2r_loader_lib::{Error, catalog, install};
 
 #[derive(Parser)]
 #[command(
-    name = "w2rpm",
+    name = "w2r-loader",
     version,
     about = "Plugin manager for Warcraft II Remastered"
 )]
@@ -151,7 +151,7 @@ fn refresh(ctx: &Session) -> Result<Index, Error> {
     ctx.refresh()
 }
 
-use w2rpm_lib::session::capability_note;
+use w2r_loader_lib::session::capability_note;
 
 /// Shows what is being installed and asks. Returns the capabilities the user approved.
 fn confirm(
@@ -242,7 +242,7 @@ fn parse_spec(spec: &str) -> Result<(&str, Option<Version>), Error> {
 }
 
 fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
-    use w2rpm_lib::coremod::{self, Installed};
+    use w2r_loader_lib::coremod::{self, Installed};
     let ctx = context(cli)?;
     let game = coremod::resolve_game_dir(&ctx.root, cli.game_dir.as_deref())?;
     let show = |i: &Installed| match i {
@@ -260,7 +260,7 @@ fn core(cli: &Cli, action: &CoreAction) -> Result<(), Error> {
                 Some(info) => {
                     println!("published:   {}", info.version);
                     if coremod::update_available(&now, &info, &ctx.manager) {
-                        println!("an update is available: run `w2rpm core update`");
+                        println!("an update is available: run `w2r-loader core update`");
                     }
                 }
                 None => println!("published:   unknown (could not read core.json)"),
@@ -421,8 +421,8 @@ fn list(cli: &Cli) -> Result<(), Error> {
 }
 
 fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
-    use w2rpm_lib::fetch::Https;
-    use w2rpm_lib::share::{self, Settings};
+    use w2r_loader_lib::fetch::Https;
+    use w2r_loader_lib::share::{self, Settings};
 
     let root = context_root(cli)?;
     let mut settings = Settings::load(&root.0)?;
@@ -439,7 +439,7 @@ fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
         ShareAction::On => {
             settings.share_match_data = true;
             settings.save(&root.0)?;
-            println!("sharing is on; run `w2rpm share upload` to send reports");
+            println!("sharing is on; run `w2r-loader share upload` to send reports");
         }
         ShareAction::Off => {
             settings.share_match_data = false;
@@ -454,7 +454,7 @@ fn share(cli: &Cli, action: &ShareAction) -> Result<(), Error> {
         }
         ShareAction::Upload => {
             if !settings.share_match_data {
-                println!("sharing is off; turn it on with `w2rpm share on`");
+                println!("sharing is off; turn it on with `w2r-loader share on`");
                 return Ok(());
             }
             let s = share::upload(&root.0, &settings, &Https::default())?;

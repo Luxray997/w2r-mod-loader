@@ -1,15 +1,15 @@
 //! What the window can ask for, run off the UI thread, and the snapshot it shows afterwards.
 //! No UI code here, so tests drive it against a signed test repository. All real work is in
-//! `w2rpm-lib`; this file only sequences calls (docs/manager.md).
+//! `w2r-loader-lib`; this file only sequences calls (docs/manager.md).
 
 use std::path::PathBuf;
 use w2r_formats::manifest::Dependency;
 use w2r_formats::semver::Version;
-use w2rpm_lib::index::{Index, VersionEntry};
-use w2rpm_lib::session::{self, Session};
-use w2rpm_lib::store::{self, Finding, Root};
-use w2rpm_lib::coremod::{self, Installed as CoreInstalled};
-use w2rpm_lib::{Error, catalog, install};
+use w2r_loader_lib::index::{Index, VersionEntry};
+use w2r_loader_lib::session::{self, Session};
+use w2r_loader_lib::store::{self, Finding, Root};
+use w2r_loader_lib::coremod::{self, Installed as CoreInstalled};
+use w2r_loader_lib::{Error, catalog, install};
 
 #[derive(Clone, Debug)]
 pub enum Job {
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn idle_or_missing_dll_is_not_running() {
-        let dir = std::env::temp_dir().join(format!("w2rpm-gui-run-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("w2r-loader-gui-run-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!game_running(&dir));
         std::fs::write(dir.join("version.dll"), b"x").unwrap();
@@ -423,7 +423,7 @@ pub fn launch_game() -> Result<(), String> {
 /// Opens an `https` link in the default browser. Explorer gets the link as one argument (no
 /// shell), and only plain `https` links are passed.
 pub fn open_url(url: &str) -> Result<(), String> {
-    if url != "battlenet://W2R" && !w2rpm_lib::index::url_ok(url) {
+    if url != "battlenet://W2R" && !w2r_loader_lib::index::url_ok(url) {
         return Err(format!("not a link I will open: {url}"));
     }
     #[cfg(windows)]

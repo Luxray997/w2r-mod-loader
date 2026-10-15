@@ -2567,6 +2567,39 @@ name = "w2r-formats"
 version = "0.1.0"
 
 [[package]]
+name = "w2r-loader-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "w2r-formats",
+ "w2r-loader-lib",
+ "w2r-replay",
+ "w2r-stats",
+]
+
+[[package]]
+name = "w2r-loader-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "rfd",
+ "w2r-formats",
+ "w2r-loader-lib",
+]
+
+[[package]]
+name = "w2r-loader-lib"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "ureq",
+ "w2r-abi",
+ "w2r-formats",
+ "w2r-stats",
+ "zip",
+]
+
+[[package]]
 name = "w2r-preview"
 version = "0.1.0"
 
@@ -2591,39 +2624,6 @@ name = "w2r-test-plugins"
 version = "0.0.0"
 dependencies = [
  "w2r-abi",
-]
-
-[[package]]
-name = "w2rpm-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "w2r-formats",
- "w2r-replay",
- "w2r-stats",
- "w2rpm-lib",
-]
-
-[[package]]
-name = "w2rpm-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "rfd",
- "w2r-formats",
- "w2rpm-lib",
-]
-
-[[package]]
-name = "w2rpm-lib"
-version = "0.1.0"
-dependencies = [
- "sha2",
- "ureq",
- "w2r-abi",
- "w2r-formats",
- "w2r-stats",
- "zip",
 ]
 
 [[package]]

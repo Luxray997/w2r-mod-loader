@@ -1,5 +1,5 @@
 //! The egui window. It owns no logic: buttons turn into `Job`s that run on a worker thread
-//! against `w2rpm-lib`, and the screen shows the `View` loaded afterwards. Only one job runs at a
+//! against `w2r-loader-lib`, and the screen shows the `View` loaded afterwards. Only one job runs at a
 //! time; while one runs the action buttons are off and the plugin it works on shows progress. The
 //! consent window is the only way to install: it lists every plugin about to be installed (with
 //! the dependencies it pulls in), every capability each asks for, marks the ones not approved
@@ -19,13 +19,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use w2r_formats::manifest::Dependency;
-use w2rpm_lib::catalog;
-use w2rpm_lib::coremod::Installed as CoreInstalled;
-use w2rpm_lib::index::{PluginEntry, VersionEntry};
-use w2rpm_lib::mgrupdate;
-use w2rpm_lib::pluginconf::{self, Val};
-use w2rpm_lib::session::{Preflight, Session, capability_note};
-use w2rpm_lib::store::Root;
+use w2r_loader_lib::catalog;
+use w2r_loader_lib::coremod::Installed as CoreInstalled;
+use w2r_loader_lib::index::{PluginEntry, VersionEntry};
+use w2r_loader_lib::mgrupdate;
+use w2r_loader_lib::pluginconf::{self, Val};
+use w2r_loader_lib::session::{Preflight, Session, capability_note};
+use w2r_loader_lib::store::Root;
 
 /// Seconds a success or info toast stays; errors stay until dismissed.
 const TOAST_SECS: f64 = 6.0;
@@ -135,7 +135,7 @@ pub struct App {
     session: Option<Arc<Session>>,
     root: Option<Root>,
     /// The sharing setting of the chosen folder, saved the moment it is changed.
-    share: Option<Result<w2rpm_lib::share::Settings, String>>,
+    share: Option<Result<w2r_loader_lib::share::Settings, String>>,
     view: View,
     tab: Tab,
     search: String,
@@ -313,7 +313,7 @@ impl App {
                 self.offline = None;
                 self.confs.clear();
                 self.share =
-                    Some(w2rpm_lib::share::Settings::load(&root.0).map_err(|e| e.to_string()));
+                    Some(w2r_loader_lib::share::Settings::load(&root.0).map_err(|e| e.to_string()));
                 self.root = Some(root);
             }
             Err(e) => {
@@ -1074,7 +1074,7 @@ impl App {
             ui.label(theme::muted("Made by Beau Hastings."));
             ui.horizontal_wrapped(|ui| {
                 for (label, url) in [
-                    ("Manager source", "https://github.com/hastinbe/w2rpm"),
+                    ("Manager source", "https://github.com/hastinbe/w2r-mod-loader"),
                     ("Plugin repository", "https://github.com/hastinbe/w2r-plugins"),
                 ] {
                     if ui.button(label).on_hover_text(url).clicked()

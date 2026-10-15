@@ -1,6 +1,6 @@
 # Security review: Phase 4 (manager library and CLI)
 
-Reviewed 2026-10-04 by reading `w2rpm-lib` and `w2rpm-cli` against [threat-model.md](threat-model.md).
+Reviewed 2026-10-04 by reading `w2r-loader-lib` and `w2r-loader-cli` against [threat-model.md](threat-model.md).
 One pass over four areas. Same-user malware is out of scope (it can edit `state.json` and the DLLs
 directly), as the threat model says.
 

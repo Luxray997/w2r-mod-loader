@@ -14,9 +14,9 @@ w2rpm/
     w2r-abi/      C header + Rust bindings for the plugin interface
     w2r-sdk/      ergonomic Rust SDK for plugin authors
     w2r-core/     in-game host (32-bit cdylib, version.dll proxy)
-    w2rpm-lib/    manager logic: index, download, verify, install
-    w2rpm-cli/    CLI over w2rpm-lib
-    w2rpm-gui/    egui app over w2rpm-lib
+    w2r-loader-lib/    manager logic: index, download, verify, install
+    w2r-loader-cli/    CLI over w2r-loader-lib
+    w2r-loader-gui/    egui app over w2r-loader-lib
   docs/           ABI spec, manifest spec, threat model, layout
 ```
 
@@ -178,21 +178,21 @@ Exit: feature parity, with a regression test per fixed finding.
 
 ### 4. Manager library and CLI
 Status: written and tested (2026-10-04), spec [manager.md](manager.md). `w2r-formats` (json, semver,
-manifest, state) was extracted from `w2r-core` so host and manager share one parser; `w2rpm-lib`
-(index, package, install, store, fetch, catalog) and `w2rpm-cli` (`w2rpm`) sit on top.
+manifest, state) was extracted from `w2r-core` so host and manager share one parser; `w2r-loader-lib`
+(index, package, install, store, fetch, catalog) and `w2r-loader-cli` (`w2rpm`) sit on top.
 Also done: install-time dependency/ABI warnings, and the
 security review ([security-review-phase4.md](security-review-phase4.md), three fixes). The default index URL is built in (Phase 6).
 Fetch/verify index, download, hash check, atomic install, enable/disable, update, rollback,
 `verify`. Safe archive handling (no traversal, size limits, no symlinks).
-Exit: `w2rpm install|list|verify` against a test index.
+Exit: `w2r-loader install|list|verify` against a test index.
 
 ### 5. egui GUI
 Status: written and tested (2026-10-04); window not yet clicked through by a person. Browse/search,
 capability prompt before install (`hooks.raw` needs its own tick), enable/disable, update
 indicators and update button, rollback, remove (optional data purge), verify, game-folder and
-key-file pickers. No logic of its own; it calls `w2rpm-lib`. The code both front ends needed
-(root, keys, fetcher, clock, preflight, install) moved from the CLI into `w2rpm-lib::session`.
-`crates/w2rpm-gui`: `jobs.rs` (job sequencing and the `View` snapshot, UI-free), `settings.rs`
+key-file pickers. No logic of its own; it calls `w2r-loader-lib`. The code both front ends needed
+(root, keys, fetcher, clock, preflight, install) moved from the CLI into `w2r-loader-lib::session`.
+`crates/w2r-loader-gui`: `jobs.rs` (job sequencing and the `View` snapshot, UI-free), `settings.rs`
 (`%APPDATA%\w2rpm\gui.json`), `app.rs` (egui); `tests/jobs.rs` runs the whole cycle against a
 test repo. The default index URL is embedded; the Settings field overrides it.
 

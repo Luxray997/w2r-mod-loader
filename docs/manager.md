@@ -1,6 +1,6 @@
 # Manager library and CLI (Phase 4)
 
-`w2rpm-lib` holds all manager logic; `w2rpm-cli` (`w2rpm`) and the egui app (`w2rpm-gui`, Phase 5) are thin callers; what both need before any command (root, fetcher, preflight, install) is `session.rs`.
+`w2r-loader-lib` holds all manager logic; `w2r-loader-cli` (`w2rpm`) and the egui app (`w2r-loader-gui`, Phase 5) are thin callers; what both need before any command (root, fetcher, preflight, install) is `session.rs`.
 The in-game host never links it. Formats are shared with the host through `w2r-formats` (json, semver,
 `plugin.json`, `state.json`), so the two cannot disagree about what is valid.
 
@@ -11,7 +11,7 @@ rules), [manifest.md](manifest.md), [layout.md](layout.md) (paths, `state.json`)
 ## Status
 
 All five slices are written and tested (2026-10-04); the exit criterion is met by
-`crates/w2rpm-cli/tests/cli.rs`, which runs the real binary against a test repository.
+`crates/w2r-loader-cli/tests/cli.rs`, which runs the real binary against a test repository.
 
 | Slice | Module | What it does |
 |---|---|---|
@@ -19,12 +19,12 @@ All five slices are written and tested (2026-10-04); the exit criterion is met b
 | 2 | `package.rs` | size and SHA-256 against the index entry, then archive rules, packaged `plugin.json` equals the index copy |
 | 3 | `install.rs`, `store.rs` | atomic install/update, rollback, remove, enable/disable, `verify`, `state.json` access |
 | 4 | `fetch.rs`, `catalog.rs` | HTTPS fetch, index cache with rollback protection, version selection, update list |
-| 5 | `w2rpm-cli` | the commands below |
+| 5 | `w2r-loader-cli` | the commands below |
 
 ## Using it
 
 ```
-w2rpm --index-url https://.../index.json <command>
+w2r-loader --index-url https://.../index.json <command>
 ```
 
 `--root` (or `W2R_ROOT`, absolute) moves the w2r folder; `W2RPM_INDEX_URL` is the environment form of `--index-url`. Commands:
@@ -51,9 +51,9 @@ for tests; the URL rules and package hashes are still enforced.
 - **Newer manager.** On startup the GUI fetches `manager.json` from the folder of the index:
   `{"schema":1,"version":"0.3.0","url":"https://..."}`. A newer `version` shows a banner with a
   "Get it" link to `url`; nothing is downloaded or run. A missing, bad or older file shows
-  nothing. Unknown fields are ignored. (`w2rpm-lib/src/mgrupdate.rs`)
+  nothing. Unknown fields are ignored. (`w2r-loader-lib/src/mgrupdate.rs`)
 - **Plugin settings.** The Installed tab edits `config\<id>.json` (`{"schema":1,"values":{...}}`,
-  whole numbers and text) with the host's limits (`w2rpm-lib/src/pluginconf.rs`). Plugins declare
+  whole numbers and text) with the host's limits (`w2r-loader-lib/src/pluginconf.rs`). Plugins declare
   no schema, so keys show as stored. Editing is off while the game runs, because the game writes
   these files itself.
 
