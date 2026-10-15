@@ -66,35 +66,42 @@ impl Fetcher for Https {
         }
         let net = |e: &dyn std::fmt::Display| Error::new("network", format!("{url}: {e}"));
         let mut resp = self.agent.get(url).call().map_err(|e| net(&e))?;
-        let total = resp.body().content_length().unwrap_or(0);
-        let mut reader = resp.body_mut().with_config().limit(max_bytes).reader();
-        let mut out = Vec::new();
-        let mut buf = [0u8; 16 * 1024];
-        progress(0, total);
-        loop {
-            let n = reader.read(&mut buf).map_err(|e| net(&e))?;
-            if n == 0 {
-                return Ok(out);
-            }
-            out.extend_from_slice(&buf[..n]);
-            progress(out.len() as u64, total);
-        }
+        read_body(resp.body_mut(), max_bytes, progress).map_err(|e| net(&e))
     }
 
     fn get(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error> {
-        if !index::url_ok(url) {
-            return Err(Error::new("bad_url", url.to_owned()));
+        self.get_with_progress(url, max_bytes, &mut |_, _| {})
+    }
+}
+
+/// Reads a response body of at most `max_bytes`, reporting `(bytes so far, total)`.
+///
+/// The reader is allowed one byte more than `max_bytes`: ureq's limit reader fails as soon as it
+/// is asked for a byte past the limit, which includes the read that would have returned the end of
+/// a body that is exactly `max_bytes` long. A body over `max_bytes` is refused here.
+fn read_body(
+    body: &mut ureq::Body,
+    max_bytes: u64,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<Vec<u8>, String> {
+    let total = body.content_length().unwrap_or(0);
+    let mut reader = body
+        .with_config()
+        .limit(max_bytes.saturating_add(1))
+        .reader();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 16 * 1024];
+    progress(0, total);
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(out);
         }
-        let mut resp = self
-            .agent
-            .get(url)
-            .call()
-            .map_err(|e| Error::new("network", format!("{url}: {e}")))?;
-        resp.body_mut()
-            .with_config()
-            .limit(max_bytes)
-            .read_to_vec()
-            .map_err(|e| Error::new("network", format!("{url}: {e}")))
+        out.extend_from_slice(&buf[..n]);
+        if out.len() as u64 > max_bytes {
+            return Err(format!("the response is larger than the limit of {max_bytes} bytes"));
+        }
+        progress(out.len() as u64, total);
     }
 }
 
@@ -321,5 +328,52 @@ mod progress_tests {
             .unwrap();
         assert_eq!(bytes, [1, 2, 3]);
         assert_eq!(seen, [(3, 3)]);
+    }
+}
+
+#[cfg(test)]
+mod body_limit_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// Serves one plain-HTTP response of `len` bytes and returns the URL.
+    fn serve(len: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = listener.accept() {
+                let mut req = [0u8; 1024];
+                let _ = c.read(&mut req);
+                let head = format!("HTTP/1.1 200 OK
+Content-Length: {len}
+Connection: close
+
+");
+                let _ = c.write_all(head.as_bytes());
+                let _ = c.write_all(&vec![7u8; len]);
+            }
+        });
+        format!("http://127.0.0.1:{port}/f")
+    }
+
+    fn fetch(len: usize, max: u64) -> Result<Vec<u8>, String> {
+        let url = serve(len);
+        let mut resp = ureq::get(&url).call().map_err(|e| e.to_string())?;
+        read_body(resp.body_mut(), max, &mut |_, _| {})
+    }
+
+    #[test]
+    fn a_body_exactly_at_the_limit_is_accepted() {
+        assert_eq!(fetch(62415, 62415).unwrap().len(), 62415);
+    }
+
+    #[test]
+    fn a_smaller_body_is_accepted() {
+        assert_eq!(fetch(100, 62415).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn a_body_one_byte_over_the_limit_is_refused() {
+        assert!(fetch(62416, 62415).is_err());
     }
 }
