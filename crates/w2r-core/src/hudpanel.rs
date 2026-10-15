@@ -76,6 +76,10 @@ const GRAPH_QUIET: u32 = rgba(90, 78, 56, 255);
 const GRAPH_PLAYED: u32 = rgba(226, 124, 60, 255);
 const GRAPH_AHEAD: u32 = rgba(150, 70, 48, 255);
 const PLAYHEAD: u32 = rgba(255, 244, 200, 255);
+/// The heat thumbnail's side in pixels, and the caption above it.
+const THUMB: f32 = 150.0;
+const THUMB_CAPTION: f32 = 14.0;
+const THUMB_BACK: u32 = rgba(22, 18, 12, 235);
 const MAX_UNITS: usize = 4096;
 
 const BACKGROUND: u32 = rgba(12, 9, 6, 200);
@@ -242,14 +246,17 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
         }
         let board = (mode < 3).then_some(rows);
         let header = header_height(&pace);
-        let height = match &board {
-            Some(rows) => header + ROW_HEIGHT * (rows.len() as f32 + 1.0) + 4.0,
-            None => header,
-        };
+        let heat = replayplay::heat_view();
+        let thumb = if heat.is_some() { THUMB_CAPTION + THUMB + 8.0 } else { 0.0 };
+        let height = thumb
+            + match &board {
+                Some(rows) => header + ROW_HEIGHT * (rows.len() as f32 + 1.0) + 4.0,
+                None => header,
+            };
         let x = ((panel.ui_width)() - MARGIN_RIGHT - WIDTH).max(0.0);
         if begin(ctx, c"replay_panel".as_ptr(), x, TOP, WIDTH, height, WINDOW_FLAGS) != 0 {
             panel.kit.space_begin();
-            draw(&pace, board.as_deref(), mode, x, height);
+            draw(&pace, board.as_deref(), mode, x, height, heat.as_ref());
             panel.kit.space_end();
             panel.kit.end_window();
         }
@@ -298,6 +305,31 @@ fn draw_graph(kit: &Kit, pace: &Pace, x: f32) {
         Rect::new((area.x + area.w * fraction - 1.0).max(area.x), area.y - 2.0, 2.0, GRAPH_HEIGHT + 4.0),
         PLAYHEAD,
     );
+}
+
+/// The heat thumbnail under the scoreboard: a square for the map, a haze over every tile where
+/// units or buildings were lost. `y` is the window-local top of the caption.
+fn draw_heat(kit: &Kit, heat: &replayplay::HeatView, x: f32, y: f32) {
+    use w2r_replay::heat::{SIDE, ramp};
+    let caption = if heat.whole { "Where the fighting was" } else { "Where the fighting is so far" };
+    kit.label_at(Rect::new(6.0, y, WIDTH - 12.0, THUMB_CAPTION), caption, ALIGN_CENTRE);
+    let area = Rect::new(x + (WIDTH - THUMB) / 2.0, TOP + y + THUMB_CAPTION, THUMB, THUMB);
+    kit.fill_rect(area, THUMB_BACK);
+    let side = heat.side.min(SIDE);
+    let cell = THUMB / side as f32;
+    for ty in 0..side {
+        for tx in 0..side {
+            let v = heat.image[ty * SIDE + tx];
+            if v == 0 {
+                continue;
+            }
+            let [r, g, b, a] = ramp(v);
+            kit.fill_rect(
+                Rect::new(area.x + tx as f32 * cell, area.y + ty as f32 * cell, cell, cell),
+                rgba(r, g, b, a),
+            );
+        }
+    }
 }
 
 /// One scoreboard row, read from the game's tables.
@@ -414,7 +446,14 @@ fn hint_row(kit: &Kit, y: f32, items: &[(&str, &str)]) {
 }
 
 /// `x` is the window's left edge: fills use screen coordinates, labels the window's own.
-fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
+fn draw(
+    pace: &Pace,
+    board: Option<&[Row]>,
+    mode: u8,
+    x: f32,
+    height: f32,
+    heat: Option<&replayplay::HeatView>,
+) {
     let Some(panel) = PANEL.get() else { return };
     let kit = &panel.kit;
     kit.fill_round(Rect::new(x, TOP, WIDTH, height), 3.0, BACKGROUND);
@@ -486,8 +525,13 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
             &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), (";", "follow")],
         );
         if extra > 0.0 {
-            hint_row(kit, 56.0 + extra, &[(".", "next battle"), (",", "earlier (restart)")]);
+            hint_row(kit, 56.0 + extra, &[(".", "next battle"), (",", "earlier"), ("/", "heat map")]);
         }
+    }
+
+    if let Some(heat) = heat {
+        let rows_h = board.map_or(0.0, |r| ROW_HEIGHT * (r.len() as f32 + 1.0) + 4.0);
+        draw_heat(kit, heat, x, header_height(pace) + rows_h);
     }
 
     let Some(rows) = board else { return };

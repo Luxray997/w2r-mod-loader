@@ -82,6 +82,9 @@ pub struct Request {
     pub area: Rect,
     pub path: String,
     pub tileset: Option<u16>,
+    /// A heat image to lay over the picture: `heat::SIDE` x `SIDE` bytes indexed by map tile
+    /// (`w2r_replay::heat::image`), drawn only where it is above zero.
+    pub heat: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -277,7 +280,33 @@ pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) {
             region: [0, 0, p.width as u16, p.height as u16],
         };
         unsafe { (game.draw_image)(canvas, x, y, w, h, &image, WHITE) };
+        if let Some(heat) = &req.heat {
+            overlay_heat(kit, heat, (p.map_w as usize, p.map_h as usize), Rect::new(x, y, w, h));
+        }
     });
+}
+
+/// Lays a heat image over the picture, one square per map tile that has any.
+fn overlay_heat(kit: &Kit, heat: &[u8], map: (usize, usize), area: Rect) {
+    use w2r_replay::heat::{SIDE, ramp};
+    let (mw, mh) = (map.0.min(SIDE), map.1.min(SIDE));
+    if mw == 0 || mh == 0 || heat.len() < SIDE * SIDE {
+        return;
+    }
+    let (cw, ch) = (area.w / mw as f32, area.h / mh as f32);
+    for ty in 0..mh {
+        for tx in 0..mw {
+            let v = heat[ty * SIDE + tx];
+            if v == 0 {
+                continue;
+            }
+            let [r, g, b, a] = ramp(v);
+            kit.fill_rect(
+                Rect::new(area.x + tx as f32 * cw, area.y + ty as f32 * ch, cw, ch),
+                crate::screenkit::game::rgba(r, g, b, a),
+            );
+        }
+    }
 }
 
 #[derive(Default)]

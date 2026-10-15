@@ -124,6 +124,8 @@ struct Addrs {
     view_w: usize,
     view_h: usize,
     clamp_camera: usize,
+    /// The map's side in tiles, a u16.
+    map_side: usize,
 }
 
 struct Play {
@@ -365,12 +367,13 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
         return false;
     };
-    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera)) = (
+    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera), Some(map_side)) = (
         get("CameraScrollX"),
         get("CameraScrollY"),
         get("ViewportWidth"),
         get("ViewportHeight"),
         get("ClampCamera"),
+        get("MapSide"),
     ) else {
         log.line(W2R_LOG_ERROR, "host", "replay follow view: symbols missing");
         return false;
@@ -392,6 +395,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         view_w,
         view_h,
         clamp_camera,
+        map_side,
     });
     let mut ok = true;
     // SAFETY: each detour matches its target's cdecl signature (Ghidra, build 2818; the call
@@ -926,9 +930,11 @@ const KEY_STEP: u16 = 8;
 const KEY_FOLLOW: u16 = 16;
 const KEY_NEXT_BATTLE: u16 = 32;
 const KEY_PREV_BATTLE: u16 = 64;
-/// Backslash, Page Up, Page Down, End, Delete, period and comma (the view keys are in
+const KEY_HEAT: u16 = 128;
+/// Backslash, Page Up, Page Down, End, Delete, period, comma and slash (the view keys are in
 /// `viewer.rs`).
-const WATCHED: [(u16, i32); 7] = [
+const WATCHED: [(u16, i32); 8] = [
+    (KEY_HEAT, 0xBF),
     (KEY_NEXT_BATTLE, 0xBE),
     (KEY_PREV_BATTLE, 0xBC),
     (KEY_FOLLOW, 0xBA),
@@ -1006,6 +1012,86 @@ pub fn actions_per_minute(slot: u8) -> Option<u32> {
         0
     };
     Some((u64::from(now - before) * 60_000 / (window as u64 * per_turn_ms as u64)) as u32)
+}
+
+/// The heat map thumbnail: off, the game so far, or the whole recording (`/` steps through them).
+static HEAT_MODE: AtomicU8 = AtomicU8::new(0);
+const HEAT_SO_FAR: u8 = 1;
+const HEAT_WHOLE: u8 = 2;
+/// How often the so-far map is made again, in turns (about four seconds).
+const HEAT_STEP: u32 = 64;
+
+struct HeatCache {
+    mode: u8,
+    bucket: u32,
+    image: std::sync::Arc<Vec<u8>>,
+}
+
+static HEAT_CACHE: Mutex<Option<HeatCache>> = Mutex::new(None);
+
+/// What the panel draws as the heat thumbnail.
+pub struct HeatView {
+    /// The map's side in tiles.
+    pub side: usize,
+    /// `heat::SIDE` x `SIDE` heat values.
+    pub image: std::sync::Arc<Vec<u8>>,
+    pub whole: bool,
+}
+
+/// The heat map to show now, or `None` when it is off or the recording has no combat events.
+pub fn heat_view() -> Option<HeatView> {
+    let mode = HEAT_MODE.load(Ordering::Acquire);
+    if mode == 0 || !is_active() {
+        return None;
+    }
+    let a = ADDRS.get()?;
+    // SAFETY: a u32 and a u16 in the game's data section.
+    let (turn, side) = unsafe {
+        (
+            core::ptr::read_unaligned(a.turns as *const u32),
+            core::ptr::read_unaligned(a.map_side as *const u16),
+        )
+    };
+    let side = usize::from(side).clamp(1, w2r_replay::heat::SIDE);
+    let bucket = if mode == HEAT_WHOLE { 0 } else { turn / HEAT_STEP };
+    let mut cache = HEAT_CACHE.lock().ok()?;
+    if let Some(c) = cache.as_ref().filter(|c| c.mode == mode && c.bucket == bucket) {
+        return Some(HeatView { side, image: c.image.clone(), whole: mode == HEAT_WHOLE });
+    }
+    let guard = PLAY.lock().ok()?;
+    let play = guard.as_ref()?;
+    if play.replay.events.is_empty() {
+        return None;
+    }
+    let total = play.replay.turns.len() as u32;
+    let range = if mode == HEAT_WHOLE {
+        w2r_replay::heat::Range::All
+    } else {
+        w2r_replay::heat::Range::Until(turn)
+    };
+    let image = std::sync::Arc::new(w2r_replay::heat::image(&play.replay.events, total, range));
+    *cache = Some(HeatCache { mode, bucket, image: image.clone() });
+    Some(HeatView { side, image, whole: mode == HEAT_WHOLE })
+}
+
+/// The heat key: off, game so far, whole game, off again.
+fn step_heat() {
+    let has_events = PLAY
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| !p.replay.events.is_empty()))
+        .unwrap_or(false);
+    if !has_events {
+        crate::viewer::say("This recording has no combat events (made before they were kept)");
+        return;
+    }
+    let next = (HEAT_MODE.load(Ordering::Acquire) + 1) % 3;
+    HEAT_MODE.store(next, Ordering::Release);
+    crate::viewer::say(match next {
+        HEAT_SO_FAR => "Heat map: the game so far",
+        HEAT_WHOLE => "Heat map: the whole game",
+        _ => "Heat map off",
+    });
 }
 
 /// Whether a battle jump is still fast-forwarding. When the turn it was heading for is reached it
@@ -1369,6 +1455,9 @@ fn poll_keys() {
         PAUSED.store(true, Ordering::Release);
         STEP.store(true, Ordering::Release);
     }
+    if pressed & KEY_HEAT != 0 {
+        step_heat();
+    }
     if pressed & (KEY_NEXT_BATTLE | KEY_PREV_BATTLE) != 0 {
         if let Some(a) = ADDRS.get() {
             battle_jump(a, pressed & KEY_NEXT_BATTLE != 0);
@@ -1403,6 +1492,10 @@ fn reset_replay() {
     GAME_MS.store(0, Ordering::Release);
     SEEK_TO.store(NO_SEEK, Ordering::Release);
     GOTO_FRAMES.store(0, Ordering::Release);
+    HEAT_MODE.store(0, Ordering::Release);
+    if let Ok(mut c) = HEAT_CACHE.lock() {
+        *c = None;
+    }
 }
 
 /// Stops driving the game; the live game carries on with its own input.

@@ -395,10 +395,11 @@ impl Screen {
                     unsafe { picker.draw(k, &mut browser, &self.view, window, theme) };
                 k.space_end();
                 k.pop_skin(previous);
-                return shown.map(|(area, path)| Request {
+                return shown.map(|(area, path, heat)| Request {
                     area,
                     path,
                     tileset: None,
+                    heat,
                 });
             }
         }
@@ -418,6 +419,7 @@ impl Screen {
                     area,
                     path,
                     tileset: None,
+                    heat: None,
                 });
             }
         }
@@ -559,6 +561,7 @@ impl Screen {
             area: b,
             path,
             tileset,
+            heat: None,
         })
     }
 

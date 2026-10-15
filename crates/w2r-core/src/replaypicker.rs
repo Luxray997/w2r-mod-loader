@@ -4,6 +4,8 @@
 //! plays it (docs/replay-research.md, "Playback"). The same panel shape as the map browser
 //! (`browserview`). x86 only.
 
+use std::sync::Arc;
+
 use w2r_replay::catalog::{self, Entry};
 
 use crate::browserview::{INDEX_SLICE, Theme, View};
@@ -48,6 +50,68 @@ pub struct Picker {
     checked: Option<(String, String, MapCheck)>,
     /// The recording whose Delete button has been pressed once.
     confirm_delete: Option<String>,
+    /// The combat events of the highlighted recording and the heat map shown over its map.
+    heat: HeatState,
+}
+
+/// The heat map choices, in the order the button steps through them.
+const HEAT_LABELS: [&str; 5] = [
+    "Heat map: off",
+    "Heat map: whole game",
+    "Heat map: early game",
+    "Heat map: mid game",
+    "Heat map: late game",
+];
+/// Recordings larger than this are not read for their heat map.
+const HEAT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct HeatState {
+    /// The recording the events are for.
+    file: String,
+    /// Its combat events and number of turns; `None` when it has none (or cannot be read).
+    events: Option<(Vec<w2r_replay::Event>, u32)>,
+    mode: usize,
+    image: Option<Arc<Vec<u8>>>,
+}
+
+impl HeatState {
+    /// Reads the events of `file` when it is not the one already held.
+    fn load(&mut self, file: &str, bytes: u64) {
+        if self.file == file {
+            return;
+        }
+        self.file = file.to_string();
+        self.mode = 0;
+        self.image = None;
+        self.events = None;
+        if bytes > HEAT_MAX_BYTES {
+            return;
+        }
+        let Some(raw) = crate::replayplay::replays_dir().and_then(|d| std::fs::read(d.join(file)).ok())
+        else {
+            return;
+        };
+        if let Ok(replay) = w2r_replay::Replay::parse(&raw)
+            && !replay.events.is_empty()
+        {
+            let total = replay.footer.map_or(replay.turns.len() as u32, |f| f.turns);
+            self.events = Some((replay.events, total));
+        }
+    }
+
+    /// Steps to the next choice and makes its image.
+    fn step(&mut self) {
+        self.mode = (self.mode + 1) % HEAT_LABELS.len();
+        self.image = self.events.as_ref().and_then(|(events, total)| {
+            let range = match self.mode {
+                1 => w2r_replay::heat::Range::All,
+                n @ 2..=4 => w2r_replay::heat::Range::Third(n as u8 - 2),
+                _ => return None,
+            };
+            Some(Arc::new(w2r_replay::heat::image(events, *total, range)))
+        });
+    }
 }
 
 impl Picker {
@@ -353,7 +417,7 @@ impl Picker {
         view: &View,
         window: Rect,
         theme: Theme,
-    ) -> Option<(Rect, String)> {
+    ) -> Option<(Rect, String, Option<Arc<Vec<u8>>>)> {
         let mut src = view.source;
         // The map index is walked a slice a frame while the panel is up, to find the maps.
         if let Some(root) = crate::mapdownload::maps_root_string() {
@@ -439,6 +503,7 @@ impl Picker {
         };
         let mut preview = None;
         if let Some(e) = &entry {
+            self.heat.load(&e.file, e.bytes);
             k.heading_at(
                 Rect::new(dx, top + FRAME_PAD, dw, NAME_H),
                 &e.map,
@@ -479,6 +544,19 @@ impl Picker {
                 line(note);
                 line("It may go out of sync");
             }
+            // Where the fighting was, over the picture below.
+            if self.heat.events.is_some() {
+                if k.button_at(
+                    Rect::new(dx, y + GAP, dw, ROW_H),
+                    HEAT_LABELS[self.heat.mode],
+                    false,
+                ) {
+                    self.heat.step();
+                }
+                y += GAP + ROW_H;
+            } else if self.heat.mode == 0 {
+                line("No combat events (recorded before they were kept)");
+            }
             // The picture, a square inside the frame's padding.
             let picture_y = y + GAP;
             let side = dw.min(details.y + details.h - FRAME_PAD - picture_y).max(0.0);
@@ -488,6 +566,7 @@ impl Picker {
                 preview = Some((
                     Rect::new(dx + (dw - side) * 0.5, picture_y, side, side),
                     m.path.clone(),
+                    self.heat.image.clone(),
                 ));
             }
         }

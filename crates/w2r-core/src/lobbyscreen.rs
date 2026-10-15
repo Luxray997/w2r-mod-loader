@@ -506,6 +506,7 @@ impl Screen {
             area: c.preview,
             path,
             tileset: tileset_for_key(&tileset_key),
+            heat: None,
         })
     }
 

@@ -218,6 +218,18 @@ the fight, saying "Battle k of n". Pressing `.` again while jumping heads for th
 the replay game again from code. How fast a jump really runs depends on the frame loop (one turn
 per frame, drawing included?) and is unmeasured.
 
+Battle detection was tuned after a first test (2026-10-14): a building counts 2 (was 4) and a fight
+needs 6 weight and at least 3 unit deaths, so farms burning with nobody fighting is not a battle.
+
+Heat map: `heat::image(events, total, range)` makes a 128 x 128 byte image (kills blurred over 2
+tiles, hottest 255; ranges All, Until(turn), Third(0..2)) and `heat::ramp` colours it (clear at 0,
+yellow haze to solid red). Two places show it. The replay picker has a button that steps off / whole
+game / early / mid / late over the map preview (`previewdraw::Request.heat`, tiles scaled by the
+preview's `map_w` / `map_h`; the events are read from the highlighted file once). In game `/` steps
+off / game so far / whole game: a 150 px thumbnail under the scoreboard (`replayplay::heat_view`, the
+so-far image remade every 64 turns, map side from `MapSide`). The thumbnail has no terrain behind it.
+Not yet run in game.
+
 Playback constraint: there are no savestates, so seeking forward is fast-forward with drawing off
 and seeking back is restart plus fast-forward.
 

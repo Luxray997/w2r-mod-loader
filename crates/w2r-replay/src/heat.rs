@@ -36,6 +36,50 @@ pub fn kill_event(killer: u8, victim: u8, unit_type: u8, px: i16, py: i16) -> Op
     })
 }
 
+/// Side of the heat image the UI draws: the largest map there is, so any map fits in it.
+pub const SIDE: usize = 128;
+/// How far a kill's heat spreads, in tiles.
+pub const BLUR: usize = 2;
+
+/// Which stretch of a game a heat map covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Range {
+    /// The whole recording.
+    All,
+    /// Everything up to this turn (the game so far).
+    Until(u32),
+    /// Part `0..3` of the game cut into thirds: early, middle, late.
+    Third(u8),
+}
+
+/// The heat image for `range`: `SIDE` x `SIDE` bytes, the hottest tile 255, spread a little so a
+/// handful of kills shows as a warm area. Tiles are indexed `y * SIDE + x`.
+pub fn image(events: &[Event], total_turns: u32, range: Range) -> Vec<u8> {
+    let g = match range {
+        Range::All => grid(events, SIDE, None),
+        Range::Until(t) => grid(events, SIDE, Some(t)),
+        Range::Third(i) => {
+            let i = u32::from(i.min(2));
+            let from = (u64::from(total_turns) * u64::from(i) / 3) as u32;
+            let to = (u64::from(total_turns) * u64::from(i + 1) / 3) as u32;
+            grid_between(events, SIDE, from, if i == 2 { u32::MAX } else { to.saturating_sub(1) })
+        }
+    };
+    g.blurred(BLUR).bytes()
+}
+
+/// The colour of a heat value as red, green, blue and alpha: clear where nothing happened, then a
+/// yellow haze that grows redder and more solid with the heat.
+pub fn ramp(v: u8) -> [u8; 4] {
+    if v == 0 {
+        return [0, 0, 0, 0];
+    }
+    let t = f32::from(v) / 255.0;
+    let green = (230.0 - 190.0 * t) as u8;
+    let alpha = (60.0 + 150.0 * t) as u8;
+    [255, green, (40.0 * (1.0 - t)) as u8, alpha]
+}
+
 /// A square grid of weights, one cell per map tile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grid {
@@ -281,6 +325,32 @@ mod tests {
 
     fn ev(turn: u32, kind: u8, victim: u8, x: u8, y: u8) -> Event {
         Event { turn, kind, killer: 1 - victim.min(1), victim, unit_type: 0, x, y }
+    }
+
+    #[test]
+    fn the_heat_image_covers_a_range_and_fits_any_map() {
+        let e = [ev(10, 0, 0, 3, 4), ev(500, 0, 0, 100, 120), ev(900, 0, 0, 127, 127)];
+        let all = image(&e, 1000, Range::All);
+        assert_eq!(all.len(), SIDE * SIDE);
+        assert!(all[4 * SIDE + 3] > 0 && all[120 * SIDE + 100] > 0 && all[127 * SIDE + 127] > 0);
+        let early = image(&e, 1000, Range::Third(0));
+        assert!(early[4 * SIDE + 3] > 0 && early[120 * SIDE + 100] == 0);
+        let late = image(&e, 1000, Range::Third(2));
+        assert!(late[4 * SIDE + 3] == 0 && late[127 * SIDE + 127] > 0);
+        // the middle third is turns 333..=665
+        assert!(image(&e, 1000, Range::Third(1))[120 * SIDE + 100] > 0);
+        let so_far = image(&e, 1000, Range::Until(100));
+        assert!(so_far[4 * SIDE + 3] > 0 && so_far[120 * SIDE + 100] == 0);
+        assert!(image(&[], 1000, Range::All).iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn the_ramp_is_clear_at_zero_and_grows_more_solid_and_redder() {
+        assert_eq!(ramp(0)[3], 0);
+        let (a, b) = (ramp(20), ramp(250));
+        assert!(a[3] > 0 && b[3] > a[3]);
+        assert!(b[1] < a[1], "hotter is redder (less green)");
+        assert_eq!(b[0], 255);
     }
 
     #[test]
