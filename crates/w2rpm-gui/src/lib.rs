@@ -3,3 +3,4 @@
 pub mod app;
 pub mod jobs;
 pub mod settings;
+pub mod theme;
