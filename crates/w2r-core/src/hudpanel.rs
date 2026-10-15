@@ -63,14 +63,11 @@ unsafe impl Sync for Panel {}
 /// The flags the HUD's own full-screen window is begun with.
 const WINDOW_FLAGS: u32 = 0x120;
 const WIDTH: f32 = 362.0;
-const HEADER_HEIGHT: f32 = 60.0;
 const ROW_HEIGHT: f32 = 12.0;
 const MARGIN_RIGHT: f32 = 24.0;
 const TOP: f32 = 22.0;
 const BAR_HEIGHT: f32 = 6.0;
-/// The combat timeline sits above the progress bar when a recording has combat events: this much
-/// is added to everything below the header line.
-const GRAPH_EXTRA: f32 = 16.0;
+/// The combat timeline replaces the progress bar when a recording has combat events.
 const GRAPH_HEIGHT: f32 = 14.0;
 const GRAPH_QUIET: u32 = rgba(90, 78, 56, 255);
 const GRAPH_PLAYED: u32 = rgba(226, 124, 60, 255);
@@ -266,15 +263,27 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
     }
 }
 
-/// Extra header height for the timeline graph, when there is one to draw.
-fn extra(pace: &Pace) -> f32 {
-    if !pace.live && !pace.graph.is_empty() { GRAPH_EXTRA } else { 0.0 }
+/// Rows of key hints under the header: an observer's two, or in a replay one row of the keys
+/// used most, or all three while the key list is shown (`?`).
+fn hint_rows(pace: &Pace) -> usize {
+    if pace.live {
+        2
+    } else if pace.help {
+        3
+    } else {
+        1
+    }
 }
 
-/// The header's height: the timeline graph and its third row of key hints add to it.
+/// Where the hints start, window-local: under the timeline graph when there is one, otherwise
+/// under the progress bar.
+fn hints_top(pace: &Pace) -> f32 {
+    if pace.live || pace.graph.is_empty() { 28.0 } else { 36.0 }
+}
+
+/// The header's height: the text line, the timeline or progress bar and the hint rows.
 fn header_height(pace: &Pace) -> f32 {
-    let extra = extra(pace);
-    HEADER_HEIGHT + extra + if extra > 0.0 { ROW_HEIGHT + 2.0 } else { 0.0 }
+    hints_top(pace) + ROW_HEIGHT.max(14.0) * hint_rows(pace) as f32 + 4.0
 }
 
 /// The combat timeline: one bar per slice of the recording, taller where more was lost, the part
@@ -463,10 +472,10 @@ fn draw(
     } else {
         pace.turn as f32 / pace.total as f32
     };
-    let extra = extra(pace);
     draw_graph(kit, pace, x);
-    if !pace.live {
-        let bar = Rect::new(x + 6.0, TOP + 19.0 + extra, WIDTH - 12.0, BAR_HEIGHT);
+    // The timeline has its own playhead; a recording without events gets the plain bar.
+    if !pace.live && pace.graph.is_empty() {
+        let bar = Rect::new(x + 6.0, TOP + 19.0, WIDTH - 12.0, BAR_HEIGHT);
         kit.fill_rect(bar, TRACK);
         let colour = if pace.paused || pace.ended {
             FILL_PAUSED
@@ -506,7 +515,7 @@ fn draw(
     );
     if pace.ended {
         kit.label_at(
-            Rect::new(0.0, 28.0 + extra, WIDTH, 14.0),
+            Rect::new(0.0, hints_top(pace), WIDTH, 14.0),
             "Open the menu to leave",
             ALIGN_CENTRE,
         );
@@ -518,14 +527,24 @@ fn draw(
             &[("[ ]", "player"), ("Home", "all"), ("Ins", "vision"), (";", "follow")],
         );
     } else {
-        hint_row(kit, 28.0 + extra, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
-        hint_row(
-            kit,
-            42.0 + extra,
-            &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), (";", "follow")],
-        );
-        if extra > 0.0 {
-            hint_row(kit, 56.0 + extra, &[(".", "next battle"), (",", "earlier"), ("/", "heat map")]);
+        let top = hints_top(pace);
+        let battles = !pace.graph.is_empty();
+        if pace.help {
+            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
+            hint_row(
+                kit,
+                top + 14.0,
+                &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), (";", "follow")],
+            );
+            if battles {
+                hint_row(kit, top + 28.0, &[(".", "next battle"), ("/", "heat map"), ("?", "hide keys")]);
+            } else {
+                hint_row(kit, top + 28.0, &[("?", "hide keys")]);
+            }
+        } else if battles {
+            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), (".", "battle"), ("?", "keys")]);
+        } else {
+            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("?", "keys")]);
         }
     }
 

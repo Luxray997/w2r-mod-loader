@@ -905,6 +905,7 @@ fn live_pace() -> Option<Pace> {
         auto: AUTO.load(Ordering::Acquire),
         graph: Vec::new(),
         seeking: false,
+        help: false,
     })
 }
 
@@ -931,6 +932,11 @@ const KEY_FOLLOW: u16 = 16;
 const KEY_NEXT_BATTLE: u16 = 32;
 const KEY_PREV_BATTLE: u16 = 64;
 const KEY_HEAT: u16 = 128;
+/// Shift and the slash key, a question mark on most keyboards: shows or hides the full key list.
+const KEY_HELP: u16 = 256;
+const VK_SHIFT: i32 = 0x10;
+/// Whether the panel lists every key (kept for the rest of the session).
+static HELP: AtomicBool = AtomicBool::new(false);
 /// Backslash, Page Up, Page Down, End, Delete, period, comma and slash (the view keys are in
 /// `viewer.rs`).
 const WATCHED: [(u16, i32); 8] = [
@@ -966,6 +972,8 @@ pub struct Pace {
     pub graph: Vec<u8>,
     /// A battle jump is fast-forwarding.
     pub seeking: bool,
+    /// The panel lists every key instead of the few used most.
+    pub help: bool,
 }
 
 pub fn pace() -> Option<Pace> {
@@ -987,6 +995,7 @@ pub fn pace() -> Option<Pace> {
         auto: false,
         graph: PLAY.lock().ok()?.as_ref()?.graph.clone(),
         seeking: SEEK_TO.load(Ordering::Acquire) != NO_SEEK,
+        help: HELP.load(Ordering::Acquire),
     })
 }
 
@@ -1438,9 +1447,17 @@ fn poll_keys() {
             down |= bit;
         }
     }
+    // Shift with the slash key is the question mark: help, not the heat map.
+    // SAFETY: a plain key-state query.
+    if down & KEY_HEAT != 0 && unsafe { GetAsyncKeyState(VK_SHIFT) } as u16 & 0x8000 != 0 {
+        down = down & !KEY_HEAT | KEY_HELP;
+    }
     let pressed = down & !KEYS_DOWN.swap(down, Ordering::AcqRel);
     if pressed == 0 {
         return;
+    }
+    if pressed & KEY_HELP != 0 {
+        HELP.fetch_xor(true, Ordering::AcqRel);
     }
     if pressed & KEY_FASTER != 0 {
         change_speed(1);

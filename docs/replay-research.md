@@ -230,6 +230,12 @@ off / game so far / whole game: a 150 px thumbnail under the scoreboard (`replay
 so-far image remade every 64 turns, map side from `MapSide`). The thumbnail has no terrain behind it.
 Not yet run in game.
 
+Panel tidy (2026-10-14): the replay panel shows one row of the most used keys (speed, pause, `.`
+battle, `?` keys). `?` (Shift and the slash key; plain `/` is the heat map) shows all three rows
+and stays that way for the session. The thin progress bar is only drawn for recordings without a
+timeline graph, which has its own playhead. The `,` key still explains that a replay cannot rewind
+but is no longer listed.
+
 Playback constraint: there are no savestates, so seeking forward is fast-forward with drawing off
 and seeking back is restart plus fast-forward.
 
