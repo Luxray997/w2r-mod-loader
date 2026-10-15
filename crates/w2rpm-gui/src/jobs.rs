@@ -3,8 +3,9 @@
 //! `w2rpm-lib`; this file only sequences calls (docs/manager.md).
 
 use std::path::PathBuf;
+use w2r_formats::manifest::Dependency;
 use w2r_formats::semver::Version;
-use w2rpm_lib::index::Index;
+use w2rpm_lib::index::{Index, VersionEntry};
 use w2rpm_lib::session::{self, Session};
 use w2rpm_lib::store::{self, Finding, Root};
 use w2rpm_lib::coremod::{self, Installed as CoreInstalled};
@@ -44,6 +45,15 @@ pub enum Job {
 }
 
 pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
+    run_with_progress(session, job, &mut |_, _| {})
+}
+
+/// `run`, reporting `(bytes so far, total)` while a package downloads.
+pub fn run_with_progress(
+    session: &Session,
+    job: &Job,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<String, Error> {
     match job {
         Job::Refresh => {
             let idx = session.refresh()?;
@@ -68,7 +78,7 @@ pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
             }
             .ok_or_else(|| Error::new("no_version", format!("no installable version of {id}")))?;
             let v = &entry.version;
-            Ok(match session.install(entry, approved)? {
+            Ok(match session.install_with_progress(entry, approved, progress)? {
                 install::Outcome::Installed => format!("installed {id} {v}"),
                 install::Outcome::Updated { from } => format!("updated {id} {from} -> {v}"),
                 install::Outcome::Reinstalled => format!("reinstalled {id} {v}"),
@@ -103,7 +113,9 @@ pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
                     _ => Ok("the core is up to date".to_owned()),
                 };
             }
-            let out = session.core_update(&game, &info).map_err(session::hint_io)?;
+            let out = session
+                .core_update_with_progress(&game, &info, progress)
+                .map_err(session::hint_io)?;
             coremod::save_game_dir(&session.root, &game)?;
             Ok(format!("core is now {}", core_version(&out.to)))
         }
@@ -267,5 +279,153 @@ mod tests {
         std::fs::write(dir.join("version.dll"), b"x").unwrap();
         assert!(!game_running(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+impl Job {
+    /// The plugin a job works on, for the spinner on its card.
+    pub fn target(&self) -> Option<&str> {
+        match self {
+            Job::Install { id, .. }
+            | Job::Remove { id, .. }
+            | Job::SetEnabled { id, .. }
+            | Job::Rollback { id } => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// How one declared dependency stands, for the details and consent screens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DepStatus {
+    /// Installed and in range.
+    Satisfied(Version),
+    /// Installed and in range, but switched off (the host will not load it).
+    Disabled(Version),
+    /// Not installed yet, but part of the same install.
+    Planned(Version),
+    /// Installed, out of range.
+    WrongVersion(Version),
+    /// Not installed and not in this install.
+    Missing,
+}
+
+pub fn dep_status(installed: &[Installed], planned: &[VersionEntry], d: &Dependency) -> DepStatus {
+    match installed.iter().find(|i| i.id == d.id) {
+        Some(i) if d.version_req.matches(&i.version) => {
+            if i.enabled {
+                DepStatus::Satisfied(i.version.clone())
+            } else {
+                DepStatus::Disabled(i.version.clone())
+            }
+        }
+        _ => match planned
+            .iter()
+            .find(|e| e.manifest.id == d.id && d.version_req.matches(&e.version))
+        {
+            Some(e) => DepStatus::Planned(e.version.clone()),
+            None => match installed.iter().find(|i| i.id == d.id) {
+                Some(i) => DepStatus::WrongVersion(i.version.clone()),
+                None => DepStatus::Missing,
+            },
+        },
+    }
+}
+
+/// `wanted` plus every dependency it needs that the index can supply, each placed before what
+/// needs it. Dependencies already installed in range are left alone.
+pub fn with_dependencies(
+    index: &Index,
+    installed: &[Installed],
+    manager: &Version,
+    wanted: Vec<VersionEntry>,
+) -> Vec<VersionEntry> {
+    fn visit(
+        index: &Index,
+        installed: &[Installed],
+        manager: &Version,
+        entry: VersionEntry,
+        out: &mut Vec<VersionEntry>,
+        seen: &mut Vec<String>,
+    ) {
+        if seen.contains(&entry.manifest.id) {
+            return;
+        }
+        seen.push(entry.manifest.id.clone());
+        for d in &entry.manifest.dependencies {
+            if matches!(
+                dep_status(installed, out, d),
+                DepStatus::Satisfied(_) | DepStatus::Disabled(_) | DepStatus::Planned(_)
+            ) {
+                continue;
+            }
+            let best = index.plugin(&d.id).and_then(|p| {
+                p.versions
+                    .iter()
+                    .filter(|v| &v.min_manager <= manager && d.version_req.matches(&v.version))
+                    .max_by(|a, b| a.version.cmp(&b.version))
+            });
+            if let Some(dep) = best {
+                visit(index, installed, manager, dep.clone(), out, seen);
+            }
+        }
+        out.push(entry);
+    }
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    for e in wanted {
+        visit(index, installed, manager, e, &mut out, &mut seen);
+    }
+    out
+}
+
+/// Opens a folder or file in Explorer (the default program for a file).
+pub fn open_path(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("{} does not exist yet", path.display()));
+    }
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
+    let opener = "xdg-open";
+    // Explorer reports failure through its exit code even when it worked, so only a failure to
+    // start it counts.
+    std::process::Command::new(opener)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod dep_tests {
+    use super::*;
+
+    fn installed(id: &str, v: &str, enabled: bool) -> Installed {
+        Installed {
+            id: id.into(),
+            version: Version::parse(v).unwrap(),
+            author: None,
+            enabled,
+            capabilities: vec![],
+            update: None,
+            problem: None,
+        }
+    }
+
+    fn dep(id: &str, req: &str) -> Dependency {
+        Dependency {
+            id: id.into(),
+            version_req: w2r_formats::semver::VersionReq::parse(req).unwrap(),
+        }
+    }
+
+    #[test]
+    fn status_of_each_kind_of_dependency() {
+        let have = [installed("a", "1.2.0", true), installed("b", "1.0.0", false)];
+        assert!(matches!(dep_status(&have, &[], &dep("a", ">=1.0.0")), DepStatus::Satisfied(_)));
+        assert!(matches!(dep_status(&have, &[], &dep("b", ">=1.0.0")), DepStatus::Disabled(_)));
+        assert!(matches!(dep_status(&have, &[], &dep("a", ">=2.0.0")), DepStatus::WrongVersion(_)));
+        assert_eq!(dep_status(&have, &[], &dep("c", ">=1.0.0")), DepStatus::Missing);
     }
 }
