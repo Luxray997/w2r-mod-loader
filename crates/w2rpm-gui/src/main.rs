@@ -17,7 +17,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "w2rpm",
+        "W2R Mod Loader",
         options,
         Box::new(|cc| {
             w2rpm_gui::theme::apply(&cc.egui_ctx);

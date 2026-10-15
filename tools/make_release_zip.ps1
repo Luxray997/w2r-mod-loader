@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Builds the manager and zips it with the README into target\w2rpm.zip.
+Builds W2R Mod Loader and zips it with the README into target\W2R-Mod-Loader.zip.
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -11,10 +11,10 @@ try {
     $stage = Join-Path $root 'target\release-pkg'
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory $stage | Out-Null
-    Copy-Item target\release\w2rpm-gui.exe $stage
+    Copy-Item target\release\w2rpm-gui.exe (Join-Path $stage 'W2R Mod Loader.exe')
     Copy-Item tools\release\README.txt $stage
     Copy-Item THIRD_PARTY_NOTICES.md $stage
-    $zip = Join-Path $root 'target\w2rpm.zip'
+    $zip = Join-Path $root 'target\W2R-Mod-Loader.zip'
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path "$stage\*" -DestinationPath $zip
     Write-Host "wrote $zip"

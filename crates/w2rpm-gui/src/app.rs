@@ -904,7 +904,7 @@ impl App {
                                             install = Some(entry.clone());
                                         }
                                     } else {
-                                        theme::badge(ui, "Needs a newer w2rpm", theme::MUTED);
+                                        theme::badge(ui, "Needs a newer Mod Loader", theme::MUTED);
                                     }
                                 },
                             );
@@ -1018,7 +1018,7 @@ impl App {
             .session
             .as_ref()
             .map_or_else(|| "unknown".to_owned(), |s| s.manager.to_string());
-        let _ = writeln!(t, "w2rpm {manager}");
+        let _ = writeln!(t, "W2R Mod Loader (w2rpm) {manager}");
         if let Some(core) = &self.view.core {
             let installed = match &core.installed {
                 Some(CoreInstalled::Missing) => "not installed".to_owned(),
@@ -1069,7 +1069,7 @@ impl App {
                 .map_or_else(|| "unknown".to_owned(), |s| s.manager.to_string());
             ui.horizontal(|ui| {
                 ui.label(theme::muted("Version"));
-                ui.label(RichText::new(format!("w2rpm {manager}")).strong());
+                ui.label(RichText::new(format!("W2R Mod Loader {manager}")).strong());
             });
             ui.label(theme::muted("Made by Beau Hastings."));
             ui.horizontal_wrapped(|ui| {
@@ -1094,7 +1094,7 @@ impl App {
             });
             ui.label(
                 theme::muted(
-                    "Headings use the game's Friz Quadrata and body text its Noto Sans, loaded from your game folder; neither is shipped with w2rpm.",
+                    "Headings use the game's Friz Quadrata and body text its Noto Sans, loaded from your game folder; neither is shipped with the Mod Loader.",
                 )
                 .small(),
             );
@@ -1593,7 +1593,7 @@ impl App {
                     .and_then(|c| c.game_dir.clone().ok());
                 let mut launch = false;
                 ui.horizontal(|ui| {
-                    ui.label(theme::heading("w2rpm", 22.0).color(theme::ACCENT));
+                    ui.label(theme::heading("W2R Mod Loader", 22.0).color(theme::ACCENT));
                     ui.add_space(12.0);
                     ui.selectable_value(&mut self.tab, Tab::Installed, installed);
                     ui.selectable_value(&mut self.tab, Tab::Browse, browse);
@@ -1634,7 +1634,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         theme::badge(ui, "New version", theme::GOOD);
                         ui.label(format!(
-                            "w2rpm {} is available (this is {}).",
+                            "W2R Mod Loader {} is available (this is {}).",
                             l.version,
                             self.session.as_ref().map_or_else(String::new, |s| s.manager.to_string())
                         ));

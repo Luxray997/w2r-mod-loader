@@ -1,9 +1,9 @@
-W2R Plugin Manager - quick start
-================================
+W2R Mod Loader - quick start
+============================
 
-Adds plugins (chat, map preview, player colors and more) to Warcraft II Remastered.
+Adds mods and plugins (chat, map preview, player colors and more) to Warcraft II Remastered.
 
-1. Run w2rpm-gui.exe (no installer needed; keep it anywhere, for example your Desktop).
+1. Run "W2R Mod Loader.exe" (no installer needed; keep it anywhere, for example your Desktop).
    Windows may say "Windows protected your PC". Click "More info", then "Run anyway".
 
 2. Close Warcraft II, then click "Install the mod".
@@ -16,9 +16,9 @@ Adds plugins (chat, map preview, player colors and more) to Warcraft II Remaster
 4. Start the game from Battle.net as usual.
 
 Good to know
-- Updates: the manager shows an "Update available" badge. Close the game first.
+- Updates: the Mod Loader shows an "Update available" badge. Close the game first.
 - Stats sharing: results and replays of games against other people are uploaded to the
-  project's stats server by default. You can turn it off in the manager's Settings tab, or with
+  project's stats server by default. You can turn it off in the Mod Loader's Settings tab, or with
   the checkbox on the in-game Plugins screen.
 - Observer: every player in the match needs the Observer plugin for it to work, so tell
   your group to install it too.

@@ -3,7 +3,7 @@ name = "w2rpm-gui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "w2rpm-gui: desktop plugin manager for Warcraft II Remastered"
+description = "W2R Mod Loader: desktop app that installs mods and plugins for Warcraft II Remastered"
 
 [[bin]]
 name = "w2rpm-gui"

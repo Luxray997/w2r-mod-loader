@@ -1,6 +1,8 @@
-# w2rpm
+# W2R Mod Loader (w2rpm)
 
-Plugin host and plugin manager for Warcraft II Remastered (game build 1.0.2.2818, 32-bit).
+A mod loader and plugin platform for Warcraft II Remastered (game build 1.0.2.2818, 32-bit). Players
+install mods with the **W2R Mod Loader** app; developers write plugins against its C ABI. The
+repository and crates keep the short name `w2rpm`.
 
 - **Host** (`w2r-core`): a `version.dll` proxy that loads signed-off native plugins into the game,
   and carries the features ported from [wc2r-plus](https://github.com/Luxray997/wc2r-plus) (by Luxray997): the
