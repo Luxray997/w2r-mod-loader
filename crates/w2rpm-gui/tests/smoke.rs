@@ -48,7 +48,21 @@ fn every_screen_draws() {
         },
     )
     .unwrap();
-    devrepo::build(&repo, now, 2, &[plugin("1.0.0"), plugin("1.1.0")]).unwrap();
+    let extra = Plugin {
+        id: "extra",
+        version: "1.0.0",
+        capabilities: &[],
+        dependencies: &[],
+        dll: &dll,
+    };
+    let needs = Plugin {
+        id: "needs-extra",
+        version: "1.0.0",
+        capabilities: &[],
+        dependencies: &[("extra", ">=1.0.0"), ("fancy", ">=1.0.0")],
+        dll: &dll,
+    };
+    devrepo::build(&repo, now, 2, &[plugin("1.0.0"), plugin("1.1.0"), extra, needs]).unwrap();
     jobs::run(&session, &Job::Refresh).unwrap();
 
     let mut app = App::with_session(session);
@@ -64,5 +78,35 @@ fn every_screen_draws() {
     for _ in 0..3 {
         frame(&ctx, &mut app);
     }
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_missing_dependency_joins_the_install() {
+    let base = std::env::temp_dir().join(format!("w2rpm-gui-deps-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let dll = b"dll".to_vec();
+    let extra = Plugin {
+        id: "extra",
+        version: "1.0.0",
+        capabilities: &[],
+        dependencies: &[],
+        dll: &dll,
+    };
+    let needs = Plugin {
+        id: "needs-extra",
+        version: "1.0.0",
+        capabilities: &[],
+        dependencies: &[("extra", ">=1.0.0")],
+        dll: &dll,
+    };
+    devrepo::build(&repo, now, 1, &[extra, needs]).unwrap();
+    let session = Session::new(Root(base.join("root")), None, Some(repo)).unwrap();
+    jobs::run(&session, &Job::Refresh).unwrap();
+    let mut app = App::with_session(session);
+    assert!(app.preview_consent("needs-extra"));
+    assert_eq!(app.consent_len(), 2, "the dependency is listed with the plugin");
     let _ = fs::remove_dir_all(&base);
 }
