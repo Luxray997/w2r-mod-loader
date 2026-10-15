@@ -23,7 +23,7 @@ pub const MARKER_OURS: &[u8] = b"=== w2rpm host ";
 /// `W2R-CORE-VERSION:<semver>;`, embedded by `w2r-core` (`entry.rs`).
 pub const MARKER_VERSION: &[u8] = b"W2R-CORE-VERSION:";
 const DLL_NAME: &str = "version.dll";
-const GAME_EXE: &str = "Warcraft II.exe";
+pub const GAME_EXE: &str = "Warcraft II.exe";
 
 /// What `core.json` says about the newest core.
 #[derive(Clone, Debug)]

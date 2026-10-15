@@ -46,6 +46,17 @@ The default index URL is `session::DEFAULT_INDEX_URL` (GitHub Pages of `w2r-plug
 `--index-url` overrides it. `--index-dir DIR` (hidden) serves the index and packages from a folder
 for tests; the URL rules and package hashes are still enforced.
 
+## Notices and plugin settings (GUI)
+
+- **Newer manager.** On startup the GUI fetches `manager.json` from the folder of the index:
+  `{"schema":1,"version":"0.3.0","url":"https://..."}`. A newer `version` shows a banner with a
+  "Get it" link to `url`; nothing is downloaded or run. A missing, bad or older file shows
+  nothing. Unknown fields are ignored. (`w2rpm-lib/src/mgrupdate.rs`)
+- **Plugin settings.** The Installed tab edits `config\<id>.json` (`{"schema":1,"values":{...}}`,
+  whole numbers and text) with the host's limits (`w2rpm-lib/src/pluginconf.rs`). Plugins declare
+  no schema, so keys show as stored. Editing is off while the game runs, because the game writes
+  these files itself.
+
 ## Decisions
 
 - Library functions take the root path and a clock value; no hidden globals, so tests run in a

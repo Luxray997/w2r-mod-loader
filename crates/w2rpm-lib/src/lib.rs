@@ -44,6 +44,8 @@ pub mod check;
 pub mod devrepo;
 pub mod fetch;
 pub mod install;
+pub mod mgrupdate;
+pub mod pluginconf;
 pub mod session;
 pub mod share;
 pub mod store;
