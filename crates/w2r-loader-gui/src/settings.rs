@@ -1,5 +1,5 @@
 //! The GUI's own settings: which w2r folder and which index. Kept in
-//! `%APPDATA%\w2rpm\gui.json` (override: `W2R_LOADER_GUI_CONFIG`). Not part of the trust record
+//! `%APPDATA%\w2r-mod-loader\gui.json` (override: `W2R_LOADER_GUI_CONFIG`). Not part of the trust record
 //! (`state.json`); a bad file is ignored and the defaults are used.
 
 use std::path::{Path, PathBuf};
@@ -33,7 +33,22 @@ pub fn config_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("W2R_LOADER_GUI_CONFIG") {
         return Some(PathBuf::from(p));
     }
-    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("w2rpm").join("gui.json"))
+    let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
+    let path = appdata.join("w2r-mod-loader").join("gui.json");
+    migrate_old_config(&appdata.join("w2rpm").join("gui.json"), &path);
+    Some(path)
+}
+
+/// The settings used to live in `%APPDATA%\w2rpm`. Copies that file to its new place once, when
+/// the new one does not exist yet; the old file is left where it is.
+fn migrate_old_config(old: &Path, new: &Path) {
+    if new.exists() || !old.is_file() {
+        return;
+    }
+    if let Some(dir) = new.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::copy(old, new);
 }
 
 impl Settings {
@@ -129,6 +144,30 @@ pub fn root_from_pick(picked: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_old_settings_file_is_copied_once_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("w2r-loader-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let old = base.join("w2rpm").join("gui.json");
+        let new = base.join("w2r-mod-loader").join("gui.json");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"old").unwrap();
+
+        migrate_old_config(&old, &new);
+        assert_eq!(std::fs::read(&new).unwrap(), b"old");
+        assert!(old.is_file(), "the old file stays");
+
+        std::fs::write(&new, b"new").unwrap();
+        migrate_old_config(&old, &new);
+        assert_eq!(std::fs::read(&new).unwrap(), b"new");
+
+        // No old file: nothing is created.
+        let none = base.join("elsewhere").join("gui.json");
+        migrate_old_config(&base.join("missing.json"), &none);
+        assert!(!none.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn round_trip() {

@@ -8,7 +8,7 @@ repository and crates keep the short name `w2rpm`.
   and carries the features ported from [wc2r-plus](https://github.com/Luxray997/wc2r-plus) (by Luxray997): the
   lobby handshake, chat history, lobby policy, map download and sharing, and the enhanced Create
   Multiplayer Game and lobby screens. Plugins get a small C ABI ([docs/abi.md](docs/abi.md)).
-- **Manager** (`w2r-loader-lib`, the `w2rpm` CLI and the `w2r-loader-gui` egui app): reads a plugin index,
+- **Manager** (`w2r-loader-lib`, the `w2r-loader` CLI and the `w2r-loader-gui` egui app): reads a plugin index,
   downloads, checks hashes and installs plugins, and keeps their enabled and approved state.
 - **Plugins** live in a separate repository, [`w2r-plugins`](https://github.com/hastinbe/w2r-plugins),
   with CI that builds the packages and publishes the index.
@@ -39,7 +39,7 @@ crates/
   w2r-formats/   strict parsers shared by host and manager: JSON, SemVer, plugin.json, state.json
   w2r-core/      the in-game host (32-bit cdylib, version.dll proxy)
   w2r-loader-lib/     manager logic: index, download, verify, install
-  w2r-loader-cli/     the `w2rpm` command
+  w2r-loader-cli/     the `w2r-loader` command
   w2r-loader-gui/     the egui manager
   test-plugins/  fixture DLLs for the host's tests
 docs/            specs, plan, threat model, per-feature notes
