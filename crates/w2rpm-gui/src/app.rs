@@ -12,15 +12,18 @@ use crate::jobs::{self, DepStatus, Installed, Job, View};
 use crate::settings::{self, Settings};
 use crate::theme;
 use eframe::egui::{self, Key, Modifiers, RichText};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use w2r_formats::manifest::Dependency;
 use w2rpm_lib::catalog;
 use w2rpm_lib::coremod::Installed as CoreInstalled;
 use w2rpm_lib::index::{PluginEntry, VersionEntry};
+use w2rpm_lib::mgrupdate;
+use w2rpm_lib::pluginconf::{self, Val};
 use w2rpm_lib::session::{Preflight, Session, capability_note};
 use w2rpm_lib::store::Root;
 
@@ -69,6 +72,38 @@ struct Done {
     view: View,
     /// The job was the check made at startup, whose failure is not worth an error.
     startup: bool,
+    /// The job fetched the index.
+    refresh: bool,
+}
+
+/// A plugin's settings file being edited in its card.
+struct Conf {
+    saved: Vec<(String, Val)>,
+    draft: Vec<(String, Val)>,
+    error: Option<String>,
+}
+
+fn tab_of(i: u8) -> Tab {
+    [Tab::Installed, Tab::Browse, Tab::Settings][usize::from(i).min(2)]
+}
+
+fn tab_index(t: Tab) -> u8 {
+    match t {
+        Tab::Installed => 0,
+        Tab::Browse => 1,
+        Tab::Settings => 2,
+    }
+}
+
+/// "just now", "5 min ago", "3 h ago", "2 days ago".
+fn ago(t: SystemTime) -> String {
+    let s = t.elapsed().map_or(0, |d| d.as_secs());
+    match s {
+        0..60 => "just now".to_owned(),
+        60..3600 => format!("{} min ago", s / 60),
+        3600..86400 => format!("{} h ago", s / 3600),
+        _ => format!("{} days ago", s / 86400),
+    }
 }
 
 /// One plugin in an install waiting for the user's yes.
@@ -131,6 +166,19 @@ pub struct App {
     last_probe: Option<Instant>,
     /// Last known `[x, y, width, height]`, saved on exit.
     window: Option<[i32; 4]>,
+    /// When the index was last fetched (or the cached copy last written).
+    last_refresh: Option<SystemTime>,
+    /// Why the last index fetch failed, until one succeeds.
+    offline: Option<String>,
+    /// A newer manager than this one, from `manager.json` next to the index.
+    newer_manager: Option<mgrupdate::Latest>,
+    mgr_dismissed: bool,
+    mgr_tx: Sender<mgrupdate::Latest>,
+    mgr_rx: Receiver<mgrupdate::Latest>,
+    /// Plugin settings files opened for editing, by plugin id.
+    confs: HashMap<String, Conf>,
+    /// Interface scale in percent.
+    zoom_pct: u32,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -161,7 +209,21 @@ impl App {
 
     fn blank(settings: Settings) -> App {
         let (tx, rx) = channel();
+        let (mgr_tx, mgr_rx) = channel();
+        let filter = [Filter::All, Filter::NotInstalled, Filter::HasUpdate];
+        let sort = [Sort::Default, Sort::Name, Sort::Author];
         App {
+            tab: tab_of(settings.tab),
+            filter: filter[usize::from(settings.filter).min(2)],
+            sort: sort[usize::from(settings.sort).min(2)],
+            zoom_pct: if settings.zoom_pct == 0 { 100 } else { settings.zoom_pct },
+            last_refresh: None,
+            offline: None,
+            newer_manager: None,
+            mgr_dismissed: false,
+            mgr_tx,
+            mgr_rx,
+            confs: HashMap::new(),
             draft: settings.clone(),
             window: settings.window,
             settings,
@@ -169,10 +231,7 @@ impl App {
             root: None,
             share: None,
             view: View::default(),
-            tab: Tab::Installed,
             search: String::new(),
-            filter: Filter::All,
-            sort: Sort::Default,
             focus_search: false,
             consent: None,
             queue: Vec::new(),
@@ -236,6 +295,11 @@ impl App {
                     .map_err(|e| self.status = Some(Err(format!("not connected to an index: {e}"))))
                     .ok();
                 self.view = View::load(&root, self.session.as_deref());
+                self.last_refresh = std::fs::metadata(root.cache_dir().join("index.json"))
+                    .and_then(|m| m.modified())
+                    .ok();
+                self.offline = None;
+                self.confs.clear();
                 self.share =
                     Some(w2rpm_lib::share::Settings::load(&root.0).map_err(|e| e.to_string()));
                 self.root = Some(root);
@@ -267,6 +331,7 @@ impl App {
         let progress = self.progress.clone();
         let label = label.to_owned();
         let startup = std::mem::take(&mut self.startup_job);
+        let refresh = matches!(job, Job::Refresh);
         std::thread::spawn(move || {
             let result = jobs::run_with_progress(&session, &job, &mut |done, total| {
                 progress.done.store(done, Ordering::Relaxed);
@@ -280,6 +345,7 @@ impl App {
                 result,
                 view,
                 startup,
+                refresh,
             });
             ctx.request_repaint();
         });
@@ -504,16 +570,113 @@ impl App {
                             .index
                             .as_ref()
                             .and_then(|i| i.plugin(&p.id))
-                            .and_then(|pe| catalog::exact(pe, &p.version).map(|v| (pe, v)));
+                            .and_then(|pe| catalog::exact(pe, &p.version).map(|v| (pe.clone(), v.clone())));
+                        egui::CollapsingHeader::new("Settings")
+                            .id_salt(("conf", &p.id))
+                            .show(ui, |ui| self.plugin_settings_ui(ui, &p.id));
                         if let Some((pe, v)) = entry {
                             egui::CollapsingHeader::new("Details")
                                 .id_salt(("installed", &p.id))
-                                .show(ui, |ui| details_ui(ui, pe, v, &rows, true));
+                                .show(ui, |ui| details_ui(ui, &pe, &v, &rows, true));
                         }
                     });
                     ui.add_space(4.0);
                 }
             });
+    }
+
+    /// The plugin's `config\<id>.json`, as editable fields. The file has no schema (keys and
+    /// whole numbers or text), so the keys are shown as they are. The game writes these files itself,
+    /// so editing waits until it is closed.
+    fn plugin_settings_ui(&mut self, ui: &mut egui::Ui, id: &str) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if !self.confs.contains_key(id) {
+            let conf = match pluginconf::load(&root, id) {
+                Ok(v) => Conf {
+                    saved: v.clone(),
+                    draft: v,
+                    error: None,
+                },
+                Err(e) => Conf {
+                    saved: Vec::new(),
+                    draft: Vec::new(),
+                    error: Some(e.to_string()),
+                },
+            };
+            self.confs.insert(id.to_owned(), conf);
+        }
+        let running = self.game_running;
+        let mut save = false;
+        let mut reload = false;
+        if let Some(conf) = self.confs.get_mut(id) {
+            if let Some(e) = &conf.error {
+                ui.colored_label(theme::BAD, e);
+            } else if conf.draft.is_empty() {
+                ui.label(theme::muted(
+                    "Nothing saved yet. The plugin writes its settings the first time it runs.",
+                ));
+            }
+            ui.add_enabled_ui(!running, |ui| {
+                egui::Grid::new(("confgrid", id))
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        for (k, v) in &mut conf.draft {
+                            ui.label(theme::muted(k.replace('_', " ")))
+                                .on_hover_text(k.as_str());
+                            match v {
+                                Val::Int(n) => {
+                                    ui.add(egui::DragValue::new(n));
+                                }
+                                Val::Str(t) => {
+                                    if t.contains('\n') || t.len() > 60 {
+                                        let rows = t.lines().count().clamp(2, 9);
+                                        ui.add(
+                                            egui::TextEdit::multiline(t)
+                                                .desired_rows(rows)
+                                                .desired_width(420.0),
+                                        );
+                                    } else {
+                                        ui.add(egui::TextEdit::singleline(t).desired_width(260.0));
+                                    }
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+            let changed = conf.draft != conf.saved;
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(changed && !running, egui::Button::new("Save settings"))
+                    .clicked()
+                {
+                    save = true;
+                }
+                if ui.add_enabled(changed, egui::Button::new("Revert")).clicked() {
+                    reload = true;
+                }
+                if running {
+                    ui.label(theme::muted("Close the game to edit: it writes these itself."));
+                } else {
+                    ui.label(theme::muted("Applied the next time the game starts."));
+                }
+            });
+        }
+        if save && let Some(conf) = self.confs.get_mut(id) {
+            match pluginconf::save(&root, id, &conf.draft) {
+                Ok(()) => {
+                    conf.saved = conf.draft.clone();
+                    self.status = Some(Ok(format!("saved the settings of {id}")));
+                }
+                Err(e) => self.status = Some(Err(format!("could not save settings: {e}"))),
+            }
+        }
+        if reload {
+            self.confs.remove(id);
+        }
     }
 
     fn entry_of(&self, id: &str, v: &w2r_formats::semver::Version) -> Option<VersionEntry> {
@@ -693,6 +856,18 @@ impl App {
                         if ui.button("Open log").clicked() {
                             let log = self.root.as_ref().map(|r| r.0.join("logs").join("w2r.log"));
                             self.open(log);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(theme::muted("Interface scale"));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.zoom_pct, 70..=200)
+                                .suffix(" %")
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if ui.button("100 %").clicked() {
+                            self.zoom_pct = 100;
                         }
                     });
                     ui.add_space(4.0);
@@ -1101,6 +1276,15 @@ impl App {
             self.busy_target = None;
             self.view = done.view;
             let failed = done.result.is_err();
+            if done.refresh {
+                match &done.result {
+                    Ok(_) => {
+                        self.last_refresh = Some(SystemTime::now());
+                        self.offline = None;
+                    }
+                    Err(e) => self.offline = Some(e.clone()),
+                }
+            }
             if done.startup {
                 match done.result {
                     Ok(_) => {
@@ -1134,24 +1318,49 @@ impl App {
         if std::mem::take(&mut self.startup_pending) && self.session.is_some() {
             self.startup_job = true;
             self.start(ctx, "Checking for updates", Job::Refresh);
+            if let Some(s) = self.session.clone() {
+                let tx = self.mgr_tx.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    if let Some(l) =
+                        mgrupdate::newer(s.fetcher.as_ref(), &s.source.index_url, &s.manager)
+                    {
+                        let _ = tx.send(l);
+                        ctx.request_repaint();
+                    }
+                });
+            }
+        }
+        while let Ok(l) = self.mgr_rx.try_recv() {
+            self.newer_manager = Some(l);
+        }
+        let zoom = self.zoom_pct as f32 / 100.0;
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(zoom);
+        }
+        for (n, key) in [Key::Num1, Key::Num2, Key::Num3].into_iter().enumerate() {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, key)) {
+                self.tab = tab_of(n as u8);
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::R)) && self.busy.is_none() {
+            self.start(ctx, "Fetching the index", Job::Refresh);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.tab = Tab::Browse;
             self.focus_search = true;
         }
-        if self.tab == Tab::Settings {
-            let due = self
-                .last_probe
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(2));
-            if due {
-                self.game_running = match self.view.core.as_ref().map(|c| &c.game_dir) {
-                    Some(Ok(dir)) => jobs::game_running(dir),
-                    _ => false,
-                };
-                self.last_probe = Some(Instant::now());
-            }
-            ctx.request_repaint_after(Duration::from_secs(2));
+        let due = self
+            .last_probe
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(2));
+        if due {
+            self.game_running = match self.view.core.as_ref().map(|c| &c.game_dir) {
+                Some(Ok(dir)) => jobs::game_running(dir),
+                _ => false,
+            };
+            self.last_probe = Some(Instant::now());
         }
+        ctx.request_repaint_after(Duration::from_secs(2));
         self.track_window(ctx);
         // Look for the game's heading font whenever the game folder is first known or changes.
         let game_dir = self
@@ -1183,13 +1392,68 @@ impl App {
                 } else {
                     "Browse".to_owned()
                 };
+                let game_dir = self
+                    .view
+                    .core
+                    .as_ref()
+                    .and_then(|c| c.game_dir.clone().ok());
+                let mut launch = false;
                 ui.horizontal(|ui| {
                     ui.label(theme::heading("w2rpm", 22.0).color(theme::ACCENT));
                     ui.add_space(12.0);
                     ui.selectable_value(&mut self.tab, Tab::Installed, installed);
                     ui.selectable_value(&mut self.tab, Tab::Browse, browse);
                     ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hint = if game_dir.is_none() {
+                            "The game folder is not known yet: see Settings"
+                        } else if self.game_running {
+                            "The game is already running"
+                        } else {
+                            "Start the game through Battle.net (needed for multiplayer)"
+                        };
+                        launch = ui
+                            .add_enabled(
+                                game_dir.is_some() && !self.game_running,
+                                egui::Button::new("Launch game"),
+                            )
+                            .on_hover_text(hint)
+                            .on_disabled_hover_text(hint)
+                            .clicked();
+                    });
                 });
+                if launch {
+                    match jobs::launch_game() {
+                        Ok(()) => self.status = Some(Ok("starting the game".into())),
+                        Err(e) => self.status = Some(Err(e)),
+                    }
+                }
+                if let Some(e) = &self.offline {
+                    ui.horizontal_wrapped(|ui| {
+                        theme::badge(ui, "Offline", theme::WARN);
+                        ui.label(theme::muted(format!(
+                            "showing the cached index; the last fetch failed ({e})"
+                        )));
+                    });
+                }
+                if let Some(l) = self.newer_manager.clone().filter(|_| !self.mgr_dismissed) {
+                    ui.horizontal_wrapped(|ui| {
+                        theme::badge(ui, "New version", theme::GOOD);
+                        ui.label(format!(
+                            "w2rpm {} is available (this is {}).",
+                            l.version,
+                            self.session.as_ref().map_or_else(String::new, |s| s.manager.to_string())
+                        ));
+                        if ui.small_button("Get it").clicked()
+                            && let Err(e) = jobs::open_url(&l.url)
+                        {
+                            self.status = Some(Err(e));
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.mgr_dismissed = true;
+                        }
+                    });
+                }
             });
         egui::TopBottomPanel::bottom("status")
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 6)))
@@ -1208,6 +1472,10 @@ impl App {
                         let label = format!("Activity ({})", self.history.len());
                         if ui.selectable_label(self.show_history, label).clicked() {
                             self.show_history = !self.show_history;
+                        }
+                        if let Some(t) = self.last_refresh {
+                            ui.label(theme::muted(format!("Index updated {}", ago(t))))
+                                .on_hover_text("Ctrl+R fetches it again");
                         }
                     });
                 });
@@ -1405,6 +1673,18 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let mut s = self.settings.clone();
         s.window = self.window;
+        s.tab = tab_index(self.tab);
+        s.filter = match self.filter {
+            Filter::All => 0,
+            Filter::NotInstalled => 1,
+            Filter::HasUpdate => 2,
+        };
+        s.sort = match self.sort {
+            Sort::Default => 0,
+            Sort::Name => 1,
+            Sort::Author => 2,
+        };
+        s.zoom_pct = self.zoom_pct;
         let _ = s.save();
     }
 }

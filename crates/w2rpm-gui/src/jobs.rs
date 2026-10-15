@@ -397,6 +397,46 @@ pub fn open_path(path: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("could not open {}: {e}", path.display()))
 }
 
+/// Starts the game through the Battle.net app (product code `W2R`, case-sensitive). Started directly the game has no
+/// Battle.net connection, so no multiplayer. Falls back to the `battlenet://` link, which opens
+/// the game's page in the app.
+pub fn launch_game() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let found = ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"]
+            .iter()
+            .filter_map(|v| std::env::var_os(v))
+            .map(|d| std::path::PathBuf::from(d).join("Battle.net").join("Battle.net.exe"))
+            .find(|p| p.is_file());
+        if let Some(exe) = found {
+            return std::process::Command::new(exe)
+                .raw_arg("--exec=\"launch W2R\"")
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("could not start Battle.net: {e}"));
+        }
+    }
+    open_url("battlenet://W2R")
+}
+
+/// Opens an `https` link in the default browser. Explorer gets the link as one argument (no
+/// shell), and only plain `https` links are passed.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if url != "battlenet://W2R" && !w2rpm_lib::index::url_ok(url) {
+        return Err(format!("not a link I will open: {url}"));
+    }
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener)
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open {url}: {e}"))
+}
+
 #[cfg(test)]
 mod dep_tests {
     use super::*;

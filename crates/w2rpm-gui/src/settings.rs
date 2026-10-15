@@ -12,6 +12,21 @@ pub struct Settings {
     pub index_url: String,
     /// Last window position and size, `[x, y, width, height]` in points.
     pub window: Option<[i32; 4]>,
+    /// Last tab (0 Installed, 1 Browse, 2 Settings), Browse filter (0 all, 1 not installed,
+    /// 2 has update) and sort (0 default, 1 name, 2 author).
+    pub tab: u8,
+    pub filter: u8,
+    pub sort: u8,
+    /// Interface scale in percent; 0 means the default 100.
+    pub zoom_pct: u32,
+}
+
+/// A small enum index stored as a number; anything out of range is 0.
+fn small(v: &Value, key: &str, max: u64) -> u8 {
+    v.get(key)
+        .and_then(|x| x.as_number()?.as_u64())
+        .filter(|n| *n <= max)
+        .map_or(0, |n| n as u8)
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -30,6 +45,13 @@ impl Settings {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             index_url: str_of("index_url").unwrap_or_default(),
+            tab: small(&v, "tab", 2),
+            filter: small(&v, "filter", 2),
+            sort: small(&v, "sort", 2),
+            zoom_pct: v
+                .get("zoom_pct")
+                .and_then(|x| x.as_number()?.as_u64())
+                .map_or(0, |n| (n as u32).clamp(70, 200)),
             window: v.get("window").and_then(Value::as_array).and_then(|a| {
                 let n: Vec<i32> = a
                     .iter()
@@ -49,7 +71,12 @@ impl Settings {
                     .collect(),
             )
         });
+        let n = |x: u32| Value::Number(json::Number { text: x.to_string() });
         Value::Object(vec![
+            ("tab".into(), n(self.tab.into())),
+            ("filter".into(), n(self.filter.into())),
+            ("sort".into(), n(self.sort.into())),
+            ("zoom_pct".into(), n(self.zoom_pct)),
             ("window".into(), window),
             (
                 "root".into(),
@@ -113,6 +140,10 @@ mod tests {
             })),
             index_url: "https://example.org/index.json".into(),
             window: Some([10, -20, 800, 600]),
+            tab: 1,
+            filter: 2,
+            sort: 1,
+            zoom_pct: 120,
         };
         assert_eq!(Settings::parse(s.to_json().as_bytes()), Some(s));
     }
