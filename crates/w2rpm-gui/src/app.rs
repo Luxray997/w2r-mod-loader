@@ -860,16 +860,13 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.label(theme::muted("Interface scale"));
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.zoom_pct, 70..=200)
-                                .suffix(" %")
-                                .clamping(egui::SliderClamping::Always),
-                        );
-                        if ui.button("100 %").clicked() {
-                            self.zoom_pct = 100;
-                        }
-                    });
+                    egui::ComboBox::from_id_salt("zoom")
+                        .selected_text(format!("{} %", self.zoom_pct))
+                        .show_ui(ui, |ui| {
+                            for pct in [80, 90, 100, 110, 125, 150, 175, 200] {
+                                ui.selectable_value(&mut self.zoom_pct, pct, format!("{pct} %"));
+                            }
+                        });
                     ui.add_space(4.0);
                     ui.label(theme::muted("Index URL"));
                     ui.add(
@@ -904,7 +901,99 @@ impl App {
                 });
                 self.core_section(ui, ctx);
                 self.sharing_section(ui);
+                self.about_section(ui, ctx);
             });
+    }
+
+    /// What to paste into a bug report: versions, folders and the installed plugins.
+    fn diagnostics(&self) -> String {
+        use std::fmt::Write as _;
+        let mut t = String::new();
+        let manager = self
+            .session
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), |s| s.manager.to_string());
+        let _ = writeln!(t, "w2rpm {manager}");
+        if let Some(core) = &self.view.core {
+            let installed = match &core.installed {
+                Some(CoreInstalled::Missing) => "not installed".to_owned(),
+                Some(CoreInstalled::Foreign) => "another mod's version.dll".to_owned(),
+                Some(CoreInstalled::Ours(Some(v))) => v.to_string(),
+                Some(CoreInstalled::Ours(None)) => "older build (version unknown)".to_owned(),
+                None => "unknown".to_owned(),
+            };
+            let published = core
+                .published
+                .as_ref()
+                .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
+            let _ = writeln!(t, "core: {installed} (published: {published})");
+            match &core.game_dir {
+                Ok(d) => {
+                    let _ = writeln!(t, "game folder: {}", d.display());
+                }
+                Err(e) => {
+                    let _ = writeln!(t, "game folder: {e}");
+                }
+            }
+        }
+        if let Some(r) = &self.root {
+            let _ = writeln!(t, "w2r folder: {}", r.0.display());
+        }
+        if let Some(i) = &self.view.index {
+            let _ = writeln!(t, "index serial: {}", i.serial);
+        }
+        let _ = writeln!(t, "plugins ({}):", self.view.installed.len());
+        for p in &self.view.installed {
+            let _ = writeln!(
+                t,
+                "  {} {}{}{}",
+                p.id,
+                p.version,
+                if p.enabled { "" } else { " (disabled)" },
+                p.problem.as_ref().map_or_else(String::new, |x| format!(" PROBLEM: {x}")),
+            );
+        }
+        t
+    }
+
+    fn about_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        theme::section(ui, "About", |ui| {
+            let manager = self
+                .session
+                .as_ref()
+                .map_or_else(|| "unknown".to_owned(), |s| s.manager.to_string());
+            ui.horizontal(|ui| {
+                ui.label(theme::muted("Version"));
+                ui.label(RichText::new(format!("w2rpm {manager}")).strong());
+            });
+            ui.label(theme::muted("Made by Beau Hastings."));
+            ui.horizontal_wrapped(|ui| {
+                for (label, url) in [
+                    ("Manager source", "https://github.com/hastinbe/w2rpm"),
+                    ("Plugin repository", "https://github.com/hastinbe/w2r-plugins"),
+                ] {
+                    if ui.button(label).on_hover_text(url).clicked()
+                        && let Err(e) = jobs::open_url(url)
+                    {
+                        self.status = Some(Err(e));
+                    }
+                }
+                if ui
+                    .button("Copy diagnostics")
+                    .on_hover_text("Versions, folders and installed plugins, for a bug report")
+                    .clicked()
+                {
+                    ctx.copy_text(self.diagnostics());
+                    self.status = Some(Ok("diagnostics copied to the clipboard".into()));
+                }
+            });
+            ui.label(
+                theme::muted(
+                    "Headings use the game's Friz Quadrata and body text its Noto Sans, loaded from your game folder; neither is shipped with w2rpm.",
+                )
+                .small(),
+            );
+        });
     }
 
     /// The core mod (`version.dll` in the game folder): installed version, newest published,
