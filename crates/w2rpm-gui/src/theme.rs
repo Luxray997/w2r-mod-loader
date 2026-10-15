@@ -38,6 +38,7 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, HOVER);
     v.widgets.inactive.bg_fill = CARD;
     v.widgets.inactive.weak_bg_fill = HOVER;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(62, 67, 80));
     v.widgets.hovered.bg_fill = HOVER;
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(70, 76, 90);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
@@ -63,25 +64,52 @@ pub fn card() -> Frame {
 
 /// A small coloured label such as "Update available".
 pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
-    Frame::new()
-        .fill(color.gamma_multiply(0.22))
-        .stroke(Stroke::new(1.0_f32, color.gamma_multiply(0.7)))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).color(color).small());
-        });
+    tag(
+        ui,
+        RichText::new(text).color(color).small(),
+        color.gamma_multiply(0.22),
+        Some(Stroke::new(1.0_f32, color.gamma_multiply(0.7))),
+        CornerRadius::same(10),
+        Vec2::new(8.0, 2.0),
+    );
 }
 
 /// A neutral pill for a capability name.
 pub fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
-    Frame::new()
-        .fill(Color32::from_rgb(28, 30, 36))
-        .corner_radius(CornerRadius::same(4))
-        .inner_margin(Margin::symmetric(6, 1))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).color(color).small().monospace());
-        });
+    tag(
+        ui,
+        RichText::new(text).color(color).small().monospace(),
+        Color32::from_rgb(28, 30, 36),
+        None,
+        CornerRadius::same(4),
+        Vec2::new(6.0, 1.0),
+    );
+}
+
+/// A label on a rounded background, sized to its text exactly (a Frame stretches to the full
+/// height of a centred right-to-left row).
+fn tag(
+    ui: &mut egui::Ui,
+    text: RichText,
+    fill: Color32,
+    stroke: Option<Stroke>,
+    radius: CornerRadius,
+    pad: Vec2,
+) {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
+    ui.painter().rect_filled(rect, radius, fill);
+    if let Some(s) = stroke {
+        ui.painter()
+            .rect_stroke(rect, radius, s, egui::StrokeKind::Inside);
+    }
+    ui.painter()
+        .galley(rect.min + pad, galley, Color32::PLACEHOLDER);
 }
 
 pub fn muted(text: impl Into<String>) -> RichText {
