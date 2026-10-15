@@ -89,11 +89,11 @@ Only windows named with a `_screen`, `_menu`, `_popup`, `_panel`, `_overlay` suf
 checked, plus `login_prompt`. Dialogs built from string-table keys or unnamed widgets are not
 covered.
 
-## Debug hook (uncommitted)
+## How the states were probed
 
-`crates/w2r-core/src/devui.rs`, called from `frame.rs` after each window: every 30 frames it
-reads `<host root>\debug_ui.txt`, runs it and deletes it. Lines: `state <n>` calls
-`TransitionGameState`, `poke8 <static addr> <value>` writes a byte. The file must be plain
-ASCII or UTF-8 (a UTF-16 file from PowerShell `echo` is ignored and left in place); write it with
-bash `printf`. It does no checking of what it is told to do, so it is for development only; do not
-ship it.
+The states above were probed with a throwaway debug hook that is no longer in the tree. Every 30
+frames it read a `debug_ui.txt` file in the host root, ran it and deleted it. Lines: `state <n>`
+called `TransitionGameState`, `poke8 <static addr> <value>` wrote a byte. The file had to be plain
+ASCII or UTF-8 (a UTF-16 file from PowerShell `echo` was ignored), so it was written with bash
+`printf`. The hook did no checking of what it was told to do, which is why it was removed rather
+than kept. To probe a state again, write a similar hook locally and do not commit it.
