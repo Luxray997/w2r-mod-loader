@@ -191,6 +191,10 @@ pub struct Battle {
     pub y: u8,
     /// Bit `p` is set for each player who lost something.
     pub victims: u8,
+    /// Bit `p` is set for each player who lost something or took credit for a kill.
+    pub players: u8,
+    /// The player with the most losses and kills in it: the one to watch it from.
+    pub lead: u8,
 }
 
 struct Open {
@@ -202,6 +206,8 @@ struct Open {
     sum_x: u64,
     sum_y: u64,
     victims: u8,
+    /// Kills and losses per player.
+    involved: [u16; 8],
 }
 
 impl Open {
@@ -221,6 +227,17 @@ impl Open {
             x: x as u8,
             y: y as u8,
             victims: self.victims,
+            players: self
+                .involved
+                .iter()
+                .enumerate()
+                .fold(0u8, |m, (p, &n)| if n > 0 { m | 1 << p } else { m }),
+            lead: self
+                .involved
+                .iter()
+                .enumerate()
+                .max_by_key(|&(p, &n)| (n, core::cmp::Reverse(p)))
+                .map_or(0, |(p, _)| p as u8),
         }
     }
 }
@@ -258,7 +275,7 @@ pub fn battles(
         let o = match near {
             Some(i) => &mut open[i],
             None => {
-                open.push(Open { start: ev.turn, last: ev.turn, weight: 0, kills: 0, units: 0, sum_x: 0, sum_y: 0, victims: 0 });
+                open.push(Open { start: ev.turn, last: ev.turn, weight: 0, kills: 0, units: 0, sum_x: 0, sum_y: 0, victims: 0, involved: [0; 8] });
                 open.last_mut().unwrap()
             }
         };
@@ -270,6 +287,10 @@ pub fn battles(
         o.sum_y += u64::from(w) * ey as u64;
         if ev.victim < 8 {
             o.victims |= 1 << ev.victim;
+            o.involved[usize::from(ev.victim)] += 1;
+        }
+        if ev.killer < 8 {
+            o.involved[usize::from(ev.killer)] += 1;
         }
     }
     done.extend(open.iter().map(Open::close));
@@ -460,6 +481,26 @@ mod tests {
         assert_eq!(b[0].victims, 0b11);
         assert_eq!((b[1].start, b[1].x, b[1].y), (135, 90, 90));
         assert_eq!(b[2].start, 900);
+    }
+
+    #[test]
+    fn a_battle_knows_who_fought_and_who_to_watch_it_from() {
+        // players 2 and 3 fight; player 0 is nowhere near
+        let e = [
+            Event { turn: 100, kind: 0, killer: 3, victim: 2, unit_type: 0, x: 40, y: 40 },
+            Event { turn: 110, kind: 0, killer: 3, victim: 2, unit_type: 0, x: 41, y: 40 },
+            Event { turn: 120, kind: 0, killer: 2, victim: 3, unit_type: 0, x: 40, y: 41 },
+        ];
+        let b = battles(&e, 60, 12, 1, 0);
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].players, 0b1100);
+        assert_eq!(b[0].victims, 0b1100);
+        // 3 took two kills and one loss, 2 two losses and one kill: tied at 3, the lower slot wins
+        assert_eq!(b[0].lead, 2);
+        // player 3 also kills a unit of player 4 nearby: involved four times against player 2's three
+        let more = [e[0], e[1], e[2], Event { turn: 130, kind: 0, killer: 3, victim: 4, unit_type: 0, x: 40, y: 40 }];
+        let b = battles(&more, 60, 12, 1, 0);
+        assert_eq!((b[0].lead, b[0].players), (3, 0b11100));
     }
 
     #[test]

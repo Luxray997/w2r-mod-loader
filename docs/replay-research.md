@@ -236,6 +236,12 @@ and stays that way for the session. The thin progress bar is only drawn for reco
 timeline graph, which has its own playhead. The `,` key still explains that a replay cannot rewind
 but is no longer listed.
 
+Free-for-all fix (2026-10-14): a battle between other players can be on ground the watched player
+has never seen. A `Battle` now carries `players` (everyone with a loss or a kill in it) and `lead`
+(the most involved, lowest slot on a tie). On arriving at a jump, if the watched player is not in
+the battle and full vision is off, the view switches to `lead` (`viewer::watch`), whose fog map
+necessarily covers the fight. Home returns to the recorded player.
+
 Playback constraint: there are no savestates, so seeking forward is fast-forward with drawing off
 and seeking back is restart plus fast-forward.
 

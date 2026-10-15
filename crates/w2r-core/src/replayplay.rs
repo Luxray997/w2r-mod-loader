@@ -1125,7 +1125,19 @@ fn seek_active(a: &Addrs) -> bool {
     GOTO_X.store(x * 32 + 16, Ordering::Release);
     GOTO_Y.store(y * 32 + 16, Ordering::Release);
     GOTO_FRAMES.store(GOTO_FRAME_COUNT, Ordering::Release);
-    let count = PLAY.lock().ok().and_then(|g| g.as_ref().map(|p| p.battles.len())).unwrap_or(0);
+    let battle = PLAY
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| (p.battles.len(), p.battles.get(index as usize).copied())));
+    let (count, battle) = battle.unwrap_or((0, None));
+    // In a free-for-all the fight may be between other players, on ground the watched player has
+    // not seen. Watch it from one of the players in it, unless the whole map is already shown.
+    if let Some(b) = battle
+        && !crate::viewer::full_vision()
+        && crate::viewer::watching().is_none_or(|w| b.players & (1 << w) == 0)
+    {
+        crate::viewer::watch(b.lead);
+    }
     crate::viewer::say(&format!("Battle {} of {count}", index + 1));
     false
 }

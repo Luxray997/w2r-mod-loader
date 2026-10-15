@@ -225,6 +225,11 @@ pub fn watching() -> Option<u8> {
     }
 }
 
+/// Whether the whole map is shown (the Insert key), which needs no change of view to see a fight.
+pub fn full_vision() -> bool {
+    FULL_VISION.load(Ordering::Acquire)
+}
+
 /// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 rates,
 /// 3 none.
 pub fn board_mode() -> u8 {
