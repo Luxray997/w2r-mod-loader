@@ -223,7 +223,7 @@ pub fn load_game_font(ctx: &egui::Context, game_dir: Option<&std::path::Path>) -
         .and_then(|p| std::fs::read(p).ok())
         .filter(|b| b.len() < 4 << 20);
     let mut fonts = egui::FontDefinitions::default();
-    if let Some((bytes, scale)) = system_body_font() {
+    if let Some((bytes, scale)) = system_body_font(game_dir) {
         fonts.font_data.insert(
             "body".to_owned(),
             std::sync::Arc::new(egui::FontData::from_owned(bytes).tweak(egui::FontTweak {
@@ -275,19 +275,29 @@ pub fn use_heading_font(on: bool) {
     QUADRATA_LOADED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The body font, read from the Windows fonts folder (installed with Windows, so nothing is
-/// bundled), with a size correction for fonts that run small. `W2RPM_GUI_FONT` names another file
-/// there (for example `corbel.ttf`); anything missing leaves egui's default font.
-fn system_body_font() -> Option<(Vec<u8>, f32)> {
-    let name = std::env::var("W2RPM_GUI_FONT").unwrap_or_else(|_| "segoeui.ttf".to_owned());
+/// The body font, read from an installed font file (nothing is bundled), with a size correction
+/// for fonts that run small. By default Segoe UI from the Windows fonts folder. `W2RPM_GUI_FONT`
+/// names another file there (for example `corbel.ttf`), or one of the game's own with a `game:`
+/// prefix (`game:NotoSans-Regular.ttf`, from `Data\Font`); anything missing leaves egui's default.
+fn system_body_font(game_dir: Option<&std::path::Path>) -> Option<(Vec<u8>, f32)> {
+    let spec = std::env::var("W2RPM_GUI_FONT").unwrap_or_else(|_| "segoeui.ttf".to_owned());
+    let (from_game, name) = match spec.strip_prefix("game:") {
+        Some(n) => (true, n),
+        None => (false, spec.as_str()),
+    };
     if !name
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
     {
         return None;
     }
-    let windir = std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into());
-    let bytes = std::fs::read(std::path::Path::new(&windir).join("Fonts").join(&name)).ok()?;
+    let dir = if from_game {
+        game_dir?.join("Data").join("Font")
+    } else {
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into());
+        std::path::Path::new(&windir).join("Fonts")
+    };
+    let bytes = std::fs::read(dir.join(name)).ok()?;
     if bytes.len() > 16 << 20 {
         return None;
     }
