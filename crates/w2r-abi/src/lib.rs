@@ -279,6 +279,14 @@ pub struct W2rHost {
     /// `players` maximum players (0 = any) the screen's selected map.
     pub create_map_select:
         unsafe extern "C" fn(token: *mut c_void, players: u32, nth: u32) -> W2rStatus,
+
+    // Appended after the create-screen functions: check `struct_size >= W2R_HOST_MAP_FOLDER_SIZE`.
+    /// Only inside the create-screen callback. Limits `create_map_count` and `create_map_select`
+    /// of this callback to the maps in `folder` (a path under the maps folder, `\` or `/`
+    /// separated, subfolders included). An empty string removes the limit. The limit lasts until
+    /// the callback returns, so call this first, every frame. A folder with no maps gives a count
+    /// of 0.
+    pub create_map_folder: unsafe extern "C" fn(token: *mut c_void, folder: W2rStr) -> W2rStatus,
 }
 
 // ---- plugin table: returned by the plugin --------------------------------------------------
@@ -306,7 +314,10 @@ pub const W2R_PLUGIN_V1_SIZE: u32 = core::mem::size_of::<W2rPlugin>() as u32;
 pub const W2R_HOST_V1_SIZE: u32 =
     (core::mem::offset_of!(W2rHost, symbol_address) + core::mem::size_of::<usize>()) as u32;
 /// `struct_size` of a host that has the create-screen functions.
-pub const W2R_HOST_CREATE_UI_SIZE: u32 = core::mem::size_of::<W2rHost>() as u32;
+pub const W2R_HOST_CREATE_UI_SIZE: u32 =
+    (core::mem::offset_of!(W2rHost, create_map_select) + core::mem::size_of::<usize>()) as u32;
+/// `struct_size` of a host that also has `create_map_folder`.
+pub const W2R_HOST_MAP_FOLDER_SIZE: u32 = core::mem::size_of::<W2rHost>() as u32;
 
 // Mirrors tests/abi_layout.c. Keep both in sync.
 const _: () = {
@@ -340,10 +351,11 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 12);
         assert_eq!(size_of::<W2rPlugin>(), 20);
         assert_eq!(size_of::<W2rUi>(), 32);
-        assert_eq!(size_of::<W2rHost>(), 96);
+        assert_eq!(size_of::<W2rHost>(), 100);
         assert_eq!(W2R_HOST_V1_SIZE, 84);
         assert_eq!(W2R_PLUGIN_V1_SIZE, 20);
         assert_eq!(W2R_HOST_CREATE_UI_SIZE, 96);
+        assert_eq!(W2R_HOST_MAP_FOLDER_SIZE, 100);
     }
 
     // Not a shipping target, but the tests run here too; pointer alignment pads the u32 headers.
@@ -354,6 +366,6 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 16);
         assert_eq!(size_of::<W2rPlugin>(), 40);
         assert_eq!(size_of::<W2rUi>(), 64);
-        assert_eq!(size_of::<W2rHost>(), 192);
+        assert_eq!(size_of::<W2rHost>(), 200);
     }
 }

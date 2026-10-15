@@ -333,7 +333,7 @@ struct GamePicker<'a> {
 }
 
 impl MapPicker for GamePicker<'_> {
-    fn count(&mut self, players: u32) -> Result<u32, W2rStatus> {
+    fn count(&mut self, players: u32, folder: &str) -> Result<u32, W2rStatus> {
         let mut browser = self.screen.browser();
         let mut src = self.screen.view.source;
         if let Some(root) = crate::mapdownload::maps_root_string() {
@@ -347,12 +347,12 @@ impl MapPicker for GamePicker<'_> {
         if !browser.index_ready() {
             return Err(W2R_E_BUSY);
         }
-        Ok(browser.with_players(players).count() as u32)
+        Ok(browser.with_filter(players, folder).count() as u32)
     }
 
-    fn select(&mut self, players: u32, nth: u32) -> W2rStatus {
+    fn select(&mut self, players: u32, folder: &str, nth: u32) -> W2rStatus {
         let mut browser = self.screen.browser();
-        let Some(map) = browser.with_players(players).nth(nth as usize).cloned() else {
+        let Some(map) = browser.with_filter(players, folder).nth(nth as usize).cloned() else {
             return W2R_E_NOT_FOUND;
         };
         if self.screen.view.select_indexed(&mut browser, &map) {

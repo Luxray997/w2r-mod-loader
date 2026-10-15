@@ -544,7 +544,7 @@ mod tests {
         let (mut reg, log) = registry();
         let i = reg.load_entry("p", entry).unwrap();
         let h = unsafe { &*reg.slot(i).host() };
-        assert_eq!(h.struct_size, W2R_HOST_CREATE_UI_SIZE);
+        assert_eq!(h.struct_size, W2R_HOST_MAP_FOLDER_SIZE);
         assert_eq!(h.abi_version, W2R_ABI_VERSION);
 
         let long = "x".repeat(W2R_MAX_LOG_BYTES as usize + 1);

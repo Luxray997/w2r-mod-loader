@@ -182,9 +182,16 @@ typedef struct W2rHost {
     W2rStatus (W2R_CALL *create_map_count)(void *token, uint32_t players, uint32_t *count_out);
     /* Only inside that callback. Selects the nth (0-based) such map for the game being created. */
     W2rStatus (W2R_CALL *create_map_select)(void *token, uint32_t players, uint32_t nth);
+
+    /* Appended after those: check host->struct_size >= W2R_HOST_MAP_FOLDER_SIZE. Only inside the
+       create-screen callback. Limits create_map_count/create_map_select of this callback to the
+       maps in `folder` (under the maps folder, subfolders included); empty removes the limit. The
+       limit lasts until the callback returns, so call it first, every frame. */
+    W2rStatus (W2R_CALL *create_map_folder)(void *token, W2rStr folder);
 } W2rHost;
 
 #define W2R_HOST_CREATE_UI_SIZE (offsetof(W2rHost, create_map_select) + sizeof(void *))
+#define W2R_HOST_MAP_FOLDER_SIZE (offsetof(W2rHost, create_map_folder) + sizeof(void *))
 
 /* ---- plugin table: returned by the plugin ---------------------------------------------- */
 typedef struct W2rPlugin {

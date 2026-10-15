@@ -108,6 +108,12 @@ browser, and `affects_simulation` stays the plugin's own declaration.
   0-based and below the last count (`W2R_E_NOT_FOUND` otherwise, also for a map that vanished since
   indexing). A selection is exactly what Confirm in the map browser does: the game's map list is
   pointed at the map's folder and the map is selected for the game being created.
+- `create_map_folder(token, folder)` (appended again; `host->struct_size >=
+  W2R_HOST_MAP_FOLDER_SIZE`) limits `create_map_count` and `create_map_select` to the maps in
+  `folder` and its subfolders. `folder` is relative to the maps folder (`\` or `/`, case-insensitive,
+  whole folder names; empty removes the limit). The limit ends when the callback returns, so call it
+  first, every frame. `W2R_E_STATE` outside the callback; `W2R_E_INVALID` for `..`, a drive colon or
+  more than 200 bytes. A folder with no maps gives a count of 0.
 
 ## Strings and untrusted data
 

@@ -101,6 +101,14 @@ impl SizeFilter {
     }
 }
 
+/// True when `dir` is `folder` or lies below it (ASCII case-insensitive, whole components).
+fn in_folder(dir: &str, folder: &str) -> bool {
+    let (d, f) = (dir.as_bytes(), folder.as_bytes());
+    d.len() >= f.len()
+        && d[..f.len()].eq_ignore_ascii_case(f)
+        && (d.len() == f.len() || d[f.len()] == b'\\')
+}
+
 pub fn last_component(path: &str) -> &str {
     path.rsplit_once('\\').map_or(path, |(_, last)| last)
 }
@@ -261,6 +269,24 @@ impl Browser {
         self.index
             .iter()
             .filter(move |m| players == 0 || m.players == players)
+    }
+
+    /// The indexed maps with `players` maximum players (0 = any) that lie in `folder` (relative to
+    /// the maps root, `\` separated; "" = anywhere) or below it, in index order.
+    pub fn with_filter<'a>(
+        &'a self,
+        players: u32,
+        folder: &str,
+    ) -> impl Iterator<Item = &'a IndexedMap> + 'a {
+        let wanted = match (folder.is_empty(), self.maps_root.as_deref()) {
+            (true, _) => None,
+            (false, Some(root)) => Some(format!("{root}\\{folder}")),
+            (false, None) => Some(folder.to_owned()),
+        };
+        self.with_players(players).filter(move |m| match &wanted {
+            None => true,
+            Some(w) => in_folder(&m.rel_dir, w),
+        })
     }
 
     /// Fills the search index in one go (tests and callers that do not mind waiting); see
@@ -849,6 +875,36 @@ mod tests {
         assert_eq!(names(2), ["a", "c"]);
         assert_eq!(names(8), ["d"]);
         assert!(names(3).is_empty());
+    }
+
+    #[test]
+    fn with_filter_limits_to_a_folder_and_below() {
+        let map = |name: &str, dir: &str| IndexedMap {
+            name: name.into(),
+            path: format!("{dir}\\{name}.pud"),
+            desc: String::new(),
+            rel_dir: dir.into(),
+            players: 2,
+            dim: 64,
+        };
+        let mut b = Browser::default();
+        b.set_root("Maps");
+        b.index = vec![
+            map("a", "Maps"),
+            map("b", "Maps\\MP"),
+            map("c", "Maps\\mp\\Duels"),
+            map("d", "Maps\\MPold"),
+            map("e", "Maps\\Single"),
+        ];
+        let names = |folder| {
+            b.with_filter(0, folder)
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(""), ["a", "b", "c", "d", "e"]);
+        assert_eq!(names("mp"), ["b", "c"], "case-insensitive, whole components");
+        assert_eq!(names("MP\\Duels"), ["c"]);
+        assert!(names("nothing").is_empty());
     }
 
     #[test]

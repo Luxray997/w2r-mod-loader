@@ -292,7 +292,7 @@ impl Slot {
 
 fn host_table(token: *mut c_void) -> W2rHost {
     W2rHost {
-        struct_size: W2R_HOST_CREATE_UI_SIZE,
+        struct_size: W2R_HOST_MAP_FOLDER_SIZE,
         abi_version: W2R_ABI_VERSION,
         token,
         log: cb::log,
@@ -316,6 +316,7 @@ fn host_table(token: *mut c_void) -> W2rHost {
         create_ui_register: cb::create_ui_register,
         create_map_count: cb::create_map_count,
         create_map_select: cb::create_map_select,
+        create_map_folder: cb::create_map_folder,
     }
 }
 
@@ -734,6 +735,19 @@ mod cb {
         run(|| match enter(token) {
             Ok(_) => crate::createpick::select(players, nth),
             Err(e) => e,
+        })
+    }
+
+    /// docs/abi.md, "Create screen": limits this callback's map calls to one folder.
+    pub unsafe extern "C" fn create_map_folder(token: *mut c_void, folder: W2rStr) -> W2rStatus {
+        run(|| {
+            if let Err(e) = enter(token) {
+                return e;
+            }
+            match unsafe { text(folder) } {
+                Ok(f) => crate::createpick::set_folder(f),
+                Err(e) => e,
+            }
         })
     }
 
