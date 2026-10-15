@@ -275,15 +275,23 @@ pub fn use_heading_font(on: bool) {
     QUADRATA_LOADED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The body font, read from an installed font file (nothing is bundled), with a size correction
-/// for fonts that run small. By default Segoe UI from the Windows fonts folder. `W2RPM_GUI_FONT`
-/// names another file there (for example `corbel.ttf`), or one of the game's own with a `game:`
-/// prefix (`game:NotoSans-Regular.ttf`, from `Data\Font`); anything missing leaves egui's default.
+/// The body font, read from an installed font file (nothing is bundled): Noto Sans from the
+/// game's `Data\Font` when the game folder is known, else Segoe UI from the Windows fonts folder.
+/// `W2RPM_GUI_FONT` forces one: a file name in the Windows fonts folder (`corbel.ttf`), or one of
+/// the game's with a `game:` prefix (`game:NotoSans-Regular.ttf`). Anything missing leaves egui's
+/// default font.
 fn system_body_font(game_dir: Option<&std::path::Path>) -> Option<(Vec<u8>, f32)> {
-    let spec = std::env::var("W2RPM_GUI_FONT").unwrap_or_else(|_| "segoeui.ttf".to_owned());
+    match std::env::var("W2RPM_GUI_FONT") {
+        Ok(spec) => read_font(&spec, game_dir),
+        Err(_) => read_font("game:NotoSans-Regular.ttf", game_dir)
+            .or_else(|| read_font("segoeui.ttf", game_dir)),
+    }
+}
+
+fn read_font(spec: &str, game_dir: Option<&std::path::Path>) -> Option<(Vec<u8>, f32)> {
     let (from_game, name) = match spec.strip_prefix("game:") {
         Some(n) => (true, n),
-        None => (false, spec.as_str()),
+        None => (false, spec),
     };
     if !name
         .bytes()
