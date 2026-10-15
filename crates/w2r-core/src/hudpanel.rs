@@ -68,6 +68,14 @@ const ROW_HEIGHT: f32 = 12.0;
 const MARGIN_RIGHT: f32 = 24.0;
 const TOP: f32 = 22.0;
 const BAR_HEIGHT: f32 = 6.0;
+/// The combat timeline sits above the progress bar when a recording has combat events: this much
+/// is added to everything below the header line.
+const GRAPH_EXTRA: f32 = 16.0;
+const GRAPH_HEIGHT: f32 = 14.0;
+const GRAPH_QUIET: u32 = rgba(90, 78, 56, 255);
+const GRAPH_PLAYED: u32 = rgba(226, 124, 60, 255);
+const GRAPH_AHEAD: u32 = rgba(150, 70, 48, 255);
+const PLAYHEAD: u32 = rgba(255, 244, 200, 255);
 const MAX_UNITS: usize = 4096;
 
 const BACKGROUND: u32 = rgba(12, 9, 6, 200);
@@ -233,9 +241,10 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
                 .record(pace.game_ms, mined);
         }
         let board = (mode < 3).then_some(rows);
+        let header = header_height(&pace);
         let height = match &board {
-            Some(rows) => HEADER_HEIGHT + ROW_HEIGHT * (rows.len() as f32 + 1.0) + 4.0,
-            None => HEADER_HEIGHT,
+            Some(rows) => header + ROW_HEIGHT * (rows.len() as f32 + 1.0) + 4.0,
+            None => header,
         };
         let x = ((panel.ui_width)() - MARGIN_RIGHT - WIDTH).max(0.0);
         if begin(ctx, c"replay_panel".as_ptr(), x, TOP, WIDTH, height, WINDOW_FLAGS) != 0 {
@@ -248,6 +257,47 @@ pub unsafe fn before_hud(ctx: *mut c_void, begin: BeginFn) {
     if let Err(fault) = result {
         crate::session::host_fault("replay panel", &fault);
     }
+}
+
+/// Extra header height for the timeline graph, when there is one to draw.
+fn extra(pace: &Pace) -> f32 {
+    if !pace.live && !pace.graph.is_empty() { GRAPH_EXTRA } else { 0.0 }
+}
+
+/// The header's height: the timeline graph and its third row of key hints add to it.
+fn header_height(pace: &Pace) -> f32 {
+    let extra = extra(pace);
+    HEADER_HEIGHT + extra + if extra > 0.0 { ROW_HEIGHT + 2.0 } else { 0.0 }
+}
+
+/// The combat timeline: one bar per slice of the recording, taller where more was lost, the part
+/// already played in a warm colour and the rest darker, with a line at the playhead. `x` is the
+/// window's left edge in screen coordinates.
+fn draw_graph(kit: &Kit, pace: &Pace, x: f32) {
+    let n = pace.graph.len();
+    if n == 0 {
+        return;
+    }
+    let area = Rect::new(x + 6.0, TOP + 18.0, WIDTH - 12.0, GRAPH_HEIGHT);
+    kit.fill_rect(area, TRACK);
+    let fraction = if pace.total == 0 { 0.0 } else { pace.turn as f32 / pace.total as f32 };
+    let slot_w = area.w / n as f32;
+    for (i, &h) in pace.graph.iter().enumerate() {
+        let played = ((i + 1) as f32 / n as f32) <= fraction;
+        let colour = match (h, played) {
+            (0, _) => GRAPH_QUIET,
+            (_, true) => GRAPH_PLAYED,
+            (_, false) => GRAPH_AHEAD,
+        };
+        // quiet stretches get a hairline so the whole length of the game reads as a track
+        let bar_h = if h == 0 { 2.0 } else { 2.0 + (GRAPH_HEIGHT - 2.0) * f32::from(h) / 255.0 };
+        let left = area.x + i as f32 * slot_w;
+        kit.fill_rect(Rect::new(left, area.y + GRAPH_HEIGHT - bar_h, (slot_w - 1.0).max(1.0), bar_h), colour);
+    }
+    kit.fill_rect(
+        Rect::new((area.x + area.w * fraction - 1.0).max(area.x), area.y - 2.0, 2.0, GRAPH_HEIGHT + 4.0),
+        PLAYHEAD,
+    );
 }
 
 /// One scoreboard row, read from the game's tables.
@@ -374,8 +424,10 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     } else {
         pace.turn as f32 / pace.total as f32
     };
+    let extra = extra(pace);
+    draw_graph(kit, pace, x);
     if !pace.live {
-        let bar = Rect::new(x + 6.0, TOP + 19.0, WIDTH - 12.0, BAR_HEIGHT);
+        let bar = Rect::new(x + 6.0, TOP + 19.0 + extra, WIDTH - 12.0, BAR_HEIGHT);
         kit.fill_rect(bar, TRACK);
         let colour = if pace.paused || pace.ended {
             FILL_PAUSED
@@ -387,6 +439,8 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
 
     let state = if pace.live {
         "OBSERVING".to_string()
+    } else if pace.seeking {
+        "JUMPING TO BATTLE".to_string()
     } else if pace.ended {
         "FINISHED".to_string()
     } else if pace.paused {
@@ -413,7 +467,7 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
     );
     if pace.ended {
         kit.label_at(
-            Rect::new(0.0, 28.0, WIDTH, 14.0),
+            Rect::new(0.0, 28.0 + extra, WIDTH, 14.0),
             "Open the menu to leave",
             ALIGN_CENTRE,
         );
@@ -425,17 +479,20 @@ fn draw(pace: &Pace, board: Option<&[Row]>, mode: u8, x: f32, height: f32) {
             &[("[ ]", "player"), ("Home", "all"), ("Ins", "vision"), (";", "follow")],
         );
     } else {
-        hint_row(kit, 28.0, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
+        hint_row(kit, 28.0 + extra, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
         hint_row(
             kit,
-            42.0,
+            42.0 + extra,
             &[("[ ]", "player"), ("Home", "own"), ("Ins", "vision"), (";", "follow")],
         );
+        if extra > 0.0 {
+            hint_row(kit, 56.0 + extra, &[(".", "next battle"), (",", "earlier (restart)")]);
+        }
     }
 
     let Some(rows) = board else { return };
     let watching = viewer::watching();
-    let top = HEADER_HEIGHT;
+    let top = header_height(pace);
     let columns: &[(f32, f32, &str)] = match mode {
         1 => &TOTAL_COLUMNS,
         2 => &RATE_COLUMNS,

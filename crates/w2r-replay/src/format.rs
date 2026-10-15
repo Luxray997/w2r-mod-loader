@@ -8,6 +8,7 @@
 //!   0x02 u8 results[8], u32 turns, u32 sync_mismatch       footer
 //!   0x03 varint turn, u8 who, u8 mode, varint duration_ms, varint len, len text bytes   chat
 //!   0x04 varint turn, varint x, varint y      the recorded player's camera centre (map pixels), when it moved
+//!   0x05 varint turn, u8 kind, u8 killer, u8 victim, u8 unit_type, u8 tile_x, u8 tile_y   a kill (see `Event`)
 //! ```
 //!
 //! The file is valid at every moment. A footer is written as soon as the match has a result and
@@ -24,6 +25,7 @@ pub const REC_TURN: u8 = 0x01;
 pub const REC_FOOTER: u8 = 0x02;
 pub const REC_CHAT: u8 = 0x03;
 pub const REC_CAMERA: u8 = 0x04;
+pub const REC_EVENT: u8 = 0x05;
 /// Longest chat text kept (the game sends at most 0x50 bytes, a local line can be longer).
 pub const MAX_CHAT: usize = 255;
 

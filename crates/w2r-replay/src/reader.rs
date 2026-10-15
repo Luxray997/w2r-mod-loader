@@ -5,7 +5,7 @@ use w2r_stats::slot::{self, SLOT_LEN, SLOTS};
 
 use crate::format::{
     Footer, Header, LOBBY_LEN, MAGIC, SLOT_BACKUP_LEN, MAX_CHAT, MAX_HEADER, MAX_PACKET, MAX_TEXT, NAMES_LEN,
-    OWNER_LEN, REC_CAMERA, REC_CHAT, REC_FOOTER, REC_TURN, VERSION,
+    OWNER_LEN, REC_CAMERA, REC_CHAT, REC_EVENT, REC_FOOTER, REC_TURN, VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +35,23 @@ pub struct Camera {
     pub y: u32,
 }
 
+/// A kill: `killer` made `victim` lose a unit or a building (see `Writer::event`). Positions are
+/// map tiles. Self-kills are not recorded by the game, so every event is one side hurting another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Event {
+    /// The turn that was next to run when it happened.
+    pub turn: u32,
+    /// Zero for a unit, one for a building.
+    pub kind: u8,
+    /// The player who got the credit and the player who lost the unit.
+    pub killer: u8,
+    pub victim: u8,
+    /// The game's unit type id of what was lost.
+    pub unit_type: u8,
+    pub x: u8,
+    pub y: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replay {
     pub header: Header,
@@ -43,6 +60,8 @@ pub struct Replay {
     pub chats: Vec<Chat>,
     /// The recorded player's camera, in order. Empty in recordings made before it was kept.
     pub cameras: Vec<Camera>,
+    /// Kills in order. Empty in recordings made before they were kept.
+    pub events: Vec<Event>,
     /// The last footer: present once the match produced a result or the recording was closed.
     pub footer: Option<Footer>,
 }
@@ -184,6 +203,24 @@ fn camera_record(r: &mut Cur) -> Option<Camera> {
     })
 }
 
+/// One event record after its tag byte; `None` if it is cut off or invalid.
+fn event_record(r: &mut Cur) -> Option<Event> {
+    let turn = u32::try_from(r.varint()?).ok()?;
+    let kind = r.u8()?;
+    if kind > 1 {
+        return None;
+    }
+    Some(Event {
+        turn,
+        kind,
+        killer: r.u8()?,
+        victim: r.u8()?,
+        unit_type: r.u8()?,
+        x: r.u8()?,
+        y: r.u8()?,
+    })
+}
+
 /// One turn record after its tag byte; `None` if it is cut off or invalid.
 fn turn_record(r: &mut Cur, after: Option<u32>) -> Option<Turn> {
     let turn = u32::try_from(r.varint()?).ok()?;
@@ -237,6 +274,7 @@ impl Replay {
         let mut footer = None;
         let mut chats: Vec<Chat> = Vec::new();
         let mut cameras: Vec<Camera> = Vec::new();
+        let mut events: Vec<Event> = Vec::new();
         // Each record is read from a copy of the cursor, so a cut-off one is dropped whole.
         loop {
             let mut r = c;
@@ -265,6 +303,10 @@ impl Replay {
                     Some(cam) => cameras.push(cam),
                     None => break,
                 },
+                Some(REC_EVENT) => match event_record(&mut r) {
+                    Some(ev) => events.push(ev),
+                    None => break,
+                },
                 _ => break,
             }
             c = r;
@@ -274,6 +316,7 @@ impl Replay {
             turns,
             chats,
             cameras,
+            events,
             footer,
         })
     }

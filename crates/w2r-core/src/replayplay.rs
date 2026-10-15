@@ -70,6 +70,23 @@ static STEP: AtomicBool = AtomicBool::new(false);
 /// The recording has run out; the game is held there until the player leaves.
 static ENDED: AtomicBool = AtomicBool::new(false);
 static SPEED: AtomicU8 = AtomicU8::new(NORMAL_SPEED);
+/// The turn a battle jump is fast-forwarding to; `NO_SEEK` when none.
+static SEEK_TO: AtomicU32 = AtomicU32::new(NO_SEEK);
+const NO_SEEK: u32 = u32::MAX;
+/// The battle being jumped to: `index << 16 | tile x << 8 | tile y`.
+static SEEK_INFO: AtomicU32 = AtomicU32::new(0);
+/// Frames left of easing the view to the battle after arriving, and where (map pixels).
+static GOTO_FRAMES: AtomicU32 = AtomicU32::new(0);
+static GOTO_X: AtomicU32 = AtomicU32::new(0);
+static GOTO_Y: AtomicU32 = AtomicU32::new(0);
+/// A jump runs the turns this many times faster than normal; the frame rate and the game's own
+/// work per turn decide how fast that really is.
+const SEEK_SPEED: f32 = 200.0;
+/// A jump lands this many turns before the battle starts (about six seconds) so it is seen coming.
+const LEAD_IN: u32 = 100;
+/// Bars in the timeline graph.
+const GRAPH_BUCKETS: usize = 70;
+const GOTO_FRAME_COUNT: u32 = 90;
 /// The tick deadline as playback left it, to tell how far the game moved it on.
 static LAST_DEADLINE: AtomicU32 = AtomicU32::new(0);
 /// Game time played so far (ms at the game's own pace, whatever the playback speed).
@@ -119,6 +136,10 @@ struct Play {
     next_chat: usize,
     /// Running totals of what each slot did on purpose, by turn.
     actions: Vec<[u32; 8]>,
+    /// The fights found in the recorded combat events, and the timeline bar heights (empty when
+    /// the recording has no events).
+    battles: Vec<w2r_replay::heat::Battle>,
+    graph: Vec<u8>,
 }
 
 fn log(level: u32, text: &str) {
@@ -539,7 +560,19 @@ fn arm(a: &Addrs, live: Vec<u8>) {
                 *r = Some(live);
             }
             if let Ok(mut p) = PLAY.lock() {
+                let total = replay.turns.len() as u32;
+                let graph = if replay.events.is_empty() {
+                    Vec::new()
+                } else {
+                    w2r_replay::heat::graph(&w2r_replay::heat::intensity(
+                        &replay.events,
+                        total,
+                        GRAPH_BUCKETS,
+                    ))
+                };
                 *p = Some(Play {
+                    battles: w2r_replay::heat::detect(&replay.events),
+                    graph,
                     actions: replay.action_totals(),
                     replay,
                     name,
@@ -866,6 +899,8 @@ fn live_pace() -> Option<Pace> {
         total: 0,
         live: true,
         auto: AUTO.load(Ordering::Acquire),
+        graph: Vec::new(),
+        seeking: false,
     })
 }
 
@@ -889,8 +924,13 @@ const KEY_SLOWER: u16 = 2;
 const KEY_PAUSE: u16 = 4;
 const KEY_STEP: u16 = 8;
 const KEY_FOLLOW: u16 = 16;
-/// Backslash, Page Up, Page Down, End and Delete (the view keys are in `viewer.rs`).
-const WATCHED: [(u16, i32); 5] = [
+const KEY_NEXT_BATTLE: u16 = 32;
+const KEY_PREV_BATTLE: u16 = 64;
+/// Backslash, Page Up, Page Down, End, Delete, period and comma (the view keys are in
+/// `viewer.rs`).
+const WATCHED: [(u16, i32); 7] = [
+    (KEY_NEXT_BATTLE, 0xBE),
+    (KEY_PREV_BATTLE, 0xBC),
     (KEY_FOLLOW, 0xBA),
     (KEY_FASTER, 0x21),
     (KEY_SLOWER, 0x22),
@@ -916,6 +956,10 @@ pub struct Pace {
     pub live: bool,
     /// The auto-director is choosing who to watch.
     pub auto: bool,
+    /// Timeline bar heights (0..=255) across the whole recording; empty without combat events.
+    pub graph: Vec<u8>,
+    /// A battle jump is fast-forwarding.
+    pub seeking: bool,
 }
 
 pub fn pace() -> Option<Pace> {
@@ -935,6 +979,8 @@ pub fn pace() -> Option<Pace> {
         total,
         live: false,
         auto: false,
+        graph: PLAY.lock().ok()?.as_ref()?.graph.clone(),
+        seeking: SEEK_TO.load(Ordering::Acquire) != NO_SEEK,
     })
 }
 
@@ -960,6 +1006,82 @@ pub fn actions_per_minute(slot: u8) -> Option<u32> {
         0
     };
     Some((u64::from(now - before) * 60_000 / (window as u64 * per_turn_ms as u64)) as u32)
+}
+
+/// Whether a battle jump is still fast-forwarding. When the turn it was heading for is reached it
+/// ends: play carries on at the normal speed, the follow of the recorded camera is turned off and
+/// the view eases to the battle.
+fn seek_active(a: &Addrs) -> bool {
+    let target = SEEK_TO.load(Ordering::Acquire);
+    if target == NO_SEEK {
+        return false;
+    }
+    // SAFETY: a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) };
+    if turn < target {
+        return true;
+    }
+    SEEK_TO.store(NO_SEEK, Ordering::Release);
+    let info = SEEK_INFO.load(Ordering::Acquire);
+    let (index, x, y) = (info >> 16, (info >> 8) & 0xff, info & 0xff);
+    PAUSED.store(false, Ordering::Release);
+    FOLLOW.store(false, Ordering::Release);
+    LAST_DEADLINE.store(0, Ordering::Release);
+    GOTO_X.store(x * 32 + 16, Ordering::Release);
+    GOTO_Y.store(y * 32 + 16, Ordering::Release);
+    GOTO_FRAMES.store(GOTO_FRAME_COUNT, Ordering::Release);
+    let count = PLAY.lock().ok().and_then(|g| g.as_ref().map(|p| p.battles.len())).unwrap_or(0);
+    crate::viewer::say(&format!("Battle {} of {count}", index + 1));
+    false
+}
+
+/// A battle key: `forward` jumps to the next fight (fast-forwarding to a little before it starts),
+/// otherwise says why going back is not possible. The game cannot run turns backwards, so an
+/// earlier fight means playing the recording again from the start.
+fn battle_jump(a: &Addrs, forward: bool) {
+    let Ok(guard) = PLAY.lock() else { return };
+    let Some(play) = guard.as_ref() else { return };
+    if play.battles.is_empty() {
+        let why = if play.graph.is_empty() {
+            "This recording has no combat events (made before they were kept)"
+        } else {
+            "No battles in this recording"
+        };
+        drop(guard);
+        crate::viewer::say(why);
+        return;
+    }
+    if !forward {
+        drop(guard);
+        crate::viewer::say("A replay cannot rewind: restart it to see an earlier fight");
+        return;
+    }
+    // From where the last jump is heading, so pressing again skips on to the following fight.
+    let seeking = SEEK_TO.load(Ordering::Acquire);
+    // SAFETY: a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) };
+    let base = if seeking == NO_SEEK { turn } else { seeking };
+    let Some(b) = w2r_replay::heat::jump(&play.battles, base, true, LEAD_IN).copied() else {
+        drop(guard);
+        crate::viewer::say("No more battles");
+        return;
+    };
+    let index = play.battles.iter().position(|x| x.start == b.start).unwrap_or(0) as u32;
+    drop(guard);
+    SEEK_INFO.store(index << 16 | u32::from(b.x) << 8 | u32::from(b.y), Ordering::Release);
+    SEEK_TO.store(b.start.saturating_sub(LEAD_IN), Ordering::Release);
+    PAUSED.store(false, Ordering::Release);
+}
+
+/// Once per frame after a battle jump arrived: eases the view onto the fight for a moment.
+fn goto_camera() {
+    let frames = GOTO_FRAMES.load(Ordering::Acquire);
+    if frames == 0 {
+        return;
+    }
+    GOTO_FRAMES.store(frames - 1, Ordering::Release);
+    let Some(a) = ADDRS.get() else { return };
+    ease_view_to(a, (GOTO_X.load(Ordering::Acquire), GOTO_Y.load(Ordering::Acquire)));
 }
 
 fn change_speed(by: i8) {
@@ -992,12 +1114,18 @@ pub fn hold_turn() -> bool {
             return true;
         }
     }
-    if PAUSED.load(Ordering::Acquire) && !STEP.swap(false, Ordering::AcqRel) {
+    // A battle jump runs on through a pause until it arrives.
+    let seeking = ADDRS.get().is_some_and(seek_active);
+    if !seeking && PAUSED.load(Ordering::Acquire) && !STEP.swap(false, Ordering::AcqRel) {
         return true;
     }
     let _ = guarded(|| {
         let Some(a) = ADDRS.get() else { return };
-        let speed = SPEEDS[SPEED.load(Ordering::Acquire) as usize];
+        let speed = if seeking {
+            SEEK_SPEED
+        } else {
+            SPEEDS[SPEED.load(Ordering::Acquire) as usize]
+        };
         // SAFETY: a u32 in the game's data section, touched on the main thread between ticks.
         unsafe {
             let at = a.deadline as *mut u32;
@@ -1055,6 +1183,7 @@ pub fn poll() {
     let _ = guarded(crate::viewer::poll_keys);
     let _ = guarded(poll_keys);
     let _ = guarded(follow_camera);
+    let _ = guarded(goto_camera);
 }
 
 /// Once per frame: moves the map view towards where the recorded player was looking at this
@@ -1240,6 +1369,11 @@ fn poll_keys() {
         PAUSED.store(true, Ordering::Release);
         STEP.store(true, Ordering::Release);
     }
+    if pressed & (KEY_NEXT_BATTLE | KEY_PREV_BATTLE) != 0 {
+        if let Some(a) = ADDRS.get() {
+            battle_jump(a, pressed & KEY_NEXT_BATTLE != 0);
+        }
+    }
     if pressed & KEY_FOLLOW != 0 {
         let has_camera = PLAY
             .lock()
@@ -1267,6 +1401,8 @@ fn reset_replay() {
     ENDED.store(false, Ordering::Release);
     LAST_DEADLINE.store(0, Ordering::Release);
     GAME_MS.store(0, Ordering::Release);
+    SEEK_TO.store(NO_SEEK, Ordering::Release);
+    GOTO_FRAMES.store(0, Ordering::Release);
 }
 
 /// Stops driving the game; the live game carries on with its own input.

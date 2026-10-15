@@ -8,11 +8,12 @@ pub mod camera;
 pub mod catalog;
 pub mod chat;
 pub mod format;
+pub mod heat;
 pub mod packet;
 pub mod reader;
 pub mod upload;
 pub mod writer;
 
 pub use format::{Footer, Header};
-pub use reader::{Camera, Chat, Replay, Turn};
+pub use reader::{Camera, Chat, Event, Replay, Turn};
 pub use writer::Writer;

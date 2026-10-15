@@ -81,6 +81,25 @@ fn main() {
             String::from_utf8_lossy(&c.text)
         );
     }
+    println!("combat events: {}", r.events.len());
+    for p in 0..8u8 {
+        let by = |kind| r.events.iter().filter(|e| e.killer == p && e.kind == kind).count();
+        let lost = |kind| r.events.iter().filter(|e| e.victim == p && e.kind == kind).count();
+        if by(0) + by(1) + lost(0) + lost(1) > 0 {
+            println!(
+                "  player {p}: killed {} units, razed {} buildings; lost {} units, {} buildings",
+                by(0), by(1), lost(0), lost(1)
+            );
+        }
+    }
+    let total = r.footer.map_or_else(|| r.turns.last().map_or(0, |t| t.turn + 1), |f| f.turns);
+    println!("  intensity over time (20 buckets): {:?}", w2r_replay::heat::intensity(&r.events, total, 20));
+    for b in w2r_replay::heat::detect(&r.events) {
+        println!(
+            "  battle turns {}..{} weight {} kills {} ({} units) at tile ({}, {}) losses by players {:08b}",
+            b.start, b.end, b.weight, b.kills, b.units, b.x, b.y, b.victims
+        );
+    }
     for (t, s, d) in sample_left {
         println!("  unparsed sample turn {t} slot {s}: {d:02x?}");
     }

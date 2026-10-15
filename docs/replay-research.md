@@ -41,7 +41,7 @@ checksum: during playback it gives free desync detection.
 
 ## Open items (needs more Ghidra / in-game)
 
-1. **RNG seed — FOUND (2026-10-10, recorded since; verify in game).** See "RNG" below. Original note: **RNG seed.** The simulation is only reproducible if the PRNG state at match start is recorded.
+1. **RNG seed ï¿½ FOUND (2026-10-10, recorded since; verify in game).** See "RNG" below. Original note: **RNG seed.** The simulation is only reproducible if the PRNG state at match start is recorded.
    Not found yet (also open in `stats-reporting.md`). Find the RNG function (callers in unit
    movement / damage), its state global, and where match start seeds it (0x4d6a60 region).
 2. **Start state.** Map hash/path, slot table (0x916260, stride 0x26), options/scheme, game speed,
@@ -183,6 +183,43 @@ centre x, centre y in map pixels), only when it moved. Scroll = `CameraScrollX/Y
 0x4afd00. Playback (`replayplay::follow_camera`, once per frame) eases towards the sample in force
 at `NetTurnCounter`, only while the recorded player is the one watched; `\` toggles it. Pure part:
 `w2r-replay/src/camera.rs`. Hint rows on the HUD panel draw the key in yellow.
+
+## Combat events (2026-10-14)
+
+For the timeline, jump-to-battle and heat map the recorder needs where and when fights happened,
+which the order packets do not say. Ghidra, build 2818:
+
+- Every kill is credited by **`KillCredit` 0x4def00**, cdecl `(u8 killer_player, unit* victim)`,
+  called from exactly one place (the lethal-damage code `FUN_004bd8f0`, after `hp <= damage`). It does
+  nothing when killer == victim owner, adds 1 to `ScoreUnitsKilled` (victim type < 0x3a) or
+  `ScoreBuildingsRazed`, and adds the victim type's point value (UDTA table 0x9184a0) to the
+  killer's score at 0x9193a8.
+- Lost counters are bumped separately by per-type callbacks (tables at 0x8c0ef0..0x8c107c; code
+  0x4b5090/50b0/50e0/5120/5160), so `KillCredit` is the better hook: one place, has the killer.
+- Unit struct (stride 0x98): map pixels x, y as two i16 at +0 and +2 (32 per tile), type id +0x27,
+  owner +0x2c, flags +0x1e.
+
+Record `0x05` (turn, kind 0 unit / 1 building, killer, victim, unit type, tile x, tile y) is written
+by `combatrec.rs` (hook, reads the victim before running the original) through
+`replayrec::note_event`. It is never replayed: the sim kills the same units again by itself.
+`w2r-replay/src/heat.rs` holds the pure part: `kill_event`, `grid` / `grid_between` (+ `blurred`,
+`bytes`) for the heat map, `intensity` for the timeline, `battles` (kills close in time and place
+joined into fights) and `jump` for next/previous battle. `inspect` prints event count, intensity and
+battles. Old recordings have no events. Not yet run in game.
+
+Timeline and battle jump (written 2026-10-14, first test pending): the HUD panel draws a bar graph
+of kill weight across the recording (`heat::graph`, 70 bars, played part warm, playhead line) above
+the progress bar when the recording has events. `.` jumps forward to the next battle
+(`heat::detect`: gap 150 turns, radius 14 tiles, min weight 8): playback fast-forwards (the tick
+deadline is stretched as for the speed keys, `SEEK_SPEED` 200, ignoring pause) to 100 turns before
+the fight starts, then plays on at normal speed, turns the camera follow off and eases the view onto
+the fight, saying "Battle k of n". Pressing `.` again while jumping heads for the following battle.
+`,` only explains that a replay cannot rewind: restarting at a chosen turn would need a way to start
+the replay game again from code. How fast a jump really runs depends on the frame loop (one turn
+per frame, drawing included?) and is unmeasured.
+
+Playback constraint: there are no savestates, so seeking forward is fast-forward with drawing off
+and seeking back is restart plus fast-forward.
 
 ## Roadmap
 

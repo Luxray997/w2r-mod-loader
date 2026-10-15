@@ -233,6 +233,21 @@ pub fn note_chat(who: u8, mode: u8, duration_ms: u32, text: &[u8]) {
     }
 }
 
+/// A unit or building was lost to another player (see `combatrec.rs`): keep where and when for
+/// the timeline and heat map. It is not replayed; the simulation does it again by itself.
+pub fn note_event(ev: &w2r_replay::Event) {
+    let Some(a) = ADDRS.get() else { return };
+    let Ok(mut guard) = REC.lock() else { return };
+    let Some(rec) = guard.as_mut() else { return };
+    // SAFETY: `NetTurnCounter` is a u32 in the game's data section.
+    let turn = unsafe { core::ptr::read_unaligned(a.turns as *const u32) };
+    let ev = w2r_replay::Event { turn, ..*ev };
+    if rec.writer.event(turn, &ev).is_err() {
+        log(W2R_LOG_ERROR, "recording stopped: could not write the replay file");
+        *guard = None;
+    }
+}
+
 /// The `record_replays` setting changed; it applies from the next match.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Release);

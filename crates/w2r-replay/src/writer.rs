@@ -5,7 +5,7 @@
 use std::io::{self, Write};
 
 use crate::format::{
-    Footer, Header, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, REC_CAMERA, REC_CHAT, REC_FOOTER, REC_TURN,
+    Footer, Header, MAGIC, MAX_CHAT, MAX_HEADER, MAX_PACKET, REC_CAMERA, REC_CHAT, REC_EVENT, REC_FOOTER, REC_TURN,
     VERSION, put_varint,
 };
 
@@ -99,6 +99,19 @@ impl<W: Write> Writer<W> {
         put_varint(b, u64::from(turn));
         put_varint(b, u64::from(x));
         put_varint(b, u64::from(y));
+        self.out.write_all(b)
+    }
+
+    /// One kill while `turn` was the next to run: `kind` 0 for a unit, 1 for a building, who got
+    /// the credit, who lost it, the lost thing's unit type and the map tile it stood on. The
+    /// simulation does all of this by itself on playback, so these records only feed the timeline
+    /// and heat map; they are never replayed.
+    pub fn event(&mut self, turn: u32, ev: &crate::Event) -> io::Result<()> {
+        let b = &mut self.scratch;
+        b.clear();
+        b.push(REC_EVENT);
+        put_varint(b, u64::from(turn));
+        b.extend_from_slice(&[ev.kind, ev.killer, ev.victim, ev.unit_type, ev.x, ev.y]);
         self.out.write_all(b)
     }
 
@@ -334,6 +347,25 @@ mod tests {
         );
         let r = Replay::parse(&full[..full.len() - 1]).unwrap();
         assert_eq!(r.cameras.len(), 1);
+    }
+
+    #[test]
+    fn event_records_round_trip_and_survive_a_cut() {
+        let ev = |turn, kind, x| crate::Event { turn, kind, killer: 1, victim: 0, unit_type: 6, x, y: 90 };
+        let mut w = Writer::new(Vec::new(), &header()).unwrap();
+        w.turn(0, &[(0, &[5])]).unwrap();
+        w.event(1, &ev(1, 0, 12)).unwrap();
+        w.event(1, &ev(1, 1, 127)).unwrap();
+        let full = w.out.clone();
+        let r = Replay::parse(&full).unwrap();
+        assert_eq!(r.events, [ev(1, 0, 12), ev(1, 1, 127)]);
+        let r = Replay::parse(&full[..full.len() - 1]).unwrap();
+        assert_eq!(r.events.len(), 1);
+        // an unknown kind is refused rather than guessed
+        let mut bad = full.clone();
+        let at = bad.len() - 6;
+        bad[at] = 9;
+        assert_eq!(Replay::parse(&bad).unwrap().events.len(), 1);
     }
 
     #[test]

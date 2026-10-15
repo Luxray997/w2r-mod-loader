@@ -1057,6 +1057,8 @@ fn start() -> Session {
         #[cfg(target_arch = "x86")]
         crate::chatrec::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
+        crate::combatrec::install(image, &symbols, &*log);
+        #[cfg(target_arch = "x86")]
         crate::plugincmd::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::hudpanel::install(&symbols, &*log);

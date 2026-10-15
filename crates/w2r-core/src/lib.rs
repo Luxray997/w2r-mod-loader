@@ -74,6 +74,8 @@ pub mod loader;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod chatrec;
 #[cfg(all(windows, target_arch = "x86"))]
+pub mod combatrec;
+#[cfg(all(windows, target_arch = "x86"))]
 pub mod hudpanel;
 #[cfg(all(windows, target_arch = "x86"))]
 pub mod ingamekick;
