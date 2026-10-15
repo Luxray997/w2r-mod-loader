@@ -116,7 +116,19 @@ impl Session {
         game_dir: &Path,
         info: &coremod::CoreInfo,
     ) -> Result<coremod::Outcome, Error> {
-        let bytes = self.fetcher.get(&info.url, info.size)?;
+        self.core_update_with_progress(game_dir, info, &mut |_, _| {})
+    }
+
+    /// `core_update`, reporting `(bytes so far, total)` while it downloads.
+    pub fn core_update_with_progress(
+        &self,
+        game_dir: &Path,
+        info: &coremod::CoreInfo,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<coremod::Outcome, Error> {
+        let bytes = self
+            .fetcher
+            .get_with_progress(&info.url, info.size, progress)?;
         coremod::update(&self.root, game_dir, info, &bytes, &self.manager)
     }
 
@@ -135,7 +147,17 @@ impl Session {
         entry: &VersionEntry,
         approved: &[String],
     ) -> Result<install::Outcome, Error> {
-        let bytes = fetch::download(self.fetcher.as_ref(), entry)?;
+        self.install_with_progress(entry, approved, &mut |_, _| {})
+    }
+
+    /// `install`, reporting `(bytes so far, total)` while it downloads.
+    pub fn install_with_progress(
+        &self,
+        entry: &VersionEntry,
+        approved: &[String],
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<install::Outcome, Error> {
+        let bytes = fetch::download_with_progress(self.fetcher.as_ref(), entry, progress)?;
         install::install(&self.root, entry, &bytes, approved, &self.manager).map_err(hint_io)
     }
 

@@ -6,13 +6,27 @@ use crate::Error;
 use crate::index::{self, Index, MAX_INDEX_BYTES, VersionEntry};
 use crate::store::{Root, read_bounded};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
 /// Fetches the bytes behind an `https` URL, refusing anything over `max_bytes`.
 pub trait Fetcher {
     fn get(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error>;
+
+    /// Like `get`, reporting `(bytes so far, total)` as the body arrives; the total is 0 when the
+    /// server did not say. The default reports once, at the end.
+    fn get_with_progress(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<Vec<u8>, Error> {
+        let bytes = self.get(url, max_bytes)?;
+        let n = bytes.len() as u64;
+        progress(n, n);
+        Ok(bytes)
+    }
 }
 
 /// The real fetcher: HTTPS only (also across redirects), at most 3 redirects, 60 s overall.
@@ -41,6 +55,32 @@ impl Https {
 }
 
 impl Fetcher for Https {
+    fn get_with_progress(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<Vec<u8>, Error> {
+        if !index::url_ok(url) {
+            return Err(Error::new("bad_url", url.to_owned()));
+        }
+        let net = |e: &dyn std::fmt::Display| Error::new("network", format!("{url}: {e}"));
+        let mut resp = self.agent.get(url).call().map_err(|e| net(&e))?;
+        let total = resp.body().content_length().unwrap_or(0);
+        let mut reader = resp.body_mut().with_config().limit(max_bytes).reader();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 16 * 1024];
+        progress(0, total);
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| net(&e))?;
+            if n == 0 {
+                return Ok(out);
+            }
+            out.extend_from_slice(&buf[..n]);
+            progress(out.len() as u64, total);
+        }
+    }
+
     fn get(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, Error> {
         if !index::url_ok(url) {
             return Err(Error::new("bad_url", url.to_owned()));
@@ -143,6 +183,15 @@ pub fn load_cached(root: &Root) -> Result<Index, Error> {
 /// Downloads the package for a verified index entry (at most its declared size).
 pub fn download(fetcher: &dyn Fetcher, entry: &VersionEntry) -> Result<Vec<u8>, Error> {
     fetcher.get(&entry.url, entry.size)
+}
+
+/// `download`, reporting `(bytes so far, total)`.
+pub fn download_with_progress(
+    fetcher: &dyn Fetcher,
+    entry: &VersionEntry,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<Vec<u8>, Error> {
+    fetcher.get_with_progress(&entry.url, entry.size, progress)
 }
 
 #[cfg(test)]
@@ -249,5 +298,28 @@ mod tests {
             h.get("http://example.com/x", 10).unwrap_err().code,
             "bad_url"
         );
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    struct One;
+
+    impl Fetcher for One {
+        fn get(&self, _url: &str, _max: u64) -> Result<Vec<u8>, Error> {
+            Ok(vec![1, 2, 3])
+        }
+    }
+
+    #[test]
+    fn default_progress_reports_the_size_once_at_the_end() {
+        let mut seen = Vec::new();
+        let bytes = One
+            .get_with_progress("https://x.invalid/a", 10, &mut |d, t| seen.push((d, t)))
+            .unwrap();
+        assert_eq!(bytes, [1, 2, 3]);
+        assert_eq!(seen, [(3, 3)]);
     }
 }
