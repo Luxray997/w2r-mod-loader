@@ -1,6 +1,6 @@
 [package]
 name = "w2r-stats"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Game result reports for the stats and rating system: slot parsing, schema, signing, local queue (docs/stats-reporting.md)"

@@ -1,6 +1,6 @@
 [package]
 name = "w2r-abi"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Rust bindings for the w2rpm plugin ABI (include/w2r_abi.h is the source of truth)"
