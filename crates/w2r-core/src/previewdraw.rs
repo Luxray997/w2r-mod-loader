@@ -214,14 +214,15 @@ fn ensure_texture(game: &PreviewGame, state: &mut State) -> Option<*mut GameText
 }
 
 /// Draws the request's preview on the window being built. Call after the screen's layout space
-/// has ended: the picture goes straight onto the window's canvas, over the widgets.
-pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) {
+/// has ended: the picture goes straight onto the window's canvas, over the widgets. False when
+/// nothing was drawn (no map, no art, no texture).
+pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) -> bool {
     if req.area.w <= 0.0 || req.path.is_empty() {
-        return;
+        return false;
     }
     let canvas = kit.canvas();
     if canvas.is_null() {
-        return;
+        return false;
     }
     with_state(|st| {
         let key = (req.path.clone(), req.tileset);
@@ -231,16 +232,16 @@ pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) {
             st.uploaded = false;
         }
         if st.preview.is_none() {
-            return;
+            return false;
         }
         let Some(tex) = ensure_texture(game, st) else {
-            return;
+            return false;
         };
         let p = st.preview.as_ref().expect("checked");
         if !st.uploaded {
             let upload = unsafe { *game.sub_image_slot };
             if upload == 0 {
-                return;
+                return false;
             }
             let upload: SubImageFn = unsafe { core::mem::transmute(upload) };
             unsafe {
@@ -283,7 +284,8 @@ pub fn draw(game: &PreviewGame, kit: &Kit, req: &Request) {
         if let Some(heat) = &req.heat {
             overlay_heat(kit, heat, (p.map_w as usize, p.map_h as usize), Rect::new(x, y, w, h));
         }
-    });
+        true
+    })
 }
 
 /// Lays a heat image over the picture, one square per map tile that has any.

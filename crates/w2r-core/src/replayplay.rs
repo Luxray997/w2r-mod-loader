@@ -126,6 +126,8 @@ struct Addrs {
     clamp_camera: usize,
     /// The map's side in tiles, a u16.
     map_side: usize,
+    /// `SelectedMapPath`: the file the game loaded the map from, a C string.
+    map_path: usize,
 }
 
 struct Play {
@@ -367,13 +369,14 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         log.line(W2R_LOG_ERROR, "host", "replay chat: symbols missing");
         return false;
     };
-    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera), Some(map_side)) = (
+    let (Some(cam_x), Some(cam_y), Some(view_w), Some(view_h), Some(clamp_camera), Some(map_side), Some(map_path)) = (
         get("CameraScrollX"),
         get("CameraScrollY"),
         get("ViewportWidth"),
         get("ViewportHeight"),
         get("ClampCamera"),
         get("MapSide"),
+        get("SelectedMapPath"),
     ) else {
         log.line(W2R_LOG_ERROR, "host", "replay follow view: symbols missing");
         return false;
@@ -396,6 +399,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         view_h,
         clamp_camera,
         map_side,
+        map_path,
     });
     let mut ok = true;
     // SAFETY: each detour matches its target's cdecl signature (Ghidra, build 2818; the call
@@ -1042,6 +1046,8 @@ static HEAT_CACHE: Mutex<Option<HeatCache>> = Mutex::new(None);
 pub struct HeatView {
     /// The map's side in tiles.
     pub side: usize,
+    /// The map file, to draw the heat over a picture of the map; empty when it cannot be read.
+    pub map_path: String,
     /// `heat::SIDE` x `SIDE` heat values.
     pub image: std::sync::Arc<Vec<u8>>,
     pub whole: bool,
@@ -1065,7 +1071,7 @@ pub fn heat_view() -> Option<HeatView> {
     let bucket = if mode == HEAT_WHOLE { 0 } else { turn / HEAT_STEP };
     let mut cache = HEAT_CACHE.lock().ok()?;
     if let Some(c) = cache.as_ref().filter(|c| c.mode == mode && c.bucket == bucket) {
-        return Some(HeatView { side, image: c.image.clone(), whole: mode == HEAT_WHOLE });
+        return Some(HeatView { side, map_path: map_path(a), image: c.image.clone(), whole: mode == HEAT_WHOLE });
     }
     let guard = PLAY.lock().ok()?;
     let play = guard.as_ref()?;
@@ -1080,7 +1086,15 @@ pub fn heat_view() -> Option<HeatView> {
     };
     let image = std::sync::Arc::new(w2r_replay::heat::image(&play.replay.events, total, range));
     *cache = Some(HeatCache { mode, bucket, image: image.clone() });
-    Some(HeatView { side, image, whole: mode == HEAT_WHOLE })
+    Some(HeatView { side, map_path: map_path(a), image, whole: mode == HEAT_WHOLE })
+}
+
+/// The map file the game is playing on.
+fn map_path(a: &Addrs) -> String {
+    // SAFETY: a NUL-terminated path buffer in the game's data section.
+    unsafe { core::ffi::CStr::from_ptr(a.map_path as *const core::ffi::c_char) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The heat key: off, game so far, whole game, off again.

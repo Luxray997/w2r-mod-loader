@@ -54,6 +54,8 @@ struct Panel {
     kit: Kit,
     ui_width: ExtentFn,
     game: Game,
+    /// For drawing the map picture under the heat; `None` and the heat is drawn on plain ground.
+    preview: Option<crate::previewdraw::PreviewGame>,
 }
 
 // SAFETY: plain game function and data addresses, fixed for the session.
@@ -75,7 +77,7 @@ const GRAPH_AHEAD: u32 = rgba(150, 70, 48, 255);
 const PLAYHEAD: u32 = rgba(255, 244, 200, 255);
 /// The heat thumbnail's side in pixels, and the caption above it.
 const THUMB: f32 = 150.0;
-const THUMB_CAPTION: f32 = 14.0;
+const THUMB_CAPTION: f32 = 24.0;
 const THUMB_BACK: u32 = rgba(22, 18, 12, 235);
 const MAX_UNITS: usize = 4096;
 
@@ -214,6 +216,7 @@ pub fn install(symbols: &Symbols, log: &dyn Log) -> bool {
         kit,
         ui_width,
         game,
+        preview: crate::previewdraw::PreviewGame::new(symbols).ok(),
     });
     log.line(W2R_LOG_INFO, "host", "replay panel ready");
     true
@@ -318,11 +321,23 @@ fn draw_graph(kit: &Kit, pace: &Pace, x: f32) {
 
 /// The heat thumbnail under the scoreboard: a square for the map, a haze over every tile where
 /// units or buildings were lost. `y` is the window-local top of the caption.
-fn draw_heat(kit: &Kit, heat: &replayplay::HeatView, x: f32, y: f32) {
+fn draw_heat(kit: &Kit, preview: Option<&crate::previewdraw::PreviewGame>, heat: &replayplay::HeatView, x: f32, y: f32) {
     use w2r_replay::heat::{SIDE, ramp};
     let caption = if heat.whole { "Where the fighting was" } else { "Where the fighting is so far" };
-    kit.label_at(Rect::new(6.0, y, WIDTH - 12.0, THUMB_CAPTION), caption, ALIGN_CENTRE);
+    kit.label_at(Rect::new(6.0, y, WIDTH - 12.0, 14.0), caption, ALIGN_CENTRE);
     let area = Rect::new(x + (WIDTH - THUMB) / 2.0, TOP + y + THUMB_CAPTION, THUMB, THUMB);
+    // The map picture with the heat over it; if that cannot be drawn, the heat on a dark square.
+    if let Some(game) = preview {
+        let req = crate::previewdraw::Request {
+            area,
+            path: heat.map_path.clone(),
+            tileset: None,
+            heat: Some(heat.image.clone()),
+        };
+        if crate::previewdraw::draw(game, kit, &req) {
+            return;
+        }
+    }
     kit.fill_rect(area, THUMB_BACK);
     let side = heat.side.min(SIDE);
     let cell = THUMB / side as f32;
@@ -550,7 +565,7 @@ fn draw(
 
     if let Some(heat) = heat {
         let rows_h = board.map_or(0.0, |r| ROW_HEIGHT * (r.len() as f32 + 1.0) + 4.0);
-        draw_heat(kit, heat, x, header_height(pace) + rows_h);
+        draw_heat(kit, PANEL.get().and_then(|p| p.preview.as_ref()), heat, x, header_height(pace) + rows_h);
     }
 
     let Some(rows) = board else { return };
