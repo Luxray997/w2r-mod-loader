@@ -138,7 +138,7 @@ pub fn avatar(ui: &mut egui::Ui, name: &str) {
 pub fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     card().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong().size(17.0).color(ACCENT));
+        ui.label(heading(title, 18.0).color(ACCENT));
         ui.add_space(2.0);
         body(ui);
     });
@@ -208,4 +208,57 @@ mod tests {
         assert_eq!(initials("fancy"), "F");
         assert_eq!(initials(""), "?");
     }
+}
+
+static QUADRATA_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const QUADRATA: &str = "quadrata";
+
+/// Loads Blizzard's UI font (Friz Quadrata, `Data\Font\BLQ55.ttf`) from the game folder for
+/// headings. It is ParaType's licensed font, so it is read from the user's own install and never
+/// shipped; without it headings keep the default font. Returns whether it was loaded; pass that to
+/// `use_heading_font` on the next frame.
+pub fn load_game_font(ctx: &egui::Context, game_dir: Option<&std::path::Path>) -> bool {
+    let bytes = game_dir
+        .map(|d| d.join("Data").join("Font").join("BLQ55.ttf"))
+        .and_then(|p| std::fs::read(p).ok())
+        .filter(|b| b.len() < 4 << 20);
+    let mut fonts = egui::FontDefinitions::default();
+    let loaded = bytes.is_some();
+    if let Some(b) = bytes {
+        fonts
+            .font_data
+            .insert(QUADRATA.to_owned(), std::sync::Arc::new(egui::FontData::from_owned(b)));
+        // The game's font only has Latin letters; everything else falls back to the defaults.
+        let mut chain = vec![QUADRATA.to_owned()];
+        chain.extend(
+            fonts
+                .families
+                .get(&egui::FontFamily::Proportional)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(QUADRATA.into()), chain);
+    }
+    ctx.set_fonts(fonts);
+    loaded
+}
+
+/// Heading text: Friz Quadrata when loaded, else the strong default font.
+pub fn heading(text: impl Into<String>, size: f32) -> RichText {
+    let t = RichText::new(text.into())
+        .size(size)
+        .color(Color32::from_rgb(236, 237, 242));
+    if QUADRATA_LOADED.load(std::sync::atomic::Ordering::Relaxed) {
+        t.family(egui::FontFamily::Name(QUADRATA.into()))
+    } else {
+        t.strong()
+    }
+}
+
+/// Turns the heading font on or off. Call it on the frame after `load_game_font`: egui only
+/// binds new fonts when a frame starts, and using the family before that panics.
+pub fn use_heading_font(on: bool) {
+    QUADRATA_LOADED.store(on, std::sync::atomic::Ordering::Relaxed);
 }

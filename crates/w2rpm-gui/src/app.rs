@@ -124,6 +124,10 @@ pub struct App {
     startup_pending: bool,
     startup_job: bool,
     game_running: bool,
+    /// The game folder the heading font was last looked for in.
+    font_dir: Option<Option<PathBuf>>,
+    /// Result of the last font load, to switch headings over on the next frame.
+    font_pending: Option<bool>,
     last_probe: Option<Instant>,
     /// Last known `[x, y, width, height]`, saved on exit.
     window: Option<[i32; 4]>,
@@ -183,6 +187,8 @@ impl App {
             startup_pending: false,
             startup_job: false,
             game_running: false,
+            font_dir: None,
+            font_pending: None,
             last_probe: None,
             tx,
             rx,
@@ -392,7 +398,7 @@ impl App {
                             theme::avatar(ui, &p.id);
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&p.id).strong().size(16.0));
+                                    ui.label(theme::heading(&p.id, 17.0));
                                     ui.label(theme::muted(p.version.to_string()));
                                     if p.update.is_some() {
                                         theme::badge(ui, "Update available", theme::GOOD);
@@ -602,7 +608,7 @@ impl App {
                             theme::avatar(ui, &m.name);
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&m.name).strong().size(16.0));
+                                    ui.label(theme::heading(&m.name, 17.0));
                                     ui.label(theme::muted(newest.version.to_string()));
                                     if m.affects_simulation {
                                         theme::badge(ui, "Changes the simulation", theme::WARN);
@@ -1087,6 +1093,9 @@ impl App {
     /// One frame of the whole window.
     #[doc(hidden)]
     pub fn ui(&mut self, ctx: &egui::Context) {
+        if let Some(on) = self.font_pending.take() {
+            theme::use_heading_font(on);
+        }
         while let Ok(done) = self.rx.try_recv() {
             self.busy = None;
             self.busy_target = None;
@@ -1144,6 +1153,17 @@ impl App {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
         self.track_window(ctx);
+        // Look for the game's heading font whenever the game folder is first known or changes.
+        let game_dir = self
+            .view
+            .core
+            .as_ref()
+            .and_then(|c| c.game_dir.clone().ok());
+        if self.font_dir.as_ref() != Some(&game_dir) {
+            self.font_pending = Some(theme::load_game_font(ctx, game_dir.as_deref()));
+            ctx.request_repaint();
+            self.font_dir = Some(game_dir);
+        }
 
         egui::TopBottomPanel::top("tabs")
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
@@ -1164,12 +1184,7 @@ impl App {
                     "Browse".to_owned()
                 };
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("w2rpm")
-                            .strong()
-                            .size(20.0)
-                            .color(theme::ACCENT),
-                    );
+                    ui.label(theme::heading("w2rpm", 22.0).color(theme::ACCENT));
                     ui.add_space(12.0);
                     ui.selectable_value(&mut self.tab, Tab::Installed, installed);
                     ui.selectable_value(&mut self.tab, Tab::Browse, browse);
