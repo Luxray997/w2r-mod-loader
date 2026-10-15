@@ -10,6 +10,8 @@ pub struct Settings {
     /// The w2r folder; `None` means `%USERPROFILE%\Saved Games\Warcraft2Remastered\w2r`.
     pub root: Option<PathBuf>,
     pub index_url: String,
+    /// Last window position and size, `[x, y, width, height]` in points.
+    pub window: Option<[i32; 4]>,
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -28,12 +30,27 @@ impl Settings {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             index_url: str_of("index_url").unwrap_or_default(),
+            window: v.get("window").and_then(Value::as_array).and_then(|a| {
+                let n: Vec<i32> = a
+                    .iter()
+                    .filter_map(|x| x.as_number()?.text.parse().ok())
+                    .collect();
+                <[i32; 4]>::try_from(n).ok()
+            }),
         })
     }
 
     pub fn to_json(&self) -> String {
         let s = |t: &str| Value::String(t.to_owned());
+        let window = self.window.map_or(Value::Null, |w| {
+            Value::Array(
+                w.iter()
+                    .map(|n| Value::Number(json::Number { text: n.to_string() }))
+                    .collect(),
+            )
+        });
         Value::Object(vec![
+            ("window".into(), window),
             (
                 "root".into(),
                 self.root
@@ -95,6 +112,7 @@ mod tests {
                 "/g/w2r"
             })),
             index_url: "https://example.org/index.json".into(),
+            window: Some([10, -20, 800, 600]),
         };
         assert_eq!(Settings::parse(s.to_json().as_bytes()), Some(s));
     }

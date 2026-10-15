@@ -243,3 +243,29 @@ impl View {
 pub fn root_of(explicit: Option<&PathBuf>) -> Result<Root, Error> {
     session::resolve_root(explicit.map(|p| p.as_path()))
 }
+
+/// True while the game has `version.dll` loaded: Windows refuses a write-open of a file in use
+/// (sharing violation, or mapped-image error), so updating the core would fail. Opens without
+/// truncating and writes nothing.
+pub fn game_running(game_dir: &std::path::Path) -> bool {
+    let dll = game_dir.join("version.dll");
+    match std::fs::OpenOptions::new().write(true).open(dll) {
+        Ok(_) => false,
+        Err(e) => matches!(e.raw_os_error(), Some(32 | 1224)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_or_missing_dll_is_not_running() {
+        let dir = std::env::temp_dir().join(format!("w2rpm-gui-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!game_running(&dir));
+        std::fs::write(dir.join("version.dll"), b"x").unwrap();
+        assert!(!game_running(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
