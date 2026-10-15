@@ -545,7 +545,7 @@ fn draw_screen(nk: &Nk) {
         }
         (nk.space_begin)(ctx, 1, 0.0, 1000);
         (nk.rect)(ctx, title_r[0], title_r[1], title_r[2], title_r[3]);
-        let title = c"w2rpm Plugins";
+        let title = c"W2R Mod Loader";
         (nk.label)(ctx, title.as_ptr(), ALIGN_TITLE);
 
         (nk.rect)(ctx, list_r[0], list_r[1], list_r[2], list_r[3]);
@@ -587,7 +587,7 @@ const VERSION_H: f32 = 120.0;
 
 static MAIN_MENU_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
-/// Hooks the title screen so a "w2rpm <version>" line shows under the game's build label.
+/// Hooks the title screen so a "W2R Mod Loader <version>" line shows under the game's build label.
 pub fn install_main_menu(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
     let Some(target) = symbols.address(MAIN_MENU_SYMBOL) else {
         log.line(
@@ -646,9 +646,9 @@ fn draw_version(nk: &Nk) {
     let name = c"w2rpm_version";
     let version = match option_env!("W2R_GIT_HASH") {
         Some(hash) if !hash.is_empty() => {
-            format!("w2rpm {} ({hash})", env!("CARGO_PKG_VERSION"))
+            format!("W2R Mod Loader {} ({hash})", env!("CARGO_PKG_VERSION"))
         }
-        _ => format!("w2rpm {}", env!("CARGO_PKG_VERSION")),
+        _ => format!("W2R Mod Loader {}", env!("CARGO_PKG_VERSION")),
     };
     let lines = [Some(version), crate::session::plugin_summary()];
     unsafe {

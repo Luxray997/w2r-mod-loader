@@ -500,7 +500,7 @@ pub fn draw_plugin_screen(
     w.label(&format!("Plugins ({})", rows.len()));
     if rows.is_empty() {
         w.row(ROW_H, 1);
-        w.label("No plugins installed. Use the w2rpm manager to add some.");
+        w.label("No plugins installed. Use the W2R Mod Loader to add some.");
     }
     for (i, row) in rows.iter_mut().enumerate() {
         // Each plugin sits in its own framed card, sized from the last frame's measurement.
