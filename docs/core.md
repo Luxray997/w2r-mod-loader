@@ -61,7 +61,7 @@ can ship code that runs in every player's game; that is the accepted trade-off f
    file name) and when it cannot be opened for writing (`game_running`). The user can choose to
    replace the other mod's file (`w2r-loader core update --replace-other`, or the "Replace it and
    install the mod" button, which the app shows as a warning in Getting started and in the Core
-   mod section). The other file is never deleted: it is moved to `version.dll.pre-w2rpm` next to
+   mod section). The other file is never deleted: it is moved to `version.dll.bak` next to
    it (`.2`, `.3`, ... when that name is taken) and moved back if the install fails.
 6. Writes `version.dll.new` next to it, copies the current DLL to `cache\core-rollback\`, then
    renames the new file over `version.dll`. A failure before that rename leaves the old DLL.

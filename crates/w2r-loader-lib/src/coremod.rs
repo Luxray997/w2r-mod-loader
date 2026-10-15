@@ -288,7 +288,7 @@ pub struct Outcome {
 
 /// The name another mod's `version.dll` is moved to when it is replaced; the dev installer's
 /// uninstall restores the same name.
-pub const BACKUP_NAME: &str = "version.dll.pre-w2rpm";
+pub const BACKUP_NAME: &str = "version.dll.bak";
 
 /// A free backup path next to `version.dll`: `BACKUP_NAME`, then `BACKUP_NAME.2`, `.3`, ...
 fn backup_path(game_dir: &Path) -> Result<PathBuf, Error> {

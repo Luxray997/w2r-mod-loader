@@ -10,7 +10,7 @@ lobby, and read logs\w2r.log: the build guard should report PASSED (197/197) and
 should log "basic from basic_plugin".
 
 .PARAMETER Uninstall
-Removes our version.dll from the game folder and restores version.dll.pre-w2rpm if an earlier
+Removes our version.dll from the game folder and restores version.dll.bak if an earlier
 install had backed one up (the Saved Games root is left alone). A version.dll that is not ours
 is left in place.
 
@@ -70,7 +70,8 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $PluginsRepo) { $PluginsRepo = Join-Path (Split-Path -Parent $repo) "w2r-plugins" }
 $target = Join-Path $GameDir "version.dll"
-$backup = Join-Path $GameDir "version.dll.pre-w2rpm"
+$backup = Join-Path $GameDir "version.dll.bak"
+$oldBackup = Join-Path $GameDir "version.dll.pre-w2rpm"  # name used by earlier versions
 
 # Our DLL carries this literal (the first log line); other proxies (wc2r-plus uses the same
 # file name) do not, so the script never deletes someone else's mod.
@@ -89,6 +90,7 @@ if ($Uninstall) {
     } else {
         Remove-Item $target
         Write-Host "removed $target"
+        if (-not (Test-Path $backup) -and (Test-Path $oldBackup)) { $backup = $oldBackup }
         if (Test-Path $backup) { Move-Item $backup $target; Write-Host "restored the previous version.dll from $backup" }
     }
     exit 0

@@ -120,7 +120,7 @@ enum CoreAction {
     Status,
     /// Install the newest core, or update to it. The game must be closed.
     Update {
-        /// Also replace another mod's version.dll. It is moved to version.dll.pre-w2rpm (never
+        /// Also replace another mod's version.dll. It is moved to version.dll.bak (never
         /// deleted) so you can put it back.
         #[arg(long)]
         replace_other: bool,
