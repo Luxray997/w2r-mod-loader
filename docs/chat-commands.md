@@ -9,7 +9,7 @@ Replaces the typed text with the list of the plugins the player is running and s
 ordinary chat line, so a host who wants to know can ask, and the player decides whether to answer:
 
 ```
-Plugins: w2r-chat 1.0.0, w2r-observer 0.1.0
+Plugins: w2r-chat 1.0.0, w2r-observer 0.2.0
 ```
 
 - Only plugins that are running are listed, with their versions. Developer-only research plugins
