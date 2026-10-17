@@ -484,7 +484,7 @@ impl Screen {
                 *buffer.add(len) = 0;
             }
             state.filled = suggestion;
-            self.name_presses.set(1);
+            self.name_presses.set(0);
         }
         state.map = map;
     }
@@ -611,10 +611,17 @@ impl Screen {
                 ROW_H,
             );
             if k.button_at(button, "Auto", false) {
-                let n = self.name_presses.get();
-                self.name_presses.set(n.wrapping_add(1));
+                let mut n = self.name_presses.get();
                 let map = unsafe { self.selected_name() };
-                let suggestion = game_name_from_map(&map, n);
+                // SAFETY: the buffer is NUL-terminated within its capacity.
+                let current =
+                    unsafe { CStr::from_ptr(buffer.cast()) }.to_string_lossy().into_owned();
+                let mut suggestion = game_name_from_map(&map, n);
+                if suggestion == current {
+                    n = n.wrapping_add(1);
+                    suggestion = game_name_from_map(&map, n);
+                }
+                self.name_presses.set(n.wrapping_add(1));
                 let cap = max.max(0) as usize;
                 if !suggestion.is_empty() && cap > 0 {
                     let len = suggestion.len().min(cap - 1);
@@ -760,9 +767,15 @@ fn game_name_from_map(map: &str, n: usize) -> String {
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(str::to_ascii_lowercase)
+        .filter(|w| w != "bne" && w != "pud")
         .collect();
     let initials: String = words.iter().filter_map(|w| w.chars().next()).collect();
     let mut bases: Vec<String> = Vec::new();
+    // Short initials are padded with spaces to the minimum length; they lead for multi-word maps.
+    let padded = format!("{initials:<MIN_GAME_NAME$}");
+    if words.len() > 1 {
+        bases.push(padded.clone());
+    }
     let mut long: Vec<&String> = words.iter().filter(|w| w.len() >= MIN_GAME_NAME).collect();
     long.sort_by_key(|w| core::cmp::Reverse(w.len()));
     for w in long {
@@ -770,8 +783,8 @@ fn game_name_from_map(map: &str, n: usize) -> String {
             bases.push(w.clone());
         }
     }
-    if initials.len() >= MIN_GAME_NAME && !bases.contains(&initials) {
-        bases.push(initials.clone());
+    if !initials.is_empty() && !bases.contains(&padded) {
+        bases.push(padded);
     }
     if let Some(base) = bases.get(n) {
         return base.clone();
@@ -787,16 +800,22 @@ mod name_tests {
 
     #[test]
     fn word_then_initials_with_number() {
-        assert_eq!(game_name_from_map("Garden of War", 0), "garden");
-        assert_eq!(game_name_from_map("Garden of War", 1), "gow01");
-        assert_eq!(game_name_from_map("Garden of War", 2), "gow02");
+        assert_eq!(game_name_from_map("Garden of War", 0), "gow  ");
+        assert_eq!(game_name_from_map("Garden of War", 1), "garden");
+        assert_eq!(game_name_from_map("Garden of War", 2), "gow01");
     }
 
     #[test]
     fn longest_word_first_and_unique() {
-        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 0), "bridge");
-        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 1), "combat");
-        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 2), "btbc01");
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 0), "btbc ");
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 1), "bridge");
+        assert_eq!(game_name_from_map("Bridge to Bridge Combat", 2), "combat");
+    }
+
+    #[test]
+    fn bne_is_ignored() {
+        assert_eq!(game_name_from_map("Garden of War BNE", 0), "gow  ");
+        assert_eq!(game_name_from_map("Garden of War BNE", 1), "garden");
     }
 
     #[test]
