@@ -9,7 +9,7 @@ use w2r_loader_lib::index::{Index, VersionEntry};
 use w2r_loader_lib::session::{self, Session};
 use w2r_loader_lib::store::{self, Finding, Root};
 use w2r_loader_lib::coremod::{self, Installed as CoreInstalled};
-use w2r_loader_lib::{Error, catalog, install};
+use w2r_loader_lib::{Error, catalog, install, mgrupdate};
 
 #[derive(Clone, Debug)]
 pub enum Job {
@@ -44,6 +44,8 @@ pub enum Job {
     CoreRollback,
     /// Remember the folder the user picked as the game folder.
     CoreGameDir { dir: PathBuf },
+    /// Replace this exe with the newer manager `manager.json` offers; the app restarts after.
+    SelfUpdate { latest: mgrupdate::Latest },
 }
 
 pub fn run(session: &Session, job: &Job) -> Result<String, Error> {
@@ -139,6 +141,18 @@ pub fn run_with_progress(
             let game = coremod::resolve_game_dir(&session.root, Some(dir))?;
             coremod::save_game_dir(&session.root, &game)?;
             Ok(format!("game folder: {}", game.display()))
+        }
+        Job::SelfUpdate { latest } => {
+            let exe = std::env::current_exe()?;
+            let v = mgrupdate::install_self(
+                session.fetcher.as_ref(),
+                &exe,
+                latest,
+                &session.manager,
+                progress,
+            )
+            .map_err(session::hint_io)?;
+            Ok(format!("W2R Mod Loader {v} is installed; restart to use it"))
         }
         Job::Verify => {
             let findings = store::verify(&session.root)?;
@@ -429,6 +443,16 @@ pub fn launch_game() -> Result<(), String> {
         }
     }
     open_url("battlenet://W2R")
+}
+
+/// Starts the exe at this process's own path (the new one after a self-update). The caller
+/// closes the window.
+pub fn restart_self() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(&exe)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {}: {e}", exe.display()))
 }
 
 /// Opens an `https` link in the default browser. Explorer gets the link as one argument (no

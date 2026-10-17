@@ -173,6 +173,8 @@ pub struct App {
     /// A newer manager than this one, from `manager.json` next to the index.
     newer_manager: Option<mgrupdate::Latest>,
     mgr_dismissed: bool,
+    /// The new exe is in place; the banner offers the restart.
+    restart_ready: bool,
     mgr_tx: Sender<mgrupdate::Latest>,
     mgr_rx: Receiver<mgrupdate::Latest>,
     /// Plugin settings files opened for editing, by plugin id.
@@ -195,8 +197,14 @@ const RECOMMENDED: &[&str] = &[
     "w2r-remember-settings",
 ];
 
+const SELF_UPDATE_LABEL: &str = "Updating the manager";
+
 impl App {
     pub fn new() -> App {
+        // The exe a self-update moved aside is no longer running by now.
+        if let Ok(exe) = std::env::current_exe() {
+            mgrupdate::cleanup_old(&exe);
+        }
         let settings = Settings::load();
         let mut app = App::blank(settings);
         app.startup_pending = true;
@@ -233,6 +241,7 @@ impl App {
             offline: None,
             newer_manager: None,
             mgr_dismissed: false,
+            restart_ready: false,
             mgr_tx,
             mgr_rx,
             confs: HashMap::new(),
@@ -1512,6 +1521,9 @@ impl App {
             self.busy_target = None;
             self.view = done.view;
             let failed = done.result.is_err();
+            if done.label == SELF_UPDATE_LABEL && !failed {
+                self.restart_ready = true;
+            }
             if done.refresh {
                 match &done.result {
                     Ok(_) => {
@@ -1672,7 +1684,18 @@ impl App {
                         )));
                     });
                 }
-                if let Some(l) = self.newer_manager.clone().filter(|_| !self.mgr_dismissed) {
+                if self.restart_ready {
+                    ui.horizontal_wrapped(|ui| {
+                        theme::badge(ui, "Updated", theme::GOOD);
+                        ui.label("The new version is installed.");
+                        if ui.small_button("Restart now").clicked() {
+                            match jobs::restart_self() {
+                                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                                Err(e) => self.status = Some(Err(e)),
+                            }
+                        }
+                    });
+                } else if let Some(l) = self.newer_manager.clone().filter(|_| !self.mgr_dismissed) {
                     ui.horizontal_wrapped(|ui| {
                         theme::badge(ui, "New version", theme::GOOD);
                         ui.label(format!(
@@ -1680,7 +1703,14 @@ impl App {
                             l.version,
                             self.session.as_ref().map_or_else(String::new, |s| s.manager.to_string())
                         ));
-                        if ui.small_button("Get it").clicked()
+                        if l.package.is_some() {
+                            if ui
+                                .add_enabled(self.busy.is_none(), egui::Button::new("Update now").small())
+                                .clicked()
+                            {
+                                self.start(ctx, SELF_UPDATE_LABEL, Job::SelfUpdate { latest: l.clone() });
+                            }
+                        } else if ui.small_button("Get it").clicked()
                             && let Err(e) = jobs::open_url(&l.url)
                         {
                             self.status = Some(Err(e));

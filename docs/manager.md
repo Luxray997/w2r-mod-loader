@@ -50,8 +50,20 @@ for tests; the URL rules and package hashes are still enforced.
 
 - **Newer manager.** On startup the GUI fetches `manager.json` from the folder of the index:
   `{"schema":1,"version":"0.3.0","url":"https://..."}`. A newer `version` shows a banner with a
-  "Get it" link to `url`; nothing is downloaded or run. A missing, bad or older file shows
-  nothing. Unknown fields are ignored. (`w2r-loader-lib/src/mgrupdate.rs`)
+  "Get it" link to `url`. A missing, bad or older file shows nothing. Unknown fields are ignored.
+  (`w2r-loader-lib/src/mgrupdate.rs`)
+- **Self-update.** Add `"package_url"` (the GUI exe itself, https, no zip), `"sha256"` and `"size"`
+  (1 to 64 MiB), all three or none, and the banner offers "Update now" instead. The manager
+  downloads at most `size` bytes, checks size and SHA-256, and checks that the exe carries
+  `W2R-LOADER-VERSION:<version>;` (embedded by `w2r-loader-gui/src/lib.rs`) with exactly the
+  announced version, which must be above its own (this is also the rollback guard). Then it writes
+  `<exe>.new`, renames the running exe to `<exe>.old` (Windows allows renaming a running exe, not
+  overwriting it), renames the new file into place, and moves the old one back if that fails. The
+  banner then shows "Restart now"; the next start deletes `<exe>.old`. A folder the user cannot
+  write to (Program Files) fails with `io` and leaves the exe alone. Trust is the same as for the
+  core: HTTPS, hash and size, nothing signed. Publish with `tools\make_manager_release.ps1`, which
+  writes `w2r-mod-loader-<version>.exe` and `manager.json`; upload both next to `index.json`.
+  The CLI does not self-update (the package is the GUI exe); it never reads these fields.
 - **Plugin settings.** The Installed tab edits `config\<id>.json` (`{"schema":1,"values":{...}}`,
   whole numbers and text) with the host's limits (`w2r-loader-lib/src/pluginconf.rs`). Plugins declare
   no schema, so keys show as stored. Editing is off while the game runs, because the game writes
