@@ -545,7 +545,7 @@ fn draw(
         let top = hints_top(pace);
         let battles = !pace.graph.is_empty();
         if pace.help {
-            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
+            hint_row(kit, top, &[("+/-", "speed"), ("End", "pause"), ("Del", "step"), ("`", "page")]);
             hint_row(
                 kit,
                 top + 14.0,
@@ -557,9 +557,9 @@ fn draw(
                 hint_row(kit, top + 28.0, &[("?", "hide keys")]);
             }
         } else if battles {
-            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), (".", "battle"), ("?", "keys")]);
+            hint_row(kit, top, &[("+/-", "speed"), ("End", "pause"), (".", "battle"), ("?", "keys")]);
         } else {
-            hint_row(kit, top, &[("PgUp/PgDn", "speed"), ("End", "pause"), ("?", "keys")]);
+            hint_row(kit, top, &[("+/-", "speed"), ("End", "pause"), ("?", "keys")]);
         }
     }
 

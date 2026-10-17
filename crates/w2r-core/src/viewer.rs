@@ -2,7 +2,8 @@
 //!
 //! The screen follows `LocalPlayer` (0x918ccd), the view player (0x922f5a) and the view bit mask
 //! (0x922f23). While viewing is on, `[` and `]` cycle the player you watch as, Home goes back to
-//! your own (the recorded player in a replay), Insert toggles full vision, and the backtick key
+//! your own (the recorded player in a replay), Insert steps through all players' vision (what any
+//! of them sees, as an observer does) and full vision (the whole map), and the backtick key
 //! steps through the scoreboard pages. The change is applied only while the game's
 //! simulation-mode flag (`SetSimMode`, 0x4a01b0) is 0, i.e. for drawing and input, and the real
 //! values are put back whenever the flag goes to 1, so the simulation never sees which player is
@@ -43,6 +44,10 @@ static VIEWED: AtomicU8 = AtomicU8::new(NONE);
 /// The player the view starts as and Home returns to.
 static HOME: AtomicU8 = AtomicU8::new(NONE);
 static FULL_VISION: AtomicBool = AtomicBool::new(false);
+/// Everything any player sees (the union of their fog), instead of one player's or the whole map.
+static ALL_PLAYERS: AtomicBool = AtomicBool::new(false);
+/// The race whose sound bank is loaded (`NONE` = the real player's, not yet looked at).
+static SOUND_RACE: AtomicU8 = AtomicU8::new(NONE);
 /// Which view keys were down on the previous frame.
 static KEYS_DOWN: AtomicU16 = AtomicU16::new(0);
 /// The scoreboard under the panel: 0 now, 1 totals, 2 rates, 3 hidden.
@@ -69,6 +74,8 @@ struct Addrs {
     races: usize,
     /// `MpLobbySlots`: who is on the observer team.
     lobby: usize,
+    /// `LoadRaceSounds`: unloads the sound bank, then loads the one of the race in `race_flag`.
+    load_sounds: Option<usize>,
 }
 
 const KEY_PREV: u16 = 1;
@@ -90,6 +97,128 @@ const LOBBY_SLOT_TEAM: usize = 0x0a;
 /// A player's record in `PlayerNames` (0x91ada8): stride, and the longest name.
 const NAME_STRIDE: usize = 0x38;
 const NAME_MAX: usize = 0x19;
+
+type SoundFn = unsafe extern "C" fn(usize, usize, usize, usize, usize, usize, usize) -> usize;
+
+/// Runs a game sound emitter as the watched player. The game plays most sounds from inside the
+/// simulation step, where the local player and the view mask are the real ones: "unit ready" and
+/// the like are for the real player's units only, and world sounds are muted for what the real
+/// player cannot see. For the call the watched player's values are put in, then the real ones back.
+unsafe fn as_watched(original: &AtomicUsize, args: [usize; 7]) -> usize {
+    let f: SoundFn = unsafe { core::mem::transmute(original.load(Ordering::Acquire)) };
+    let swap = is_viewing()
+        .then(|| ADDRS.get())
+        .flatten()
+        .filter(|_| REAL.load(Ordering::Acquire) < 8)
+        .and_then(|a| watching().map(|p| (a, p)));
+    let Some((a, player)) = swap else {
+        return unsafe { f(args[0], args[1], args[2], args[3], args[4], args[5], args[6]) };
+    };
+    let mask = if FULL_VISION.load(Ordering::Acquire) {
+        0
+    } else if ALL_PLAYERS.load(Ordering::Acquire) {
+        0
+    } else {
+        1u8 << player
+    };
+    // SAFETY: single bytes of the game's data section, put back straight after the call.
+    let (old_local, old_mask) = unsafe {
+        (
+            core::ptr::read_volatile(a.local as *const u8),
+            core::ptr::read_volatile(a.view_mask as *const u8),
+        )
+    };
+    unsafe {
+        core::ptr::write_volatile(a.local as *mut u8, player);
+        core::ptr::write_volatile(a.view_mask as *mut u8, mask);
+    }
+    let result = unsafe { f(args[0], args[1], args[2], args[3], args[4], args[5], args[6]) };
+    unsafe {
+        core::ptr::write_volatile(a.local as *mut u8, old_local);
+        core::ptr::write_volatile(a.view_mask as *mut u8, old_mask);
+    }
+    result
+}
+
+// A trained unit's "ready" voice. The order handler `TrainUnitDone` plays it only if the unit's
+// owner is the real local player (a check in the handler itself), so for another watched player
+// it is run as usual with the voice muted, and the voice is played here for the watched player's
+// own unit when the unit was really placed.
+static ORIG_TRAIN: AtomicUsize = AtomicUsize::new(0);
+static ORIG_PLACE: AtomicUsize = AtomicUsize::new(0);
+static ORIG_READY: AtomicUsize = AtomicUsize::new(0);
+static MUTE_READY: AtomicBool = AtomicBool::new(false);
+static PLACE_OK: AtomicBool = AtomicBool::new(false);
+/// The unit byte holding its owner.
+const UNIT_OWNER: usize = 0x2c;
+
+/// The watched player, when it is somebody other than the real one.
+fn other_watched() -> Option<u8> {
+    if !is_viewing() {
+        return None;
+    }
+    let real = REAL.load(Ordering::Acquire);
+    watching().filter(|&w| real < 8 && w != real)
+}
+
+unsafe extern "C" fn train_done_detour(unit: usize, flag: usize) {
+    let original: unsafe extern "C" fn(usize, usize) =
+        unsafe { core::mem::transmute(ORIG_TRAIN.load(Ordering::Acquire)) };
+    let Some(watched) = other_watched() else {
+        unsafe { original(unit, flag) };
+        return;
+    };
+    PLACE_OK.store(false, Ordering::Release);
+    MUTE_READY.store(true, Ordering::Release);
+    unsafe { original(unit, flag) };
+    MUTE_READY.store(false, Ordering::Release);
+    // SAFETY: `unit` is the unit slot the game just handled.
+    let owner = unsafe { core::ptr::read_volatile((unit + UNIT_OWNER) as *const u8) };
+    if flag != 0 && owner == watched && PLACE_OK.load(Ordering::Acquire) {
+        let ready: unsafe extern "C" fn(usize) =
+            unsafe { core::mem::transmute(ORIG_READY.load(Ordering::Acquire)) };
+        let _ = guarded(|| unsafe { ready(unit) });
+    }
+}
+
+unsafe extern "C" fn place_trained_detour(a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
+    let original: unsafe extern "C" fn(usize, usize, usize, usize, usize) -> usize =
+        unsafe { core::mem::transmute(ORIG_PLACE.load(Ordering::Acquire)) };
+    let r = unsafe { original(a, b, c, d, e) };
+    PLACE_OK.store(r != 0, Ordering::Release);
+    r
+}
+
+unsafe extern "C" fn ready_detour(unit: usize) {
+    let original: unsafe extern "C" fn(usize) =
+        unsafe { core::mem::transmute(ORIG_READY.load(Ordering::Acquire)) };
+    if MUTE_READY.load(Ordering::Acquire) {
+        return;
+    }
+    unsafe { original(unit) };
+}
+
+macro_rules! sound_hooks {
+    ($($orig:ident, $detour:ident, $symbol:literal;)*) => {
+        $(static $orig: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn $detour(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize, g: usize) -> usize {
+            unsafe { as_watched(&$orig, [a, b, c, d, e, f, g]) }
+        })*
+        /// (symbol, detour, where the original is kept) for each wrapped sound emitter.
+        const SOUND_HOOKS: &[(&str, SoundFn, &AtomicUsize)] = &[$(($symbol, $detour, &$orig)),*];
+    };
+}
+
+sound_hooks! {
+    ORIG_SND_ACK, snd_ack, "SoundAck";
+    ORIG_SND_TILE, snd_tile, "SoundAtTile";
+    ORIG_SND_UNIT, snd_unit, "SoundAtUnit";
+    ORIG_SND_A, snd_a, "SoundUnitA";
+    ORIG_SND_B, snd_b, "SoundUnitB";
+    ORIG_SND_C, snd_c, "SoundUnitC";
+    ORIG_SND_D, snd_d, "SoundUnitD";
+    ORIG_SND_READY, snd_ready, "SoundUnitReady";
+}
 
 fn log(level: u32, text: &str) {
     crate::session::StartupLog.line(level, "viewer", text);
@@ -150,6 +279,7 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
         race_flag,
         races,
         lobby,
+        load_sounds: get("LoadRaceSounds"),
     });
     let mut ok = true;
     // SAFETY: each detour matches its target's cdecl signature (Ghidra, build 2818; the call
@@ -171,6 +301,29 @@ pub fn install(image: &Image, symbols: &Symbols, log: &dyn Log) -> bool {
             &ORIG_DRAW_LIST,
             log,
         );
+    }
+    for (name, detour, original) in SOUND_HOOKS {
+        match get(name) {
+            // SAFETY: each detour forwards every argument to the original with the game's cdecl
+            // convention (the caller cleans the stack, so extra arguments are harmless).
+            Some(target) => unsafe {
+                ok &= crate::replayplay::hook(image, target, *detour as *mut c_void, name, original, log);
+            },
+            None => {
+                log.line(W2R_LOG_ERROR, "host", "viewing: sound symbols missing");
+                ok = false;
+            }
+        }
+    }
+    for (name, detour, original) in [
+        ("TrainUnitDone", train_done_detour as *mut c_void, &ORIG_TRAIN),
+        ("PlaceTrainedUnit", place_trained_detour as *mut c_void, &ORIG_PLACE),
+        ("SoundTrainedReady", ready_detour as *mut c_void, &ORIG_READY),
+    ] {
+        if let Some(target) = get(name) {
+            // SAFETY: each detour forwards the game's cdecl arguments to the original.
+            ok &= unsafe { crate::replayplay::hook(image, target, detour, name, original, log) };
+        }
     }
     ok &= crate::fogtrack::install(image, symbols, log);
     if !crate::viewmem::init(symbols) {
@@ -203,6 +356,9 @@ pub fn begin(real: u8, home: u8) {
     HOME.store(if home < 8 { home } else { real }, Ordering::Release);
     if home < 8 && home != real {
         VIEWED.store(home, Ordering::Release);
+        if let Some(a) = ADDRS.get() {
+            let _ = guarded(|| sync_sounds(a, home));
+        }
     }
 }
 
@@ -225,9 +381,10 @@ pub fn watching() -> Option<u8> {
     }
 }
 
-/// Whether the whole map is shown (the Insert key), which needs no change of view to see a fight.
+/// Whether the whole map or every player's vision is shown (the Insert key), which needs no change
+/// of view to see a fight.
 pub fn full_vision() -> bool {
-    FULL_VISION.load(Ordering::Acquire)
+    FULL_VISION.load(Ordering::Acquire) || ALL_PLAYERS.load(Ordering::Acquire)
 }
 
 /// Which scoreboard page is up (the backtick key steps through them): 0 now, 1 totals, 2 rates,
@@ -403,25 +560,110 @@ fn hide_like_a_human(a: &Addrs, player: u8) {
     if unsafe { *owner } != 1 {
         return;
     }
-    let Some(dark) = crate::fogmaps::dark_ptr(player) else {
-        return;
-    };
+    save_hidden_once();
+    recompute_hidden_for(a, player);
+}
+
+fn save_hidden_once() {
     if let Ok(mut saved) = HIDDEN_SAVED.lock() {
         if saved.is_none() {
             *saved = Some(crate::viewmem::save_hidden());
         }
     }
+}
+
+/// Makes the units' hidden-from bits again with the human rule from `player`'s private dark map
+/// (the bit of that player is the one that is right afterwards). The slot is briefly marked human.
+fn recompute_hidden_for(a: &Addrs, player: u8) {
+    let Some(dark) = crate::fogmaps::dark_ptr(player) else {
+        return;
+    };
+    // SAFETY: the owner table is in the game's data section.
+    let owner = (a.owner + usize::from(player)) as *mut u8;
     // SAFETY: the game's globals; the private map outlives the call; `RecomputeHidden` takes no
     // arguments. Both are put back straight after.
     unsafe {
+        let was = *owner;
         let old_dark = core::ptr::read_unaligned(a.fog_vis as *const usize);
         *owner = 0;
         core::ptr::write_unaligned(a.fog_vis as *mut usize, dark);
         let recompute: VoidFn = core::mem::transmute(a.recompute_hidden);
         recompute();
         core::ptr::write_unaligned(a.fog_vis as *mut usize, old_dark);
-        *owner = 1;
+        *owner = was;
     }
+}
+
+/// A unit is seen if any of `players` sees it: its hidden-from byte becomes 0 (seen) or 0xff, the
+/// fog of every player but the real one coming from their private dark maps.
+fn hide_from_none_seeing(a: &Addrs, players: &[u8], real: u8) {
+    save_hidden_once();
+    let base = HIDDEN_SAVED.lock().ok().and_then(|s| s.clone()).unwrap_or_default();
+    let mut seen = vec![false; base.len()];
+    for &p in players {
+        if p == real {
+            for (s, b) in seen.iter_mut().zip(&base) {
+                *s |= b >> p & 1 == 0;
+            }
+        } else {
+            recompute_hidden_for(a, p);
+            for (s, b) in seen.iter_mut().zip(crate::viewmem::save_hidden()) {
+                *s |= b >> p & 1 == 0;
+            }
+        }
+    }
+    let combined: Vec<u8> = seen.into_iter().map(|s| if s { 0 } else { 0xff }).collect();
+    crate::viewmem::restore_hidden(&combined);
+}
+
+/// Everything any of `players` sees: the lightest of their fog maps, both the current and the
+/// remembered one (0 lit .. 0x10 black).
+fn swap_in_union_fog(a: &Addrs, players: &[u8], real: u8) {
+    swap_in_fog(a, |current, remembered| {
+        if !players.contains(&real) {
+            current.fill(0x10);
+            remembered.fill(0x10);
+        }
+        let (mut cur, mut rem) = (vec![0x10u8; FOG_LEN], vec![0x10u8; FOG_LEN]);
+        for &p in players.iter().filter(|&&p| p != real) {
+            if crate::fogmaps::copy_into(p, &mut cur, &mut rem) {
+                for (d, s) in current.iter_mut().zip(&cur) {
+                    *d = (*d).min(*s);
+                }
+                for (d, s) in remembered.iter_mut().zip(&rem) {
+                    *d = (*d).min(*s);
+                }
+            }
+        }
+    });
+}
+
+/// The sound bank is the one of the race of the player whose screen is up (unit voices, the UI
+/// skin follow it); the game loads it once per match, so it is loaded again when the race changes.
+fn sync_sounds(a: &Addrs, player: u8) {
+    let Some(load) = a.load_sounds else { return };
+    // SAFETY: a table of eight race bytes in the game's data section.
+    let want = unsafe { core::ptr::read_volatile((a.races + usize::from(player & 7)) as *const u8) };
+    if want > 1 {
+        return;
+    }
+    let real = REAL.load(Ordering::Acquire);
+    let loaded = match SOUND_RACE.load(Ordering::Acquire) {
+        // SAFETY: as above.
+        NONE if real < 8 => unsafe { core::ptr::read_volatile((a.races + usize::from(real)) as *const u8) },
+        n => n,
+    };
+    if loaded == want {
+        return;
+    }
+    // SAFETY: `LoadRaceSounds(1)` unloads the bank and loads the one of the race in `SkinAltFlag`;
+    // it is the call the game makes at the start of a match, on the main thread outside the sim.
+    unsafe {
+        core::ptr::write_volatile(a.race_flag as *mut u8, want);
+        let load: unsafe extern "C" fn(i8) = core::mem::transmute(load);
+        load(1);
+    }
+    SOUND_RACE.store(want, Ordering::Release);
 }
 
 fn restore_hidden() {
@@ -440,10 +682,16 @@ fn apply_view() {
     restore_fog(a);
     restore_hidden();
     let viewed = VIEWED.load(Ordering::Acquire);
+    let all = ALL_PLAYERS.load(Ordering::Acquire) && !FULL_VISION.load(Ordering::Acquire);
     if FULL_VISION.load(Ordering::Acquire) {
         swap_in_clear_fog(a);
         // What the draw pass remembers while it draws goes to this view, not the real player.
         crate::viewmem::enter(crate::viewmemory::FULL_VISION_SLOT);
+    } else if all {
+        let list = players(a);
+        swap_in_union_fog(a, &list, real);
+        crate::viewmem::enter(crate::viewmemory::ALL_PLAYERS_SLOT);
+        hide_from_none_seeing(a, &list, real);
     } else if viewed < 8 && viewed != real {
         swap_in_player_fog(a, viewed);
         crate::viewmem::enter(usize::from(viewed));
@@ -455,6 +703,8 @@ fn apply_view() {
     // The mask hides objects whose own "hidden from" bits include it: 0 hides nothing.
     let mask = if FULL_VISION.load(Ordering::Acquire) {
         0
+    } else if all {
+        0xff
     } else {
         1 << player
     };
@@ -495,7 +745,9 @@ unsafe extern "C" fn draw_list_detour() {
     let original: VoidFn = unsafe { core::mem::transmute(ORIG_DRAW_LIST.load(Ordering::Acquire)) };
     let watching = is_viewing()
         && REAL.load(Ordering::Acquire) < 8
-        && (VIEWED.load(Ordering::Acquire) < 8 || FULL_VISION.load(Ordering::Acquire));
+        && (VIEWED.load(Ordering::Acquire) < 8
+            || FULL_VISION.load(Ordering::Acquire)
+            || ALL_PLAYERS.load(Ordering::Acquire));
     if watching {
         let _ = guarded(apply_view);
     }
@@ -526,6 +778,8 @@ fn announce(a: &Addrs) {
     };
     if FULL_VISION.load(Ordering::Acquire) {
         text.push_str(", full vision");
+    } else if ALL_PLAYERS.load(Ordering::Acquire) {
+        text.push_str(", all players' vision");
     }
     say(&text);
 }
@@ -595,8 +849,21 @@ pub fn poll_keys() {
         VIEWED.store(if home < 8 && home != real { home } else { NONE }, Ordering::Release);
     }
     if pressed & KEY_FULL != 0 {
-        FULL_VISION.fetch_xor(true, Ordering::AcqRel);
+        // Normal -> all players' vision -> the whole map -> normal.
+        match (ALL_PLAYERS.load(Ordering::Acquire), FULL_VISION.load(Ordering::Acquire)) {
+            (false, false) => ALL_PLAYERS.store(true, Ordering::Release),
+            (_, false) => {
+                ALL_PLAYERS.store(false, Ordering::Release);
+                FULL_VISION.store(true, Ordering::Release);
+            }
+            _ => FULL_VISION.store(false, Ordering::Release),
+        }
     }
+    let player = match VIEWED.load(Ordering::Acquire) {
+        v if v < 8 => v,
+        _ => real,
+    };
+    let _ = guarded(|| sync_sounds(a, player));
     apply_view();
     refresh_screen(a);
     announce(a);
@@ -614,6 +881,7 @@ pub fn watch(player: u8) {
         return;
     }
     VIEWED.store(player, Ordering::Release);
+    let _ = guarded(|| sync_sounds(a, player));
     apply_view();
     refresh_screen(a);
     announce(a);
@@ -626,9 +894,17 @@ fn reset_view() {
     VIEWED.store(NONE, Ordering::Release);
     HOME.store(NONE, Ordering::Release);
     FULL_VISION.store(false, Ordering::Release);
+    ALL_PLAYERS.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     BOARD.store(0, Ordering::Release);
     restore_view();
+    if let Some(a) = ADDRS.get() {
+        let real = REAL.load(Ordering::Acquire);
+        if real < 8 {
+            let _ = guarded(|| sync_sounds(a, real));
+        }
+    }
+    SOUND_RACE.store(NONE, Ordering::Release);
     REAL.store(NONE, Ordering::Release);
 }
 
@@ -637,7 +913,7 @@ pub fn log_keys(extra: &str) {
     log(
         W2R_LOG_INFO,
         &format!(
-            "viewing keys: [ and ] switch player, Home returns to your own, Insert toggles full vision, backtick steps the scoreboard{extra}"
+            "viewing keys: [ and ] switch player, Home returns to your own, Insert steps all players' vision / full vision / off, backtick steps the scoreboard{extra}"
         ),
     );
 }

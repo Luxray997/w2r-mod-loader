@@ -751,7 +751,7 @@ unsafe fn inject(ptrs: *mut u32, lens: *mut u32, status: *mut u32) {
             // Start as the player who made the recording, not the seat this game gave the viewer.
             crate::viewer::begin(local, play.replay.header.local);
             crate::viewer::log_keys(
-                ", semicolon follows the recorded player's camera; Page Up/Down speed, End pause, Delete step",
+                ", semicolon follows the recorded player's camera; plus/minus speed, End pause, Delete step",
             );
         }
     }
@@ -941,15 +941,17 @@ const KEY_HELP: u16 = 256;
 const VK_SHIFT: i32 = 0x10;
 /// Whether the panel lists every key (kept for the rest of the session).
 static HELP: AtomicBool = AtomicBool::new(false);
-/// Backslash, Page Up, Page Down, End, Delete, period, comma and slash (the view keys are in
-/// `viewer.rs`).
-const WATCHED: [(u16, i32); 8] = [
+/// Plus and minus (main row and numpad), End, Delete, period, comma, slash and semicolon (the view
+/// keys are in `viewer.rs`).
+const WATCHED: [(u16, i32); 10] = [
     (KEY_HEAT, 0xBF),
     (KEY_NEXT_BATTLE, 0xBE),
     (KEY_PREV_BATTLE, 0xBC),
     (KEY_FOLLOW, 0xBA),
-    (KEY_FASTER, 0x21),
-    (KEY_SLOWER, 0x22),
+    (KEY_FASTER, 0xBB),
+    (KEY_FASTER, 0x6B),
+    (KEY_SLOWER, 0xBD),
+    (KEY_SLOWER, 0x6D),
     (KEY_PAUSE, 0x23),
     (KEY_STEP, 0x2E),
 ];

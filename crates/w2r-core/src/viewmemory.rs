@@ -7,9 +7,10 @@
 //! Generic over what is remembered (`S`) and pure, so it is tested without the game: the glue
 //! passes closures that read the game's memory into an `S` and write one back.
 
-/// Memory slots 0..=7 are players; this one is full vision.
+/// Memory slots 0..=7 are players; this one is full vision, and the next all players' vision.
 pub const FULL_VISION_SLOT: usize = 8;
-const SLOTS: usize = 9;
+pub const ALL_PLAYERS_SLOT: usize = 9;
+const SLOTS: usize = 10;
 
 pub struct ViewMemory<S> {
     /// The recorded player's own memory, held while another view is loaded.
