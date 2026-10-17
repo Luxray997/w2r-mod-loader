@@ -742,6 +742,10 @@ impl Screen {
             .as_ref()
             .map(|q| q.poll())
             .unwrap_or_else(|| Default::default());
+        // A link between players that will hold the game back (figures shared by the mod users).
+        for line in crate::linkshare::take_notices(&names, crate::chat::now_ms()) {
+            push_notice(line);
+        }
         let host_name = unsafe { str_data_c(self.host_name) };
         let host = geo::host_slot(seat0, &present, &names, &host_name);
         let fixed = unsafe { *self.fixed_start } == 1;

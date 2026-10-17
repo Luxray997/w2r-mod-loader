@@ -26,6 +26,8 @@ Rules shared by every subsystem (`crates/w2r-core/src/peer.rs`):
 - Messages that arrive on another thread, or while the host is inside a plugin callback, wait
   in a bounded queue (256) for the next frame; a flood beyond that is dropped and counted.
 
+Subsystem `'Q'` carries each player's link measurements for the lobby warnings ([link-sharing.md](link-sharing.md)).
+
 Subsystems `'M'` and `'L'` are consumed but have no handler yet (their ports are later Phase 3
 steps). `'P'` is the only subsystem third-party plugins use.
 

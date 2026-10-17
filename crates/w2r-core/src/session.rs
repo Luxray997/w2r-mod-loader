@@ -369,6 +369,21 @@ pub fn on_window(name: Option<&str>) {
                     .filter(|&n| h.announced(n))
                     .fold(0u8, |m, n| m | 1 << n);
                 crate::ping::note_roster(mask);
+                // Tell the other mod users how good our links are and look for a bad one among
+                // everybody's (docs/link-sharing.md). Only while connected to a lobby.
+                #[cfg(target_arch = "x86")]
+                if net.transport.connected()
+                    && let Some(lobby_slots) = net.transport.lobby_slots()
+                {
+                    crate::linkshare::frame(
+                        now,
+                        mask,
+                        h.self_slot(),
+                        lobby_slots,
+                        &crate::netquality::game::latest_by_net(),
+                        |slot, msg| net.transport.send_to(slot, msg),
+                    );
+                }
             }
         }
     });

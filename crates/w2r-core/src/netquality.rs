@@ -16,6 +16,8 @@ use crate::screenkit::{Rect, fl};
 const WINDOW: usize = 30;
 /// Round trips the ping is the median of.
 const PING_WINDOW: usize = 5;
+/// Round trips the jitter is taken over.
+pub const JITTER_WINDOW: usize = 8;
 /// Round trips needed before a loss figure is shown.
 const MIN_FOR_LOSS: usize = 5;
 /// A round trip this much over the median (and over the floor) is counted as a resent heartbeat.
@@ -152,10 +154,20 @@ impl Tracker {
             .copied()
             .collect();
         let ping = median(&recent);
-        let jitter = (recent.len() >= 2).then(|| {
-            let sum: f32 = recent.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
-            sum / (recent.len() - 1) as f32
-        });
+        // The median of the gaps between consecutive round trips over a longer stretch: a single
+        // resent heartbeat spoils two gaps, not the figure.
+        let jitter = {
+            let longer: Vec<f32> = self
+                .rtts
+                .iter()
+                .rev()
+                .take(JITTER_WINDOW)
+                .rev()
+                .copied()
+                .collect();
+            let gaps: Vec<f32> = longer.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+            median(&gaps)
+        };
         let waiting = self.open_since.map(|t| (now_ms - t).max(0.0) as f32);
         let all: Vec<f32> = self.rtts.iter().copied().collect();
         let loss = median(&all).and_then(|m| {
@@ -403,12 +415,20 @@ pub mod game {
     struct State {
         trackers: [Tracker; NET_SLOTS],
         record: [usize; NET_SLOTS],
+        /// The metrics of the last poll per net slot, for sharing with the other players.
+        by_net: [Option<Metrics>; NET_SLOTS],
     }
 
     static STATE: Mutex<State> = Mutex::new(State {
         trackers: [const { Tracker::new() }; NET_SLOTS],
         record: [0; NET_SLOTS],
+        by_net: [const { None }; NET_SLOTS],
     });
+
+    /// What the last poll measured, per net slot (not lobby slot).
+    pub fn latest_by_net() -> [Option<Metrics>; NET_SLOTS] {
+        STATE.lock().unwrap_or_else(|e| e.into_inner()).by_net.clone()
+    }
     static START: OnceLock<Instant> = OnceLock::new();
 
     fn now_ms() -> f64 {
@@ -475,6 +495,7 @@ pub mod game {
             .unwrap_or([u32::MAX; NET_SLOTS]);
             let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             let mut out: [Option<Metrics>; NET_SLOTS] = Default::default();
+            state.by_net = Default::default();
             for (net, entry) in raw.iter().enumerate() {
                 let Some((record, counters)) = entry else {
                     state.trackers[net].reset();
@@ -493,6 +514,7 @@ pub mod game {
                     if counters.sent == 0 && m.silent_ms >= super::SILENT_MS {
                         continue;
                     }
+                    state.by_net[net] = Some(m.clone());
                     out[lobby] = Some(m);
                 }
             }

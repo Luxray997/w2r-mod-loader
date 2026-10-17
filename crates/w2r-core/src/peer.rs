@@ -550,6 +550,14 @@ pub mod hook {
                 }
                 true
             }
+            // How good each player's links are, for the lobby warnings.
+            Packet::Ours {
+                subsystem: crate::linkshare::SUBSYSTEM,
+                body,
+            } => {
+                crate::linkshare::deliver(sender, body, crate::chat::now_ms());
+                true
+            }
             // Minimap pings, during a match.
             #[cfg(target_arch = "x86")]
             Packet::Ours {
