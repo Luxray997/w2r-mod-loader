@@ -1,6 +1,6 @@
 [package]
 name = "w2r-loader-lib"
-version = "1.0.2"
+version = "1.0.3"
 edition.workspace = true
 rust-version.workspace = true
 description = "Plugin manager logic for Warcraft II Remastered: index, download, verify, install"

@@ -1,6 +1,6 @@
 [package]
 name = "w2r-loader-cli"
-version = "1.0.2"
+version = "1.0.3"
 edition.workspace = true
 rust-version.workspace = true
 description = "w2r-loader: command-line interface of the W2R Mod Loader for Warcraft II Remastered"
