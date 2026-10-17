@@ -177,7 +177,10 @@ mod live {
     const FIRST_COMMAND: u8 = 0x06;
     const LAST_COMMAND: u8 = 0x17;
 
-    const WINDOW_FLAGS: u32 = 0x120;
+    /// No scrollbar, background, and no input: the panel is only a label, and a window that takes input
+    /// becomes the toolkit's active window, which makes the HUD's command buttons stop reporting hover
+    /// (no tooltips until a click).
+    const WINDOW_FLAGS: u32 = 0x120 | 0x400;
     const WIDTH: f32 = 92.0;
     const HEIGHT: f32 = 18.0;
     const MARGIN_RIGHT: f32 = 4.0;
