@@ -1527,7 +1527,7 @@ fn poll_keys() {
 /// Playback state back to its start.
 fn reset_replay() {
     SYNC_BAD.store(0, Ordering::Release);
-    FOLLOW.store(true, Ordering::Release);
+    FOLLOW.store(false, Ordering::Release);
     KEYS_DOWN.store(0, Ordering::Release);
     PAUSED.store(false, Ordering::Release);
     STEP.store(false, Ordering::Release);
