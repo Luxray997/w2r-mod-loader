@@ -219,6 +219,13 @@ if ($WithBlackRecolor) {
     $release = Join-Path $PluginsRepo "target\i686-pc-windows-msvc\release"
     $entries += Install-Fixture "w2r-black-recolor" "w2r_black_recolor" @("game.read", "hooks.raw") $false $release "Beau Hastings" "Draws the black player pink or cyan on your screen (port of the Black2Pink option of wc2r-plus by Luxray997)."
 }
+# A plugin switched off in the GUI stays off.
+$disabledBefore = @()
+$oldState = Join-Path $root "config\state.json"
+if (Test-Path $oldState) {
+    $prev = Get-Content $oldState -Raw | ConvertFrom-Json
+    $disabledBefore = @($prev.plugins.PSObject.Properties | Where-Object { $_.Value.enabled -eq $false } | ForEach-Object { $_.Name })
+}
 foreach ($id in $allPlugins) {
     # The plugin's own manifest goes in unchanged; only the pin and approvals are written here.
     $source = Join-Path $PluginsRepo "plugins\$id"
@@ -229,10 +236,11 @@ foreach ($id in $allPlugins) {
     Copy-Item (Join-Path $PluginsRepo ("target\i686-pc-windows-msvc\release\" + $manifest.entry)) (Join-Path $folder $manifest.entry) -Force
     $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $folder $manifest.entry)).Hash.ToLower()
     $capsJson = ($manifest.capabilities | ForEach-Object { '"' + $_ + '"' }) -join ", "
+    $enabledText = if ($disabledBefore -contains $id) { "false" } else { "true" }
     $entries += @"
     "$id": {
       "version": "$($manifest.version)",
-      "enabled": true,
+      "enabled": $enabledText,
       "sha256": "$hash",
       "approved_capabilities": [$capsJson]
     }
