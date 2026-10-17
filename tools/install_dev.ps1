@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Developer install of the w2rpm host into the game, with the basic fixture plugin.
+Developer install of the W2R Mod Loader host into the game, with the basic fixture plugin.
 
 .DESCRIPTION
 Builds w2r_core.dll (release, i686) and copies it into the game's x86 folder as version.dll.
@@ -86,7 +86,7 @@ if ($Uninstall) {
     if (-not (Test-Path $target)) {
         Write-Host "nothing installed at $target"
     } elseif (-not (Test-OurDll $target)) {
-        Write-Host "$target is not the w2rpm host; left in place"
+        Write-Host "$target is not the W2R Mod Loader host; left in place"
     } else {
         Remove-Item $target
         Write-Host "removed $target"

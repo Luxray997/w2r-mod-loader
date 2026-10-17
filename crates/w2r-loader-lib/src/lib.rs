@@ -1,4 +1,4 @@
-//! Manager logic behind `w2rpm` (CLI) and the egui app: check the index and packages,
+//! Manager logic behind `w2r-loader` (CLI) and the egui app: check the index and packages,
 //! install atomically. Specs: `docs/index.md`, `docs/manifest.md`, `docs/layout.md`, `docs/manager.md`.
 //! The in-game host never links this crate; only the manager touches the network.
 

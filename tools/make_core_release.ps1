@@ -21,7 +21,7 @@ Where OutDir is served from (https only). Defaults to the w2r-plugins Pages site
 The core.json serial. Defaults to the current Unix time in seconds.
 
 .PARAMETER MinManager
-The oldest w2rpm that may install this core. Raise it when the core needs a newer manager.
+The oldest W2R Mod Loader manager that may install this core. Raise it when the core needs a newer manager.
 #>
 param(
     [string]$OutDir = "",

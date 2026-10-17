@@ -64,7 +64,7 @@ fn loading_the_host_dll_starts_it_and_the_build_guard_refuses_this_process() {
 
     let log = root.join("logs").join("w2r.log");
     let text = wait_for(&log, "the host is inactive this session");
-    assert!(text.contains("w2rpm host"), "{text}");
+    assert!(text.contains("W2R Mod Loader host"), "{text}");
     assert!(text.contains("attached"), "{text}");
     assert!(
         text.contains("expecting Warcraft II Remastered v1.0.2.2818"),

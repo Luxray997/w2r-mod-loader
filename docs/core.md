@@ -56,7 +56,7 @@ can ship code that runs in every player's game; that is the accepted trade-off f
    happens when the installed core is the same or newer, or when `min_manager` is above this
    manager.
 4. Downloads at most `size` bytes and checks size and SHA-256, then that the bytes are our DLL
-   (`MZ` header and the `=== w2rpm host ` marker) and carry exactly the announced version.
+   (`MZ` header and the `=== w2rpm host ` marker, kept in the binary for managers from before the rename) and carry exactly the announced version.
 5. Refuses when the current `version.dll` is another mod's (`not_ours`: wc2r-plus uses the same
    file name) and when it cannot be opened for writing (`game_running`). The user can choose to
    replace the other mod's file (`w2r-loader core update --replace-other`, or the "Replace it and

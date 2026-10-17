@@ -25,6 +25,11 @@ use crate::symbols::Symbols;
 #[used]
 static CORE_VERSION_MARKER: &str = concat!("W2R-CORE-VERSION:", env!("CARGO_PKG_VERSION"), ";");
 
+/// Managers before the rename tell a core of ours by this text in `version.dll`, so it stays in the
+/// binary (`#[used]`) although the log now says "W2R Mod Loader host".
+#[used]
+static LEGACY_HOST_MARKER: &str = "=== w2rpm host ";
+
 const DLL_PROCESS_ATTACH: u32 = 1;
 
 /// What startup established; the main-thread session reads it.
@@ -68,7 +73,7 @@ pub extern "system" fn DllMain(instance: HMODULE, reason: u32, _reserved: *mut c
 /// The only channel left when the log cannot be opened: a debugger or DebugView sees it.
 fn debug_print(msg: &str) {
     use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW;
-    let wide: Vec<u16> = format!("w2rpm host: {msg}\n")
+    let wide: Vec<u16> = format!("W2R Mod Loader host: {msg}\n")
         .encode_utf16()
         .chain(core::iter::once(0))
         .collect();
@@ -107,7 +112,7 @@ fn run_startup(proxy: Result<(), Vec<&'static str>>) {
         W2R_LOG_INFO,
         "host",
         &format!(
-            "=== w2rpm host {} attached, game base {game_base:#010x}, pid {} ===",
+            "=== W2R Mod Loader host {} attached, game base {game_base:#010x}, pid {} ===",
             env!("CARGO_PKG_VERSION"),
             std::process::id()
         ),

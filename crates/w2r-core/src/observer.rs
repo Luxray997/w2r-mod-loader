@@ -1,6 +1,6 @@
 //! The observer team's gate (docs/observer-research.md). Team 9 ("OBS") only works when every
 //! machine in the game runs the observer code, so it is offered, and accepted, only while every
-//! other player in the lobby has announced observer support (`Handshake::everyone_has`: a w2rpm
+//! other player in the lobby has announced observer support (`Handshake::everyone_has`: a W2R Mod Loader
 //! with the Observer plugin loaded; their other plugins may differ). The decision is recomputed
 //! every lobby frame:
 //!

@@ -188,7 +188,7 @@ verified alone (slice 1 to 3); the download and lock visuals need the second pla
   footer (Leave, Start for the host; dead 1.5 s after entry; everything greyed during the start
   countdown) and the game's own popup (`MpLobbyPopup`). The right column has only the map name; the
   preview, info rows and locks are slice 2.
-- **Setting:** `enhanced_lobby_screen` in `host.json`, default off at first (on since 2026-10-04, see the end of this document), checkbox "Use the w2rpm
+- **Setting:** `enhanced_lobby_screen` in `host.json`, default off at first (on since 2026-10-04, see the end of this document), checkbox "Use the W2R Mod Loader
   multiplayer lobby screen" on the plugin screen (takes effect when the lobby next opens).
 - **Fault handling:** a fault under the draw switches to the game's lobby for the rest of the
   session and logs once; the frame in which it happened may glitch (our layout space can be left

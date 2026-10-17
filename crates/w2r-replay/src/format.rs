@@ -53,7 +53,7 @@ pub const MAX_TEXT: usize = 1024;
 pub struct Header {
     /// Game build, e.g. `2818`.
     pub build: String,
-    /// The recording host (`w2rpm 0.1.0`).
+    /// The recording host (`W2R ML 1.1.2`).
     pub client: String,
     /// Simulation fingerprint of the loaded plugins: a replay only plays back under the same.
     pub fingerprint: [u8; 4],

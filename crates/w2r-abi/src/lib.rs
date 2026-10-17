@@ -1,4 +1,4 @@
-//! Rust bindings for the w2rpm plugin ABI, version 1.
+//! Rust bindings for the W2R Mod Loader plugin ABI, version 1.
 //!
 //! `include/w2r_abi.h` is the source of truth; this file mirrors it by hand. The layout tests at
 //! the bottom check the same facts as `tests/abi_layout.c`, so a drift in either direction fails.

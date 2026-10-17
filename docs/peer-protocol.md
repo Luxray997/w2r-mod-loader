@@ -45,7 +45,7 @@ logic, tested without the game) driven by `session.rs`.
 | 7 | 4 | nonce: chosen on each lobby entry, identifies this instance |
 | 11 | 4 | capabilities: bit 0 handshake, bit 1 reserved (was "strict"; ignored), bit 2 map sharing |
 | 15 | 4 | simulation fingerprint, the 4 bytes in fingerprint order (wc2r-plus sends zeros) |
-| 19 | 16 | version text, ASCII, NUL-padded: `w2rpm <version>` (wc2r-plus sends its own version) |
+| 19 | 16 | version text, ASCII, NUL-padded: `W2R ML <version>` (builds before 1.1.2 send `w2rpm <version>`; wc2r-plus sends its own version) |
 
 35 bytes. Longer messages are accepted and the extra bytes ignored, so a later version can
 append fields. Another protocol version, or fewer than 35 bytes, is ignored (one log line per

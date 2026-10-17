@@ -40,7 +40,7 @@ impl Default for Https {
             .https_only(true)
             .max_redirects(3)
             .timeout_global(Some(Duration::from_secs(60)))
-            .user_agent(concat!("w2rpm/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("W2R-Mod-Loader/", env!("CARGO_PKG_VERSION")))
             .build();
         Https {
             agent: ureq::Agent::new_with_config(config),

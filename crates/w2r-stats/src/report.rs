@@ -188,7 +188,7 @@ pub struct Report {
     pub rid: [u8; 8],
     pub setup: [u8; 32],
     pub started: u64,
-    /// `w2rpm <version>`.
+    /// `W2R ML <version>` (older builds: `w2rpm <version>`).
     pub client: String,
     /// The simulation fingerprint, 4 bytes hex.
     pub fingerprint: String,

@@ -1058,7 +1058,7 @@ impl App {
             .session
             .as_ref()
             .map_or_else(|| "unknown".to_owned(), |s| s.manager.to_string());
-        let _ = writeln!(t, "W2R Mod Loader (w2rpm) {manager}");
+        let _ = writeln!(t, "W2R Mod Loader {manager}");
         if let Some(core) = &self.view.core {
             let installed = match &core.installed {
                 Some(CoreInstalled::Missing) => "not installed".to_owned(),
