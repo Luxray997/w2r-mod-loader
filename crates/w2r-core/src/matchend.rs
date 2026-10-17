@@ -373,7 +373,7 @@ unsafe fn read_raw() -> Option<Raw> {
             slots,
             names: core::ptr::read(a.names as *const [u8; 0x100]),
             lobby: core::slice::from_raw_parts(
-                game::LOBBY_AT as *const u8,
+                a.slots as *const u8,
                 game::BLOCK_LEN,
             )
             .to_vec(),

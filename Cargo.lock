@@ -2549,7 +2549,7 @@ version = "1.0.0"
 
 [[package]]
 name = "w2r-core"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "microseh",
  "minhook-sys",
