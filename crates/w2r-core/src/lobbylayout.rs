@@ -586,20 +586,46 @@ pub fn pending_text(names: &[String]) -> String {
     format!("Pending map download from: {list}")
 }
 
-/// The tooltip over a seat's mod dot: the announced version and whether the simulation plugins
-/// match. `None` for a seat without a dot.
-pub fn mod_tip(mark: ModMark, version: &str) -> Option<String> {
-    let version = match clean_text(version) {
-        v if v.is_empty() => "w2rpm".to_owned(),
-        v => v,
-    };
-    match mark {
-        ModMark::None => None,
-        ModMark::Match => Some(format!("Runs {version}. Same simulation plugins as yours.")),
-        ModMark::Differs => Some(format!(
-            "Runs {version}. Different simulation plugins from yours: the game may desync."
-        )),
+/// The loader's name and number from the version a player announced. Builds before the rename
+/// announce "w2rpm x.y.z"; today's say "W2R ML x.y.z" (the field holds 16 bytes). The number is
+/// `None` when the text does not carry one.
+pub fn loader_name(announced: &str) -> (String, Option<String>) {
+    let text = clean_text(announced);
+    for prefix in ["W2R ML", "W2R Mod Loader", "w2rpm"] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            let number = rest.trim();
+            return if number.is_empty() {
+                ("W2R Mod Loader".to_owned(), None)
+            } else {
+                (format!("W2R Mod Loader {number}"), Some(number.to_owned()))
+            };
+        }
     }
+    if text.is_empty() {
+        ("W2R Mod Loader".to_owned(), None)
+    } else {
+        (text, None)
+    }
+}
+
+/// The tooltip over a seat's mod dot: which loader the player runs, whether the plugins match
+/// yours, and, when the loader versions differ, both numbers. `None` for a seat without a dot.
+/// `own` is the version this machine announces.
+pub fn mod_tip(mark: ModMark, version: &str, own: &str) -> Option<String> {
+    let (name, theirs) = loader_name(version);
+    let mut tip = match mark {
+        ModMark::None => return None,
+        ModMark::Match => format!("{name}. Same plugins as yours."),
+        ModMark::Differs => {
+            format!("{name}. Different plugins from yours: the game may desync.")
+        }
+    };
+    if let (Some(theirs), (_, Some(mine))) = (theirs, loader_name(own))
+        && theirs != mine
+    {
+        tip.push_str(&format!(" You have {mine}, they have {theirs}."));
+    }
+    Some(tip)
 }
 
 /// Where a tooltip of `size` goes for a mouse at `(mx, my)` inside `window`: up and to the right
@@ -1134,11 +1160,30 @@ mod tests {
 
     #[test]
     fn the_mod_dot_tooltip_names_the_version_and_the_match() {
-        assert_eq!(mod_tip(ModMark::None, "w2rpm 0.1.0"), None);
-        let same = mod_tip(ModMark::Match, "w2rpm 0.1.0").unwrap();
-        assert!(same.contains("w2rpm 0.1.0") && same.contains("Same"));
-        let differs = mod_tip(ModMark::Differs, "").unwrap();
-        assert!(differs.starts_with("Runs w2rpm.") && differs.contains("Different"));
+        assert_eq!(mod_tip(ModMark::None, "W2R ML 1.1.2", "W2R ML 1.1.2"), None);
+        let same = mod_tip(ModMark::Match, "W2R ML 1.1.2", "W2R ML 1.1.2").unwrap();
+        assert_eq!(same, "W2R Mod Loader 1.1.2. Same plugins as yours.");
+        let differs = mod_tip(ModMark::Differs, "", "W2R ML 1.1.2").unwrap();
+        assert!(differs.starts_with("W2R Mod Loader. ") && differs.contains("Different plugins"));
+    }
+
+    #[test]
+    fn builds_from_before_the_rename_show_under_the_new_name() {
+        assert_eq!(loader_name("w2rpm 1.1.1"), ("W2R Mod Loader 1.1.1".to_owned(), Some("1.1.1".to_owned())));
+        assert_eq!(loader_name("W2R ML 1.1.2").1.as_deref(), Some("1.1.2"));
+        assert_eq!(loader_name("w2rpm"), ("W2R Mod Loader".to_owned(), None));
+        assert_eq!(loader_name("wc2r-plus 3").0, "wc2r-plus 3");
+    }
+
+    #[test]
+    fn the_tooltip_says_when_the_loader_versions_differ() {
+        let tip = mod_tip(ModMark::Match, "w2rpm 1.1.1", "W2R ML 1.1.2").unwrap();
+        assert_eq!(
+            tip,
+            "W2R Mod Loader 1.1.1. Same plugins as yours. You have 1.1.2, they have 1.1.1."
+        );
+        let no_number = mod_tip(ModMark::Match, "w2rpm", "W2R ML 1.1.2").unwrap();
+        assert!(!no_number.contains("You have"), "nothing to compare");
     }
 
     #[test]

@@ -788,7 +788,7 @@ impl Screen {
                 k.fill_round(inner, inner.w * 0.5, colour);
                 let reach = Rect::new(b.x - 4.0, b.y - 4.0, b.w + 8.0, b.h + 8.0);
                 if geo::contains(reach, mouse) {
-                    tip = geo::mod_tip(mods[i], &versions[i]);
+                    tip = geo::mod_tip(mods[i], &versions[i], crate::handshake::VERSION_TEXT);
                 }
             }
             if dl.bars[i] != geo::BarKind::None

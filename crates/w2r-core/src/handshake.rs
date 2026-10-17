@@ -25,7 +25,7 @@ pub const BODY_LEN: usize = 1 + 1 + 4 + 4 + 4 + VERSION_LEN;
 pub const MESSAGE_LEN: usize = BASE_HEADER_LEN + BODY_LEN;
 const _: () = assert!(MESSAGE_LEN == 35, "wc2r-plus sends 35 bytes");
 
-/// Capability bits. wc2r-plus defines 0 and 2; 1 is reserved (older w2rpm builds set it for a
+/// Capability bits. wc2r-plus defines 0 and 2; 1 is reserved (older builds set it for a
 /// "strict" mode that no longer exists; it is ignored).
 pub const CAP_HANDSHAKE: u32 = 1 << 0;
 pub const CAP_MAP_SHARING: u32 = 1 << 2;
@@ -35,7 +35,7 @@ pub const CAP_OBSERVER: u32 = 1 << 3;
 
 /// What goes in the 16-byte version field. wc2r-plus logs it as "runs wc2r-plus <text>", so
 /// the text names us.
-pub const VERSION_TEXT: &str = concat!("w2rpm ", env!("CARGO_PKG_VERSION"));
+pub const VERSION_TEXT: &str = concat!("W2R ML ", env!("CARGO_PKG_VERSION"));
 const _: () = assert!(VERSION_TEXT.len() <= VERSION_LEN);
 
 /// A net slot presenting a new nonce sooner than this is ignored (wc2r-plus): cycling nonces
@@ -512,7 +512,7 @@ impl Handshake {
         }
     }
 
-    /// Whether every other player in the lobby announced observer support (a w2rpm that has it, with
+    /// Whether every other player in the lobby announced observer support (a W2R Mod Loader that has it, with
     /// the Observer plugin loaded), so the observer team may be used. Their other plugins may differ.
     /// False when unsure: not in a lobby, we have no observer support ourselves, the roster not read
     /// yet, or somebody present who has not announced.
@@ -667,7 +667,7 @@ mod tests {
         assert_eq!(reply.len(), 1);
         assert_eq!(reply[0].0, 0);
         assert_eq!(decode(body(reply[0].1)).unwrap().kind, KIND_REPLY);
-        assert!(logs(&out)[0].starts_with("net slot 0 (net slot 0) runs w2rpm "));
+        assert!(logs(&out)[0].starts_with("net slot 0 (net slot 0) runs W2R ML "));
         assert!(logs(&out)[0].contains("via hello"));
         // The same HELLO again (a duplicate) draws no second reply and no log.
         assert!(b.receive(41, 0, body(hello[0])).is_empty());
@@ -818,7 +818,7 @@ mod tests {
         host.receive(10, 1, body(&encode(KIND_HELLO, 0x2222, capable, FP_A)));
         assert!(!host.everyone_has());
         host.receive(10, 2, body(&encode(KIND_HELLO, 0x3333, CAP_HANDSHAKE, FP_A)));
-        assert!(!host.everyone_has(), "a w2rpm without the observer plugin does not count");
+        assert!(!host.everyone_has(), "a W2R Mod Loader without the observer plugin does not count");
         host.receive(20_000, 2, body(&encode(KIND_HELLO, 0x3333, capable, FP_B)));
         assert!(host.everyone_has(), "other plugins may differ");
         // A player who leaves no longer counts against it.
