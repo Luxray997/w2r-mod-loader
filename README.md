@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="assets/icon/w2r-mod-loader-256.png" alt="W2R Mod Loader icon" width="160"><br>
+  <sub>Icon by Maxx444</sub>
+</p>
+
 # W2R Mod Loader (w2rpm)
 
 A mod loader and plugin platform for Warcraft II Remastered (game build 1.0.2.2818, 32-bit). Players
@@ -86,3 +91,7 @@ under Saved Games (`-WithChat` adds the chat plugin, `-WithCrasher` the crashing
 
 Large parts of the host and the whole chat plugin are ports of wc2r-plus by Luxray997 (MIT); see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Credits
+
+The icon is by Maxx444 (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).

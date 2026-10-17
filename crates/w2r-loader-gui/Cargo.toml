@@ -14,6 +14,10 @@ w2r-loader-lib = { path = "../w2r-loader-lib" }
 w2r-formats.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
 rfd = { version = "0.15", default-features = false }
+png = "0.18"
+
+[build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 w2r-loader-lib = { path = "../w2r-loader-lib", features = ["dev-repo"] }

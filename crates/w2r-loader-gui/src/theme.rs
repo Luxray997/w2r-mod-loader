@@ -145,34 +145,33 @@ pub fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui))
     ui.add_space(6.0);
 }
 
-/// The window icon: a dark rounded square with a gold ring and dot, drawn here so no image file
-/// ships with the exe.
+/// The window icon: the project icon by Maxx444 (see `THIRD_PARTY_NOTICES.md`), embedded as a PNG.
+/// Falls back to a blank icon if the embedded file ever fails to decode.
 pub fn icon() -> egui::IconData {
-    const N: usize = 64;
-    let mut rgba = vec![0u8; N * N * 4];
-    for y in 0..N {
-        for x in 0..N {
-            let (fx, fy) = (x as f32 + 0.5 - 32.0, y as f32 + 0.5 - 32.0);
-            // Rounded square mask, corner radius 12.
-            let (qx, qy) = (fx.abs() - 20.0, fy.abs() - 20.0);
-            let sq = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - 12.0;
-            if sq > 0.0 {
-                continue;
-            }
-            let r = (fx * fx + fy * fy).sqrt();
-            let c = if (15.0..=22.0).contains(&r) || r <= 7.0 {
-                [214, 170, 70, 255]
-            } else {
-                [24, 26, 31, 255]
-            };
-            rgba[(y * N + x) * 4..][..4].copy_from_slice(&c);
-        }
-    }
-    egui::IconData {
+    let bytes = include_bytes!("../../../assets/icon/w2r-mod-loader-256.png");
+    decode_icon(bytes).unwrap_or_default()
+}
+
+fn decode_icon(bytes: &[u8]) -> Option<egui::IconData> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    Some(egui::IconData {
         rgba,
-        width: N as u32,
-        height: N as u32,
-    }
+        width: info.width,
+        height: info.height,
+    })
 }
 
 /// Up to two letters for the avatar: the first letters of the first two words, after dropping the
@@ -198,7 +197,15 @@ fn initials(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::initials;
+    use super::{icon, initials};
+
+    #[test]
+    fn the_window_icon_decodes() {
+        let i = icon();
+        assert_eq!((i.width, i.height), (256, 256));
+        assert_eq!(i.rgba.len(), 256 * 256 * 4);
+        assert_eq!(i.rgba[3], 0, "corner is transparent");
+    }
 
     #[test]
     fn avatar_letters_skip_the_w2r_prefix() {

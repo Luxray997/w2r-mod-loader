@@ -1,5 +1,12 @@
 # Third-party notices
 
+## Project icon
+
+The W2R Mod Loader icon (`assets/icon/`: `w2r-mod-loader.png`, `w2r-mod-loader-256.png`,
+`w2r-mod-loader.ico`) is artwork by Maxx444. The PNG and ICO files are that artwork resized, with
+the white corners made transparent. It is shown in the app window, embedded in the exe, and used
+in the README. It is not covered by the license of the code.
+
 ## wc2r-plus
 
 wc2r-plus (https://github.com/Luxray997/wc2r-plus) is by Luxray997 (MIT, license below). Substantial parts of this project are ports of
