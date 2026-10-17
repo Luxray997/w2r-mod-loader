@@ -59,6 +59,7 @@ tools/           spec reference implementations, generators, the dev installer
 - [docs/index.md](docs/index.md): plugin index
 - [docs/load-policy.md](docs/load-policy.md): when the host loads a plugin, and the simulation fingerprint
 - [docs/manager.md](docs/manager.md): the manager library, CLI and GUI
+- [docs/plugin-dev-setup.md](docs/plugin-dev-setup.md): set up a PC to build and test your own plugins (rustup, MSVC, the 32-bit target, local install)
 - [docs/peer-protocol.md](docs/peer-protocol.md): the host's own peer messages (the handshake), wire-compatible with wc2r-plus
 - Features: [chat-plugin.md](docs/chat-plugin.md), [lobby-policy.md](docs/lobby-policy.md),
   [map-download.md](docs/map-download.md), [create-screen.md](docs/create-screen.md),
