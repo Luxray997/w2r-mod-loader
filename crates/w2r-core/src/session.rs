@@ -1154,6 +1154,7 @@ fn start() -> Session {
             &*host_log,
         );
         crate::replayrec::set_enabled(config.record_replays);
+        crate::replayrec::set_skip_computer(config.skip_computer_replays);
         crate::apm::configure(&config);
         crate::netpanel::configure(&config);
         crate::ping::configure(&config);

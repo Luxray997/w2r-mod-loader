@@ -136,6 +136,8 @@ pub struct App {
     root: Option<Root>,
     /// The sharing setting of the chosen folder, saved the moment it is changed.
     share: Option<Result<w2r_loader_lib::share::Settings, String>>,
+    /// `skip_computer_replays` of the chosen folder's `host.json`, saved the moment it is changed.
+    skip_cpu_replays: Option<Result<bool, String>>,
     view: View,
     tab: Tab,
     search: String,
@@ -251,6 +253,7 @@ impl App {
             session: None,
             root: None,
             share: None,
+            skip_cpu_replays: None,
             view: View::default(),
             search: String::new(),
             focus_search: false,
@@ -323,6 +326,10 @@ impl App {
                 self.confs.clear();
                 self.share =
                     Some(w2r_loader_lib::share::Settings::load(&root.0).map_err(|e| e.to_string()));
+                self.skip_cpu_replays = Some(
+                    w2r_loader_lib::hostconf::skip_computer_replays(&root.0)
+                        .map_err(|e| e.to_string()),
+                );
                 self.root = Some(root);
             }
             Err(e) => {
@@ -330,6 +337,7 @@ impl App {
                 self.session = None;
                 self.root = None;
                 self.share = None;
+                self.skip_cpu_replays = None;
                 self.view = View::default();
             }
         }
@@ -1045,6 +1053,7 @@ impl App {
                     }
                 });
                 self.core_section(ui, ctx);
+                self.replays_section(ui);
                 self.sharing_section(ui);
                 self.about_section(ui, ctx);
             });
@@ -1240,6 +1249,38 @@ impl App {
             theme::muted("Close the game before updating: it keeps the file in use while it runs.")
                 .small(),
         );
+    }
+
+    /// Which games are saved as replays (`skip_computer_replays` in `config\host.json`). It is saved
+    /// as soon as it is changed and applies from the next match.
+    fn replays_section(&mut self, ui: &mut egui::Ui) {
+        theme::section(ui, "Replays", |ui| {
+            let (Some(root), Some(state)) = (&self.root, &mut self.skip_cpu_replays) else {
+                ui.label(theme::muted("Choose a w2r folder first."));
+                return;
+            };
+            match state {
+                Err(e) => {
+                    ui.colored_label(theme::BAD, format!("config/host.json is unusable: {e}"));
+                }
+                Ok(on) => {
+                    let mut value = *on;
+                    if ui
+                        .checkbox(&mut value, "Don't save replays of games with computer players")
+                        .changed()
+                    {
+                        match w2r_loader_lib::hostconf::set_skip_computer_replays(&root.0, value) {
+                            Ok(()) => *on = value,
+                            Err(e) => {
+                                self.status =
+                                    Some(Err(format!("could not save the replay setting: {e}")));
+                            }
+                        }
+                    }
+                    ui.label(theme::muted("Applies from the next match.").small());
+                }
+            }
+        });
     }
 
     /// The match-data sharing switch (the same setting as the checkbox on the in-game Plugins

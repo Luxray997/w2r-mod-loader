@@ -26,6 +26,8 @@ pub struct HostConfig {
     pub auto_download: bool,
     /// Record each match played as a replay (docs/replay-research.md).
     pub record_replays: bool,
+    /// Do not save a replay when any slot is a computer player.
+    pub skip_computer_replays: bool,
     /// Create screen: fill the game name from the map while it is empty and on each map change.
     pub auto_game_name: bool,
     /// Show the player's actions per minute on the game screen (docs/apm.md).
@@ -58,6 +60,7 @@ impl Default for HostConfig {
             map_sharing: true,
             auto_download: false,
             record_replays: true,
+            skip_computer_replays: true,
             auto_game_name: false,
             apm_display: false,
             apm_alert_below: 60,
@@ -98,6 +101,9 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "map_sharing" => cfg.map_sharing = value.as_bool().ok_or("bad_field")?,
             "auto_download" => cfg.auto_download = value.as_bool().ok_or("bad_field")?,
             "record_replays" => cfg.record_replays = value.as_bool().ok_or("bad_field")?,
+            "skip_computer_replays" => {
+                cfg.skip_computer_replays = value.as_bool().ok_or("bad_field")?;
+            }
             "auto_game_name" => cfg.auto_game_name = value.as_bool().ok_or("bad_field")?,
             "apm_display" => cfg.apm_display = value.as_bool().ok_or("bad_field")?,
             "apm_color_text" => cfg.apm_color_text = value.as_bool().ok_or("bad_field")?,
@@ -154,6 +160,10 @@ impl HostConfig {
             (
                 "record_replays".to_owned(),
                 Value::Bool(self.record_replays),
+            ),
+            (
+                "skip_computer_replays".to_owned(),
+                Value::Bool(self.skip_computer_replays),
             ),
             (
                 "auto_game_name".to_owned(),
@@ -234,6 +244,7 @@ mod tests {
             map_sharing: false,
             auto_download: true,
             record_replays: false,
+            skip_computer_replays: true,
             auto_game_name: true,
             apm_display: true,
             apm_alert_below: 45,
@@ -325,6 +336,7 @@ mod tests {
             map_sharing: true,
             auto_download: false,
             record_replays: true,
+            skip_computer_replays: false,
             auto_game_name: false,
             apm_display: false,
             apm_alert_below: 0,

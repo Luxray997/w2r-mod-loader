@@ -43,6 +43,8 @@ static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static ARMED: AtomicBool = AtomicBool::new(false);
 /// The `record_replays` setting: matches are recorded unless it is off (read at each match start).
 static ENABLED: AtomicBool = AtomicBool::new(true);
+/// The `skip_computer_replays` setting: a match with a computer slot is not recorded.
+static SKIP_COMPUTER: AtomicBool = AtomicBool::new(true);
 static ADDRS: OnceLock<Addrs> = OnceLock::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
 /// `SimRngState` read just before the latest call of the turn function while no recording has
@@ -251,6 +253,11 @@ pub fn note_event(ev: &w2r_replay::Event) {
 /// The `record_replays` setting changed; it applies from the next match.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Release);
+}
+
+/// The `skip_computer_replays` setting changed; it applies from the next match.
+pub fn set_skip_computer(on: bool) {
+    SKIP_COMPUTER.store(on, Ordering::Release);
 }
 
 /// True while a replay is open for writing.
