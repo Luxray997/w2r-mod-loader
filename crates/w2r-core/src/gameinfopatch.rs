@@ -46,7 +46,113 @@ fn replacement() -> [u8; ORIGINAL.len()] {
     out
 }
 
+/// The `CALL FUN_0050e1b0` (int to string) that formats the Game Speed row; the stack holds
+/// `out, value` (cdecl) and EAX comes back as `out`.
+const SPEED_SITE: usize = 0x0053_d1ea;
+const SPEED_CALL: [u8; 5] = [0xe8, 0xc1, 0x0f, 0xfd, 0xff];
+const INT_TO_STRING: usize = 0x0050_e1b0;
+/// `FUN_00547670(out, const char*)`: builds the game's string from a C string (cdecl).
+const CSTR_TO_STRING: usize = 0x0054_7670;
+
+static IMAGE_SHIFT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+type ToString<T> = unsafe extern "C" fn(*mut core::ffi::c_void, T) -> *mut core::ffi::c_void;
+
+/// Stands in for the int to string call on the Game Speed row: the speed's name, or the plain
+/// number for a value outside the known range.
+unsafe extern "C" fn speed_text(out: *mut core::ffi::c_void, value: i32) -> *mut core::ffi::c_void {
+    let shift = IMAGE_SHIFT.load(core::sync::atomic::Ordering::Relaxed);
+    let name = u8::try_from(value)
+        .ok()
+        .and_then(crate::lobbylayout::speed_name_c);
+    match name {
+        Some(n) => {
+            // SAFETY: both addresses are the game's functions, checked against the image at install.
+            let f: ToString<*const core::ffi::c_char> =
+                unsafe { core::mem::transmute(CSTR_TO_STRING + shift) };
+            let s = unsafe { f(out, n.as_ptr()) };
+            // SAFETY: `out` is the game's MSVC std::string (16-byte buffer or pointer, size at +0x10,
+            // capacity at +0x14) that the call just filled.
+            unsafe { drop_trailing_colon(s) };
+            s
+        }
+        None => {
+            let f: ToString<i32> = unsafe { core::mem::transmute(INT_TO_STRING + shift) };
+            unsafe { f(out, value) }
+        }
+    }
+}
+
+/// The game's C string to string helper appends a ":" (it builds the captions); the value must
+/// not have one, so cut it back off.
+///
+/// # Safety
+/// `s` must point at a live MSVC `std::string` (x86 layout).
+unsafe fn drop_trailing_colon(s: *mut core::ffi::c_void) {
+    let base = s.cast::<u8>();
+    let size = unsafe { base.add(0x10).cast::<usize>().read() };
+    let cap = unsafe { base.add(0x14).cast::<usize>().read() };
+    if size == 0 {
+        return;
+    }
+    let data = if cap > 0xf {
+        unsafe { base.cast::<*mut u8>().read() }
+    } else {
+        base
+    };
+    if unsafe { *data.add(size - 1) } == b':' {
+        unsafe {
+            *data.add(size - 1) = 0;
+            base.add(0x10).cast::<usize>().write(size - 1);
+        }
+    }
+}
+
+/// The new `rel32` for the call at `site` to reach `target`.
+fn rel32(site: usize, target: usize) -> [u8; 4] {
+    target.wrapping_sub(site.wrapping_add(5)).to_le_bytes()
+}
+
+fn install_speed(image: &Image, base: usize, log: &dyn Log) -> bool {
+    let shift = base.wrapping_sub(PREFERRED_IMAGE_BASE);
+    let site = SPEED_SITE.wrapping_add(shift);
+    if !image.is_code(site, SPEED_CALL.len()) {
+        log.line(W2R_LOG_ERROR, "host", "game info speed: site is not code");
+        return false;
+    }
+    // SAFETY: `site` is inside the game's mapped image (checked above).
+    let current = unsafe { core::slice::from_raw_parts(site as *const u8, SPEED_CALL.len()) };
+    if current != SPEED_CALL {
+        log.line(
+            W2R_LOG_ERROR,
+            "host",
+            "game info speed: the game's bytes are not the expected ones; left alone",
+        );
+        return false;
+    }
+    if let Err(e) =
+        hooks::global().reserve(Owner::Host, site, SPEED_CALL.len(), "host:game info speed")
+    {
+        log.line(W2R_LOG_ERROR, "host", &format!("game info speed: {e:?}"));
+        return false;
+    }
+    IMAGE_SHIFT.store(shift, core::sync::atomic::Ordering::Relaxed);
+    let mut patched = [0xe8, 0, 0, 0, 0];
+    patched[1..].copy_from_slice(&rel32(site, speed_text as *const () as usize));
+    if !unsafe { write_code(site, &patched) } {
+        log.line(W2R_LOG_ERROR, "host", "game info speed: could not write");
+        return false;
+    }
+    log.line(
+        W2R_LOG_INFO,
+        "host",
+        &format!("patched game info Game Speed row @ {site:#010x}"),
+    );
+    true
+}
+
 pub fn install(image: &Image, base: usize, log: &dyn Log) -> bool {
+    install_speed(image, base, log);
     let site = base + (SITE - PREFERRED_IMAGE_BASE);
     if !image.is_code(site, ORIGINAL.len()) {
         log.line(W2R_LOG_ERROR, "host", "game info patch: site is not code");
@@ -68,11 +174,7 @@ pub fn install(image: &Image, base: usize, log: &dyn Log) -> bool {
         ORIGINAL.len(),
         "host:game info resources",
     ) {
-        log.line(
-            W2R_LOG_ERROR,
-            "host",
-            &format!("game info patch: {e:?}"),
-        );
+        log.line(W2R_LOG_ERROR, "host", &format!("game info patch: {e:?}"));
         return false;
     }
     if !unsafe { write_code(site, &replacement()) } {
@@ -95,8 +197,14 @@ unsafe fn write_code(addr: usize, bytes: &[u8]) -> bool {
     use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_READWRITE, VirtualProtect};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     let mut old = 0u32;
-    if unsafe { VirtualProtect(addr as *const _, bytes.len(), PAGE_EXECUTE_READWRITE, &mut old) }
-        == 0
+    if unsafe {
+        VirtualProtect(
+            addr as *const _,
+            bytes.len(),
+            PAGE_EXECUTE_READWRITE,
+            &mut old,
+        )
+    } == 0
     {
         return false;
     }
@@ -125,8 +233,20 @@ mod tests {
 
     #[test]
     fn the_patch_agrees_with_the_waiting_screens_resources_map() {
-        for flags in [0u32, 0x1000, 0x2000, 0x3000, 0x2_0000, 0x200, 0x1000 | 0x200 | 0x4000] {
-            assert_eq!(model(flags), crate::lobbylayout::resources_index(flags), "{flags:#x}");
+        for flags in [
+            0u32,
+            0x1000,
+            0x2000,
+            0x3000,
+            0x2_0000,
+            0x200,
+            0x1000 | 0x200 | 0x4000,
+        ] {
+            assert_eq!(
+                model(flags),
+                crate::lobbylayout::resources_index(flags),
+                "{flags:#x}"
+            );
         }
     }
 

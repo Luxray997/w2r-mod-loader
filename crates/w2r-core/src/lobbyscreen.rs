@@ -210,7 +210,11 @@ pub fn add_observer_team_option(symbols: &Symbols, log: &dyn Log) {
             symbols.address("BroadcastLobbySlot").unwrap_or(0),
         );
     }
-    log.line(W2R_LOG_INFO, "host", "observer: OBS added to the team options");
+    log.line(
+        W2R_LOG_INFO,
+        "host",
+        "observer: OBS added to the team options",
+    );
 }
 
 fn resolve(symbols: &Symbols) -> Result<Screen, &'static str> {
@@ -535,7 +539,7 @@ impl Screen {
         line(
             1,
             &caption(c"option_speed_game_speed"),
-            &unsafe { *self.game_speed }.to_string(),
+            &geo::speed_name(unsafe { *self.game_speed }),
         );
         let resources =
             unsafe { self.key_by_index(self.resource_keys, geo::resources_index(flags)) };
@@ -997,7 +1001,11 @@ impl Screen {
                 let text = &row.text;
                 // The game wraps a little narrower than the cell it reports, which cost a long
                 // notice its last line; notices are long, so measure them with some room spare.
-                let measure_w = if row.notice { wrap_w * NOTICE_WRAP_SPARE } else { wrap_w };
+                let measure_w = if row.notice {
+                    wrap_w * NOTICE_WRAP_SPARE
+                } else {
+                    wrap_w
+                };
                 let lines = k.count_lines(text, measure_w).max(1);
                 k.row_dynamic(lines as f32 * line_h, 1);
                 k.wrapped_label(

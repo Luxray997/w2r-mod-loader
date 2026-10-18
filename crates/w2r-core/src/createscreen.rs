@@ -352,7 +352,11 @@ impl MapPicker for GamePicker<'_> {
 
     fn select(&mut self, players: u32, folder: &str, nth: u32) -> W2rStatus {
         let mut browser = self.screen.browser();
-        let Some(map) = browser.with_filter(players, folder).nth(nth as usize).cloned() else {
+        let Some(map) = browser
+            .with_filter(players, folder)
+            .nth(nth as usize)
+            .cloned()
+        else {
             return W2R_E_NOT_FOUND;
         };
         if self.screen.view.select_indexed(&mut browser, &map) {
@@ -391,8 +395,7 @@ impl Screen {
                     heading_font: unsafe { *self.font_heading },
                 };
                 let mut browser = self.browser();
-                let shown =
-                    unsafe { picker.draw(k, &mut browser, &self.view, window, theme) };
+                let shown = unsafe { picker.draw(k, &mut browser, &self.view, window, theme) };
                 k.space_end();
                 k.pop_skin(previous);
                 return shown.map(|(area, path, heat)| Request {
@@ -473,7 +476,9 @@ impl Screen {
             return;
         }
         // SAFETY: the buffer is NUL-terminated within its capacity.
-        let current = unsafe { CStr::from_ptr(buffer.cast()) }.to_string_lossy().into_owned();
+        let current = unsafe { CStr::from_ptr(buffer.cast()) }
+            .to_string_lossy()
+            .into_owned();
         let cap = max.max(0) as usize;
         if cap > 0 && (current.is_empty() || current == state.filled) {
             let suggestion = game_name_from_map(&map, 0);
@@ -598,7 +603,12 @@ impl Screen {
             fields.push((k.edit_seq(), buffer));
             unsafe {
                 k.text_edit_at(
-                    Rect::new(column.x, column.y + CAPTION_H, col_w - button_w - GAP * 0.5, ROW_H),
+                    Rect::new(
+                        column.x,
+                        column.y + CAPTION_H,
+                        col_w - button_w - GAP * 0.5,
+                        ROW_H,
+                    ),
                     buffer,
                     max,
                     text_skin,
@@ -614,8 +624,9 @@ impl Screen {
                 let mut n = self.name_presses.get();
                 let map = unsafe { self.selected_name() };
                 // SAFETY: the buffer is NUL-terminated within its capacity.
-                let current =
-                    unsafe { CStr::from_ptr(buffer.cast()) }.to_string_lossy().into_owned();
+                let current = unsafe { CStr::from_ptr(buffer.cast()) }
+                    .to_string_lossy()
+                    .into_owned();
                 let mut suggestion = game_name_from_map(&map, n);
                 if suggestion == current {
                     n = n.wrapping_add(1);
@@ -651,7 +662,14 @@ impl Screen {
         let lengths: Vec<(u32, usize)> = fields
             .iter()
             // SAFETY: both are the NUL-terminated buffers just edited.
-            .map(|&(id, text)| (id, unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes().len()))
+            .map(|&(id, text)| {
+                (
+                    id,
+                    unsafe { core::ffi::CStr::from_ptr(text.cast()) }
+                        .to_bytes()
+                        .len(),
+                )
+            })
             .collect();
         k.tab_between(&lengths);
 
@@ -672,6 +690,17 @@ impl Screen {
             Rect::new(column.x, row4, col_w, CAPTION_H),
             &k.localized(c"option_speed_game_speed"),
             ALIGN_CAPTION,
+        );
+        let speed = u8::try_from(unsafe { *self.game_speed }).unwrap_or(u8::MAX);
+        k.label_at(
+            Rect::new(
+                column.x,
+                row4 + CAPTION_H + ROW_H - CAPTION_H * 0.4,
+                col_w,
+                CAPTION_H,
+            ),
+            &crate::lobbylayout::speed_name(speed),
+            ALIGN_CENTRE,
         );
         k.set_rect(Rect::new(column.x, row4 + CAPTION_H, col_w, ROW_H));
         unsafe { k.slider(self.game_speed, 0, 8) };
@@ -789,7 +818,11 @@ fn game_name_from_map(map: &str, n: usize) -> String {
     if let Some(base) = bases.get(n) {
         return base.clone();
     }
-    let prefix = if initials.is_empty() { "game" } else { initials.as_str() };
+    let prefix = if initials.is_empty() {
+        "game"
+    } else {
+        initials.as_str()
+    };
     let width = MIN_GAME_NAME.saturating_sub(prefix.len()).max(2);
     format!("{prefix}{:0width$}", n - bases.len() + 1)
 }

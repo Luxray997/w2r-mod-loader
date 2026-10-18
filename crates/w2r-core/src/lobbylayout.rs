@@ -251,6 +251,27 @@ pub fn tileset_index(flags: u32) -> usize {
     }
 }
 
+/// The name of a game speed setting (0 slowest to 8 fastest); out-of-range values show as numbers.
+pub fn speed_name(speed: u8) -> String {
+    speed_name_c(speed).map_or_else(|| speed.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// [`speed_name`] as a C string, for the game's own text calls; `None` outside 0..=8.
+pub fn speed_name_c(speed: u8) -> Option<&'static core::ffi::CStr> {
+    const NAMES: [&core::ffi::CStr; 9] = [
+        c"Slowest",
+        c"Even Slower",
+        c"Slower",
+        c"Slow",
+        c"Normal",
+        c"Fast",
+        c"Faster",
+        c"Even Faster",
+        c"Fastest",
+    ];
+    NAMES.get(usize::from(speed)).copied()
+}
+
 /// A caption with exactly one trailing colon and no trailing blanks; empty stays empty.
 pub fn with_colon(text: &str) -> String {
     let t = text.trim_end_matches([' ', '\t']);
@@ -1169,7 +1190,10 @@ mod tests {
 
     #[test]
     fn builds_from_before_the_rename_show_under_the_new_name() {
-        assert_eq!(loader_name("w2rpm 1.1.1"), ("W2R Mod Loader 1.1.1".to_owned(), Some("1.1.1".to_owned())));
+        assert_eq!(
+            loader_name("w2rpm 1.1.1"),
+            ("W2R Mod Loader 1.1.1".to_owned(), Some("1.1.1".to_owned()))
+        );
         assert_eq!(loader_name("W2R ML 1.1.2").1.as_deref(), Some("1.1.2"));
         assert_eq!(loader_name("w2rpm"), ("W2R Mod Loader".to_owned(), None));
         assert_eq!(loader_name("wc2r-plus 3").0, "wc2r-plus 3");
