@@ -61,6 +61,7 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         (Method::Get, "/v1/games") => crate::api::recent_games(&env.d1("w2r_stats")?, &req.url()?).await,
         (Method::Post, "/v1/reports") => post_reports(req, env, &ctx).await,
         (Method::Put, "/v1/replays") => put_replay(req, env).await,
+        (Method::Put, "/v1/diagnostics") => put_diagnostics(req, env).await,
         _ => Response::error("not found", 404),
     }
 }
@@ -75,6 +76,12 @@ async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     match crate::jobs::scheduled(&db, now_secs(), nightly).await {
         Ok(line) => console_log!("scheduled: {line}"),
         Err(e) => console_error!("scheduled failed: {e}"),
+    }
+    if nightly {
+        match purge_diagnostics(&env).await {
+            Ok(n) => console_log!("purged {n} old diagnostics"),
+            Err(e) => console_error!("diagnostics purge failed: {e}"),
+        }
     }
 }
 
@@ -263,4 +270,110 @@ async fn put_replay(mut req: Request, env: Env) -> Result<Response> {
     .run()
     .await?;
     json(200, r#"{"ok":true,"stored":true}"#)
+}
+
+/// `PUT /v1/diagnostics`: a zip from the manager's "Send diagnostics" button. Headers
+/// `x-w2r-key` and `x-w2r-sig` are both present (signed with the installation key) or both absent.
+/// The answer carries the report code the user passes on; the zip waits in R2 for the maintainer.
+async fn put_diagnostics(mut req: Request, env: Env) -> Result<Response> {
+    use crate::diagnostics as diag;
+    let who = req.headers().get("cf-connecting-ip").ok().flatten().unwrap_or_default();
+    if !within_limit(&env, "DIAG_LIMIT", &format!("d:{who}")).await {
+        return refusal(429, "too many uploads, wait a minute");
+    }
+    let header = |name: &str| req.headers().get(name).ok().flatten();
+    let key = header("x-w2r-key").map(|h| w2r_stats::hex::decode_array::<32>(&h));
+    let sig = header("x-w2r-sig").map(|h| w2r_stats::hex::decode_array::<64>(&h));
+    // A header that is present but unreadable is a bad signature, not "unsigned".
+    let (key, sig) = match (key, sig) {
+        (None, None) => (None, None),
+        (Some(Some(k)), Some(Some(s))) => (Some(k), Some(s)),
+        _ => return refusal(422, diag::Reject::BadSignature.reason()),
+    };
+    let raw = req.bytes().await?;
+    let row = match diag::check(&raw, key.as_ref(), sig.as_ref()) {
+        Ok(row) => row,
+        Err(why) => {
+            let status = if why == diag::Reject::TooLarge { 413 } else { 422 };
+            return refusal(status, why.reason());
+        }
+    };
+    let db = env.d1("w2r_stats")?;
+    let answer = format!(r#"{{"ok":true,"code":"{}"}}"#, row.code);
+
+    // The same file again is a success with the same code.
+    let have = db
+        .prepare("SELECT 1 AS one FROM diagnostics WHERE sha = ?1")
+        .bind(&[row.sha.as_str().into()])?
+        .first::<serde_json::Value>(None)
+        .await?;
+    if have.is_some() {
+        return json(200, &answer);
+    }
+
+    let since = JsValue::from_f64(now_secs().saturating_sub(24 * 3600) as f64);
+    let count = |sql: &'static str, binds: Vec<JsValue>| {
+        let db = &db;
+        async move {
+            let r = db.prepare(sql).bind(&binds)?.first::<serde_json::Value>(None).await?;
+            Ok::<u64, Error>(r.and_then(|v| v.get("n").and_then(|n| n.as_u64())).unwrap_or(0))
+        }
+    };
+    if count("SELECT COUNT(*) AS n FROM diagnostics WHERE received > ?1", vec![since.clone()]).await?
+        >= diag::TOTAL_PER_DAY
+    {
+        return refusal(429, "the service has taken enough today, try tomorrow");
+    }
+    if !row.key.is_empty()
+        && count(
+            "SELECT COUNT(*) AS n FROM diagnostics WHERE key = ?1 AND received > ?2",
+            vec![row.key.as_str().into(), since],
+        )
+        .await?
+            >= diag::PER_KEY_PER_DAY
+    {
+        return refusal(429, "too many uploads today");
+    }
+
+    env.bucket("REPLAYS")?
+        .put(format!("diagnostics/{}.zip", row.sha), raw)
+        .execute()
+        .await?;
+    db.prepare(
+        "INSERT OR IGNORE INTO diagnostics (sha, code, key, received, size) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(&[
+        row.sha.as_str().into(),
+        row.code.as_str().into(),
+        row.key.as_str().into(),
+        JsValue::from_f64(now_secs() as f64),
+        JsValue::from_f64(row.size as f64),
+    ])?
+    .run()
+    .await?;
+    json(200, &answer)
+}
+
+/// Deletes diagnostics bundles older than `diagnostics::KEEP_SECS` (run by the nightly trigger).
+async fn purge_diagnostics(env: &Env) -> Result<usize> {
+    let db = env.d1("w2r_stats")?;
+    let cutoff = now_secs().saturating_sub(crate::diagnostics::KEEP_SECS);
+    let old = db
+        .prepare("SELECT sha FROM diagnostics WHERE received < ?1 LIMIT 100")
+        .bind(&[JsValue::from_f64(cutoff as f64)])?
+        .all()
+        .await?
+        .results::<serde_json::Value>()?;
+    let bucket = env.bucket("REPLAYS")?;
+    let mut gone = 0;
+    for row in old {
+        let Some(sha) = row.get("sha").and_then(|s| s.as_str()) else { continue };
+        bucket.delete(format!("diagnostics/{sha}.zip")).await?;
+        db.prepare("DELETE FROM diagnostics WHERE sha = ?1")
+            .bind(&[sha.into()])?
+            .run()
+            .await?;
+        gone += 1;
+    }
+    Ok(gone)
 }

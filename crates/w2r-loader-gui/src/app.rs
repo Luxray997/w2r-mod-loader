@@ -145,6 +145,8 @@ pub struct App {
     sort: Sort,
     focus_search: bool,
     consent: Option<Consent>,
+    /// The "Send diagnostics" window, while it is open.
+    diag: Option<crate::diagwin::DiagWin>,
     /// Jobs to run one after another once the current one succeeds (the rest of an install).
     queue: Vec<(String, Job)>,
     confirm_remove: Option<(String, bool)>,
@@ -258,6 +260,7 @@ impl App {
             search: String::new(),
             focus_search: false,
             consent: None,
+            diag: None,
             queue: Vec::new(),
             confirm_remove: None,
             busy: None,
@@ -1140,6 +1143,18 @@ impl App {
                     ctx.copy_text(self.diagnostics());
                     self.status = Some(Ok("diagnostics copied to the clipboard".into()));
                 }
+                if ui
+                    .button("Send diagnostics…")
+                    .on_hover_text("Review and send your logs to the developer (scrubbed of personal details)")
+                    .clicked()
+                {
+                    match &self.root {
+                        Some(r) => {
+                            self.diag = Some(crate::diagwin::DiagWin::new(r.0.clone(), self.diagnostics()));
+                        }
+                        None => self.status = Some(Err("choose a w2r folder first".into())),
+                    }
+                }
             });
             ui.label(
                 theme::muted(
@@ -1803,6 +1818,11 @@ impl App {
                 });
             });
         self.consent_window(ctx);
+        if let Some(d) = &mut self.diag
+            && d.show(ctx)
+        {
+            self.diag = None;
+        }
         self.remove_window(ctx);
         self.history_window(ctx);
         self.flush_status(ctx);

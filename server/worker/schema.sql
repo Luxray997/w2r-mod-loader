@@ -107,3 +107,14 @@ CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,
   v TEXT
 );
+
+-- Diagnostics bundles sent from the manager; the zips are in R2 under diagnostics/<sha>.zip.
+CREATE TABLE IF NOT EXISTS diagnostics (
+  sha      TEXT    PRIMARY KEY,
+  code     TEXT    NOT NULL,
+  key      TEXT    NOT NULL,
+  received INTEGER NOT NULL,
+  size     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS diagnostics_code ON diagnostics (code);
+CREATE INDEX IF NOT EXISTS diagnostics_received ON diagnostics (received);

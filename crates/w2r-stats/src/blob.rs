@@ -9,19 +9,37 @@ use sha2::{Digest, Sha256};
 use crate::identity::Identity;
 
 const DOMAIN: &[u8] = b"w2r-replay-1\n";
+const DIAG_DOMAIN: &[u8] = b"w2r-diag-1\n";
 
 pub fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
 fn message(digest: &[u8; 32]) -> Vec<u8> {
-    let mut m = DOMAIN.to_vec();
+    message_in(DOMAIN, digest)
+}
+
+fn message_in(domain: &[u8], digest: &[u8; 32]) -> Vec<u8> {
+    let mut m = domain.to_vec();
     m.extend_from_slice(digest);
     m
 }
 
 pub fn sign(identity: &Identity, bytes: &[u8]) -> [u8; 64] {
     identity.sign(&message(&digest(bytes)))
+}
+
+/// Signature over a diagnostics zip (its own domain string, so it is no other kind of signature).
+pub fn sign_diag(identity: &Identity, bytes: &[u8]) -> [u8; 64] {
+    identity.sign(&message_in(DIAG_DOMAIN, &digest(bytes)))
+}
+
+pub fn verify_diag(key: &[u8; 32], sig: &[u8; 64], bytes: &[u8]) -> bool {
+    let Ok(key) = VerifyingKey::from_bytes(key) else {
+        return false;
+    };
+    key.verify(&message_in(DIAG_DOMAIN, &digest(bytes)), &Signature::from_bytes(sig))
+        .is_ok()
 }
 
 /// True when `sig` is a valid signature by `key` over `bytes`.
@@ -45,6 +63,15 @@ mod tests {
         assert!(!verify(&id.public(), &sig, b"replay bytez"));
         let other = Identity::from_secret([6; 32]);
         assert!(!verify(&other.public(), &sig, b"replay bytes"));
+    }
+
+    #[test]
+    fn a_diagnostics_signature_is_its_own_kind() {
+        let id = Identity::from_secret([5; 32]);
+        let sig = sign_diag(&id, b"zip");
+        assert!(verify_diag(&id.public(), &sig, b"zip"));
+        assert!(!verify(&id.public(), &sig, b"zip"));
+        assert!(!verify_diag(&id.public(), &sign(&id, b"zip"), b"zip"));
     }
 
     #[test]

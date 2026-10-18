@@ -106,6 +106,22 @@ enum Cmd {
         #[command(subcommand)]
         action: ShareAction,
     },
+    /// Bundle your logs and settings (personal details scrubbed) into a zip, and optionally send
+    /// it to the developer. Nothing is sent unless you pass --send.
+    Diagnostics {
+        /// Where to save the zip (default: w2r-diagnostics.zip in the current folder).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Send the zip to the stats service and print the report code to give the developer.
+        #[arg(long)]
+        send: bool,
+        /// Also include crash/hang dumps (memory snapshots; they cannot be scrubbed).
+        #[arg(long)]
+        dumps: bool,
+        /// A line for the developer, saved as notes.txt in the zip.
+        #[arg(long)]
+        note: Option<String>,
+    },
     /// Skill ratings worked out from the reports in the outbox (humans only, two teams).
     Ratings {
         /// Also rate computer players by name. For trying the maths on single-player games.
@@ -331,6 +347,9 @@ fn run(cli: &Cli) -> Result<bool, Error> {
         Cmd::Stats { recent } => return stats(cli, *recent),
         Cmd::Replays { play } => return replays(cli, play.as_deref()),
         Cmd::Share { action } => share(cli, action)?,
+        Cmd::Diagnostics { out, send, dumps, note } => {
+            diagnostics(cli, out.as_deref(), *send, *dumps, note.as_deref())?
+        }
         Cmd::Ratings { with_computers } => return ratings(cli, *with_computers),
         Cmd::List => list(cli)?,
         Cmd::Refresh => {
@@ -684,4 +703,41 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn diagnostics(
+    cli: &Cli,
+    out: Option<&std::path::Path>,
+    send: bool,
+    dumps: bool,
+    note: Option<&str>,
+) -> Result<(), Error> {
+    use w2r_loader_lib::diag;
+    use w2r_loader_lib::fetch::Https;
+    use w2r_loader_lib::share::Settings;
+
+    let root = context_root(cli)?;
+    let opts = diag::Options {
+        include_dumps: dumps,
+        note: note.unwrap_or_default().to_owned(),
+        summary: String::new(),
+    };
+    let (bundle, zip) = diag::build(&root.0, &opts, &diag::Private::from_env())?;
+    println!("The bundle holds:");
+    for e in &bundle.entries {
+        let how = if e.scrubbed { "" } else { "  (NOT scrubbed)" };
+        println!("  {:>9} bytes  {}{how}", e.bytes.len(), e.name);
+    }
+    println!("User name, computer name, BattleTags and IP addresses are replaced in the text files.");
+    let path = out.map_or_else(|| std::path::PathBuf::from("w2r-diagnostics.zip"), Into::into);
+    std::fs::write(&path, &zip)?;
+    println!("saved {} ({} bytes)", path.display(), zip.len());
+    if send {
+        let settings = Settings::load(&root.0)?;
+        let code = diag::send(&root.0, &settings, &Https::default(), &zip)?;
+        println!("sent. Give the developer this code: {code}");
+    } else {
+        println!("nothing was sent; add --send to send it");
+    }
+    Ok(())
 }
