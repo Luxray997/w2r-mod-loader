@@ -3,3 +3,4 @@
 !crates/w2r-core/src/target/
 __pycache__/
 *.pyc
+diagnostics-fetched/
