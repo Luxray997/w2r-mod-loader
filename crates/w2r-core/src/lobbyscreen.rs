@@ -353,6 +353,14 @@ pub fn push_notice(text: String) {
     }
 }
 
+/// The chat history's mouse presses this frame: (right button: copy the line, left button: open
+/// its link when Ctrl is held). Read every frame so a press made elsewhere is never replayed.
+fn chat_clicks(over_list: bool) -> (bool, bool) {
+    let right = crate::chatclick::right_clicked();
+    let left = crate::chatclick::left_clicked();
+    (right && over_list, left && over_list)
+}
+
 /// Forgets the notices of an earlier lobby: the window has not been drawn for a while.
 fn forget_stale_notices(now: u64) {
     let last = LAST_DRAW_MS.swap(now.max(1), Ordering::Relaxed);
@@ -997,6 +1005,11 @@ impl Screen {
             };
             let colour = k.current_text_colour();
             let mut measured = false;
+            let mouse = k.mouse();
+            let over_list = geo::contains(inner, mouse);
+            let (copy_click, link_click) = chat_clicks(over_list);
+            let ctrl = crate::chatclick::ctrl_down();
+            let mut hit: Option<(String, Rect)> = None;
             for row in &rows {
                 let text = &row.text;
                 // The game wraps a little narrower than the cell it reports, which cost a long
@@ -1014,15 +1027,41 @@ impl Screen {
                         geo::NOTICE_COLOUR
                     } else if geo::is_presence_line(text) {
                         geo::PRESENCE_COLOUR
+                    } else if crate::chatclick::first_url(text).is_some() {
+                        LINK_COLOUR
                     } else {
                         colour
                     },
                 );
-                if !measured {
-                    measured = true;
-                    if let Some(cell) = k.last_row_first_cell() {
-                        state.wrap_w = cell.w;
+                if !measured || over_list {
+                    let cell = k.last_row_first_cell();
+                    if !measured {
+                        measured = true;
+                        if let Some(cell) = cell {
+                            state.wrap_w = cell.w;
+                        }
                     }
+                    if over_list
+                        && let Some(cell) = cell
+                        && geo::contains(cell, mouse)
+                    {
+                        hit = Some((text.clone(), cell));
+                    }
+                }
+            }
+            if let Some((text, cell)) = hit {
+                let link = crate::chatclick::first_url(&text);
+                if ctrl && let Some(url) = &link {
+                    // An underline says this line is a link while Ctrl is held.
+                    k.fill_rect(
+                        Rect::new(cell.x, cell.y + cell.h - 2.0, cell.w, 2.0),
+                        geo::NOTICE_COLOUR,
+                    );
+                    if link_click && !crate::chatclick::open_url(url) {
+                        push_notice("Could not open that link.".into());
+                    }
+                } else if copy_click && crate::chatclick::copy_text(&text) {
+                    push_notice("Copied that line to the clipboard.".into());
                 }
             }
             let content_h = k.next_row_top() - content_top;
@@ -1117,6 +1156,8 @@ unsafe fn str_data_c(p: *const u8) -> String {
     unsafe { CStr::from_ptr(p.cast()).to_string_lossy().into_owned() }
 }
 
+/// Chat lines that hold a web link are drawn in this blue (Ctrl+click opens the link).
+const LINK_COLOUR: u32 = geo::pack(110, 170, 255, 255);
 const RATING_COLOUR: u32 = geo::pack(235, 205, 120, 255);
 const RATING_NEW_COLOUR: u32 = geo::pack(150, 150, 150, 255);
 
