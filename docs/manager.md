@@ -64,6 +64,12 @@ for tests; the URL rules and package hashes are still enforced.
   core: HTTPS, hash and size, nothing signed. Publish with `tools\make_manager_release.ps1`, which
   writes `w2r-mod-loader-<version>.exe` and `manager.json`; upload both next to `index.json`.
   The CLI does not self-update (the package is the GUI exe); it never reads these fields.
+- **Who can self-update.** Only managers **1.1.0 and newer** understand `package_url`, so they are
+  the only ones that show "Update now". A 1.0.x manager ignores the fields, shows the banner with
+  "Get it" and opens `url` (the GitHub releases page): that user downloads `W2R-Mod-Loader.zip`
+  and replaces the exe by hand, once; every later update is then one click. The CLI, and a GUI exe
+  in a folder the user cannot write to, also update by hand. Keep `url` pointing at the latest
+  release, and say so in the release notes of the first release after a change to this mechanism.
 - **Plugin settings.** The Installed tab edits `config\<id>.json` (`{"schema":1,"values":{...}}`,
   whole numbers and text) with the host's limits (`w2r-loader-lib/src/pluginconf.rs`). Plugins declare
   no schema, so keys show as stored. Editing is off while the game runs, because the game writes
