@@ -292,6 +292,56 @@ pub fn quality(m: &Metrics) -> Quality {
     q
 }
 
+/// Jitter at which a link starts to feel uneven, and at which it clearly does (ms).
+pub const JITTER_NOTICEABLE_MS: f32 = 30.0;
+pub const JITTER_HEAVY_MS: f32 = 80.0;
+
+/// A plain-language reading of one link that weighs ping, jitter and loss separately, so a high
+/// ping alone is not mistaken for a bad connection (a steady 180 ms plays fine; a 40 ms link that
+/// drops packets does not).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Assessment {
+    pub quality: Quality,
+    /// A short phrase, e.g. "Smooth" or "Steady but laggy".
+    pub summary: &'static str,
+}
+
+pub fn assess(m: &Metrics) -> Assessment {
+    let base = quality(m);
+    if m.silent_ms >= SILENT_MS {
+        return Assessment { quality: Quality::Bad, summary: "Connection failing" };
+    }
+    let (Some(ping), true) = (m.ping_ms, base != Quality::NoData) else {
+        return Assessment { quality: base, summary: "Measuring" };
+    };
+    let jitter = m.jitter_ms.unwrap_or(0.0);
+    let loss = m.loss_pct.unwrap_or(0.0);
+    // Jitter pulls the rating down like loss does, a step at a time.
+    let q = if jitter >= JITTER_HEAVY_MS {
+        base.worse(2)
+    } else if jitter >= JITTER_NOTICEABLE_MS {
+        base.worse(1)
+    } else {
+        base
+    };
+    let summary = if loss >= 10.0 {
+        "Dropping packets: expect stutter"
+    } else if loss >= 3.0 {
+        "Some packet loss"
+    } else if jitter >= JITTER_HEAVY_MS {
+        "Very uneven: lag spikes"
+    } else if jitter >= JITTER_NOTICEABLE_MS {
+        "Uneven: occasional spikes"
+    } else if ping > 200.0 {
+        "Steady but very laggy"
+    } else if ping > 100.0 {
+        "Steady, a little laggy"
+    } else {
+        "Smooth"
+    };
+    Assessment { quality: q, summary }
+}
+
 /// The number drawn beside the bars: the ping in ms, empty before the first measurement.
 pub fn label(m: &Metrics) -> String {
     match m.ping_ms {
@@ -677,6 +727,47 @@ mod tests {
         assert_eq!(quality(&with(40.0, 5.0)), Quality::Fair);
         assert_eq!(quality(&with(40.0, 12.0)), Quality::Poor);
         assert_eq!(quality(&with(300.0, 50.0)), Quality::Bad, "never below bad");
+    }
+
+    #[test]
+    fn assessment_weighs_ping_jitter_and_loss_apart() {
+        let m = |ping, jitter, loss| Metrics {
+            ping_ms: Some(ping),
+            jitter_ms: Some(jitter),
+            loss_pct: Some(loss),
+            silent_ms: 100.0,
+            waiting_ms: None,
+            samples: 10,
+        };
+        assert_eq!(assess(&m(40.0, 3.0, 0.0)).summary, "Smooth");
+        assert_eq!(assess(&m(40.0, 3.0, 0.0)).quality, Quality::Good);
+        // High but steady is laggy, not unstable.
+        let steady = assess(&m(180.0, 4.0, 0.0));
+        assert_eq!(steady.summary, "Steady, a little laggy");
+        assert_eq!(steady.quality, Quality::Fair);
+        // A low ping with spikes is worse than its ping suggests.
+        let spiky = assess(&m(40.0, 90.0, 0.0));
+        assert_eq!(spiky.summary, "Very uneven: lag spikes");
+        assert_eq!(spiky.quality, Quality::Poor);
+        assert_eq!(assess(&m(40.0, 3.0, 12.0)).summary, "Dropping packets: expect stutter");
+        assert_eq!(assess(&m(40.0, 3.0, 12.0)).quality, Quality::Poor);
+        assert_eq!(assess(&m(500.0, 200.0, 50.0)).quality, Quality::Bad, "never below bad");
+    }
+
+    #[test]
+    fn assessment_without_data_is_measuring_and_silence_is_failing() {
+        let none = Metrics {
+            ping_ms: None,
+            jitter_ms: None,
+            loss_pct: None,
+            silent_ms: 0.0,
+            waiting_ms: None,
+            samples: 0,
+        };
+        assert_eq!(assess(&none).summary, "Measuring");
+        let silent = Metrics { silent_ms: 7000.0, ..none };
+        assert_eq!(assess(&silent).summary, "Connection failing");
+        assert_eq!(assess(&silent).quality, Quality::Bad);
     }
 
     #[test]

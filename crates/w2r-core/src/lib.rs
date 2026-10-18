@@ -40,6 +40,7 @@ pub mod maproles;
 pub mod mapsearchcache;
 pub mod mapstore;
 pub mod linkshare;
+pub mod netpanel;
 pub mod netquality;
 pub mod waitinglist;
 pub mod mapwire;

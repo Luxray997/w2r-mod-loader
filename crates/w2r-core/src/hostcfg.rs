@@ -38,6 +38,8 @@ pub struct HostConfig {
     pub apm_play_sound: bool,
     /// Minimap pings (docs/minimap-ping.md): Alt+G then a click, or Ctrl+Alt+click.
     pub minimap_ping: bool,
+    /// Start each match with the connection table up (docs/net-panel.md); Ctrl+Shift+N toggles it.
+    pub net_panel: bool,
 }
 
 /// The highest threshold the settings screen accepts.
@@ -62,6 +64,7 @@ impl Default for HostConfig {
             apm_color_text: true,
             apm_play_sound: false,
             minimap_ping: true,
+            net_panel: false,
         }
     }
 }
@@ -100,6 +103,7 @@ pub fn parse(raw: &[u8]) -> Result<HostConfig, &'static str> {
             "apm_color_text" => cfg.apm_color_text = value.as_bool().ok_or("bad_field")?,
             "apm_play_sound" => cfg.apm_play_sound = value.as_bool().ok_or("bad_field")?,
             "minimap_ping" => cfg.minimap_ping = value.as_bool().ok_or("bad_field")?,
+            "net_panel" => cfg.net_panel = value.as_bool().ok_or("bad_field")?,
             "apm_alert_below" => {
                 let n = value.as_number().and_then(Number::as_u64).ok_or("bad_field")?;
                 if n > u64::from(APM_ALERT_MAX) {
@@ -171,6 +175,7 @@ impl HostConfig {
                 Value::Bool(self.apm_play_sound),
             ),
             ("minimap_ping".to_owned(), Value::Bool(self.minimap_ping)),
+            ("net_panel".to_owned(), Value::Bool(self.net_panel)),
         ])
         .to_json()
     }
@@ -235,6 +240,7 @@ mod tests {
             apm_color_text: false,
             apm_play_sound: true,
             minimap_ping: false,
+            net_panel: true,
         };
         assert_eq!(parse(cfg.to_json().as_bytes()), Ok(cfg));
         assert_eq!(
@@ -325,6 +331,7 @@ mod tests {
             apm_color_text: true,
             apm_play_sound: false,
             minimap_ping: true,
+            net_panel: false,
         };
         write(&root, &cfg).unwrap();
         assert_eq!(read(&root), (cfg, None));

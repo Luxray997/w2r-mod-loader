@@ -616,6 +616,7 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             apm_color_text: session.config.apm_color_text,
             apm_play_sound: session.config.apm_play_sound,
             minimap_ping: session.config.minimap_ping,
+            net_panel: session.config.net_panel,
             share_match_data: crate::uploader::enabled(),
         };
         let registry = &session.registry;
@@ -696,6 +697,17 @@ pub fn draw_plugin_screen(w: &dyn Widgets) -> Action {
             Action::ToggleMinimapPing => {
                 session.config.minimap_ping = host.minimap_ping;
                 crate::ping::configure(&session.config);
+                if let Err(e) = hostcfg::write(&session.root, &session.config) {
+                    StartupLog.line(
+                        W2R_LOG_ERROR,
+                        "host",
+                        &format!("cannot write {}: {e}", hostcfg::FILE),
+                    );
+                }
+            }
+            Action::ToggleNetPanel => {
+                session.config.net_panel = host.net_panel;
+                crate::netpanel::configure(&session.config);
                 if let Err(e) = hostcfg::write(&session.root, &session.config) {
                     StartupLog.line(
                         W2R_LOG_ERROR,
@@ -1080,6 +1092,8 @@ fn start() -> Session {
         #[cfg(target_arch = "x86")]
         crate::apm::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
+        crate::netpanel::install(&symbols, &*log);
+        #[cfg(target_arch = "x86")]
         crate::ping::install(image, &symbols, &*log);
         #[cfg(target_arch = "x86")]
         crate::camerashare::install(&symbols, &*log);
@@ -1141,6 +1155,7 @@ fn start() -> Session {
         );
         crate::replayrec::set_enabled(config.record_replays);
         crate::apm::configure(&config);
+        crate::netpanel::configure(&config);
         crate::ping::configure(&config);
         crate::createscreen::set_auto_game_name(config.auto_game_name);
         crate::replayplay::init(&startup.root, loaded.fingerprint);

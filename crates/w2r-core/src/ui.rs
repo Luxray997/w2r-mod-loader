@@ -326,6 +326,8 @@ pub struct HostRow {
     pub apm_play_sound: bool,
     /// `minimap_ping` (`host.json`).
     pub minimap_ping: bool,
+    /// `net_panel` (`host.json`): the connection table is up at the start of a match.
+    pub net_panel: bool,
     /// `share_match_data` (`sharing.json`); match reports are uploaded from the next match.
     pub share_match_data: bool,
 }
@@ -346,6 +348,7 @@ pub const APM_ALERT_LABEL: &str = "Alert when APM falls below";
 pub const APM_COLOR_LABEL: &str = "Color APM Text Red When Low";
 pub const APM_SOUND_LABEL: &str = "Play Sound When APM Is Low";
 pub const MINIMAP_PING_LABEL: &str = "Minimap Pings (Alt+G, click)";
+pub const NET_PANEL_LABEL: &str = "Show Connection Table In Game (Ctrl+Shift+N)";
 pub const SHARE_LABEL: &str = "Contribute Match Data";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,6 +374,8 @@ pub enum Action {
     ChangeApm,
     /// The user flipped `minimap_ping`.
     ToggleMinimapPing,
+    /// The user flipped `net_panel`.
+    ToggleNetPanel,
     /// The user flipped `share_match_data`.
     ToggleSharing,
 }
@@ -495,6 +500,14 @@ pub fn draw_plugin_screen(
     if w.checkbox(APM_SOUND_LABEL, &mut apm_sound) {
         host.apm_play_sound = apm_sound;
         action = Action::ChangeApm;
+    }
+    w.row(HEADING_H, 1);
+    w.label("Connection");
+    w.row(ROW_H, 1);
+    let mut net_panel = host.net_panel;
+    if w.checkbox(NET_PANEL_LABEL, &mut net_panel) {
+        host.net_panel = net_panel;
+        action = Action::ToggleNetPanel;
     }
     w.row(HEADING_H, 1);
     w.label(&format!("Plugins ({})", rows.len()));
@@ -760,6 +773,7 @@ mod tests {
             apm_color_text: true,
             apm_play_sound: false,
             minimap_ping: true,
+            net_panel: false,
             share_match_data: false,
         };
         let mut sections = Vec::new();
@@ -789,7 +803,9 @@ mod tests {
         assert_eq!(calls[29], format!("text_edit {APM_ALERT_LABEL:?}"));
         assert_eq!(calls[31], format!("checkbox {APM_COLOR_LABEL:?} true"));
         assert_eq!(calls[33], format!("checkbox {APM_SOUND_LABEL:?} false"));
-        assert_eq!(calls[35], "label \"Plugins (3)\"");
+        assert_eq!(calls[35], "label \"Connection\"");
+        assert_eq!(calls[37], format!("checkbox {NET_PANEL_LABEL:?} false"));
+        assert_eq!(calls[39], "label \"Plugins (3)\"");
         assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
         assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
         assert!(calls.iter().any(|c| c == "label \"Status: running\""));
@@ -823,6 +839,7 @@ mod tests {
             apm_color_text: true,
             apm_play_sound: false,
             minimap_ping: true,
+            net_panel: false,
             share_match_data: false,
         };
         assert_eq!(
