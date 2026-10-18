@@ -336,6 +336,9 @@ unsafe fn str_buffer(s: *mut u8) -> *mut u8 {
     }
 }
 
+/// Share of the chat width a notice is measured against, so it gets a line spare rather than clipped.
+const NOTICE_WRAP_SPARE: f32 = 0.88;
+
 /// Lines for the chat history that the game did not write (a download that ended badly, a lock
 /// the host changed). Queued from anywhere on the main thread, picked up by the next draw.
 pub fn push_notice(text: String) {
@@ -992,7 +995,10 @@ impl Screen {
             let mut measured = false;
             for row in &rows {
                 let text = &row.text;
-                let lines = k.count_lines(text, wrap_w).max(1);
+                // The game wraps a little narrower than the cell it reports, which cost a long
+                // notice its last line; notices are long, so measure them with some room spare.
+                let measure_w = if row.notice { wrap_w * NOTICE_WRAP_SPARE } else { wrap_w };
+                let lines = k.count_lines(text, measure_w).max(1);
                 k.row_dynamic(lines as f32 * line_h, 1);
                 k.wrapped_label(
                     text,
