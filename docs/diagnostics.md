@@ -60,12 +60,13 @@ list; **Save zip...** lets them inspect it first.
 ## Reading a bundle (maintainer)
 
 ```bash
-cd server/worker
-npx wrangler d1 execute w2r-stats --remote --command "SELECT sha FROM diagnostics WHERE code = 'W2R-7K3F-92QX'"
-npx wrangler r2 object get w2r-replays/diagnostics/<sha>.zip --remote --file diag.zip
+tools/fetch_diagnostics.sh W2R-7K3F-92QX   # into diagnostics-fetched/<code>/files (git-ignored)
+tools/fetch_diagnostics.sh --list 20        # newest uploads, to find a code
 ```
 
-Unzip into its own empty folder.
+It needs `wrangler` logged in (it runs from `server/worker`): one D1 lookup of the code, one R2
+download, then `unzip`. The code must match the code alphabet, which also keeps it out of the
+query as anything but a literal. Tested against a stub `wrangler`; not yet against the live service.
 
 ## Deploying
 
