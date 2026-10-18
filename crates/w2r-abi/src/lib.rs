@@ -366,6 +366,6 @@ mod tests {
         assert_eq!(size_of::<W2rEvent>(), 16);
         assert_eq!(size_of::<W2rPlugin>(), 40);
         assert_eq!(size_of::<W2rUi>(), 64);
-        assert_eq!(size_of::<W2rHost>(), 200);
+        assert_eq!(size_of::<W2rHost>(), 192);
     }
 }
