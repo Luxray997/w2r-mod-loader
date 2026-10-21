@@ -789,9 +789,9 @@ mod cb {
     fn declared_default(slot: &Slot, key: &str) -> Option<Val> {
         let declared = slot.declared.borrow();
         let d = declared.iter().find(|d| d.key == key)?;
-        Some(match d.kind {
-            settings::Kind::Str => Val::Str(d.default_str.clone()),
-            _ => Val::Int(d.default_int),
+        Some(match d.default_value() {
+            settings::Value::Str(s) => Val::Str(s),
+            settings::Value::Int(n) => Val::Int(n),
         })
     }
 

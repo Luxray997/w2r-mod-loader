@@ -36,7 +36,7 @@ use crate::manifest::Build;
 use crate::options;
 use crate::peer::{self, NoTransport, PluginMessage, Presence, Roster, Transport};
 use crate::plugins;
-use crate::settings::{self, Editor, Kind};
+use crate::settings::{self, Editor};
 #[cfg(target_arch = "x86")]
 use crate::settings::{SettingDef, Owner};
 use crate::state::{self, State};
@@ -612,10 +612,7 @@ fn settings_registry(
                 d.category = name.clone();
             }
             d.source = Some(name.clone());
-            let v = match d.kind {
-                Kind::Str => settings::Value::Str(d.default_str.clone()),
-                _ => settings::Value::Int(d.default_int),
-            };
+            let v = d.default_value();
             r.register(d, v);
         }
     }
@@ -657,8 +654,8 @@ impl settings::Owners for SessionOwners<'_> {
             Owner::Host => hostsettings::read(self.config, &def.key).map(settings::Value::Int),
             Owner::Plugin(id) => {
                 match (self.plugins.find(id)?.stored_setting(&def.key)?, def.kind) {
-                    (Val::Str(v), Kind::Str) => Some(settings::Value::Str(v)),
-                    (Val::Int(n), k) if k != Kind::Str => Some(settings::Value::Int(n)),
+                    (Val::Str(v), k) if k.is_text() => Some(settings::Value::Str(v)),
+                    (Val::Int(n), k) if !k.is_text() => Some(settings::Value::Int(n)),
                     // The wrong type in the file: the plugin wrote something else under the key.
                     _ => None,
                 }

@@ -15,6 +15,7 @@ pub mod pingtable;
 pub mod build_guard;
 pub mod chat;
 pub mod chatclick;
+pub mod color;
 pub mod createpick;
 pub mod dispatch;
 pub mod downloadclient;

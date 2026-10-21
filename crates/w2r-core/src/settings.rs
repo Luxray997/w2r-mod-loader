@@ -11,7 +11,7 @@ use w2r_abi::{
     W2R_E_CONFLICT, W2R_E_INVALID, W2R_E_LIMIT, W2R_E_NOT_FOUND, W2R_MAX_SETTING_CATEGORY,
     W2R_MAX_SETTING_CHOICE, W2R_MAX_SETTING_CHOICES, W2R_MAX_SETTING_DESCRIPTION,
     W2R_MAX_SETTING_LABEL, W2R_MAX_SETTING_STR, W2R_SETTING_BOOL, W2R_SETTING_CHOICE,
-    W2R_SETTING_HIDDEN, W2R_SETTING_INT, W2R_SETTING_STRING, W2rStatus,
+    W2R_SETTING_COLOR, W2R_SETTING_HIDDEN, W2R_SETTING_INT, W2R_SETTING_STRING, W2rStatus,
 };
 
 /// The subcategory a setting lands in when it names none.
@@ -28,6 +28,15 @@ pub enum Kind {
     /// A dropdown; the stored value is `choice_values[i]`, or `i` when that is empty.
     Choice,
     Str,
+    /// A color picker; the value is six lowercase hex digits, `rrggbb`.
+    Color,
+}
+
+impl Kind {
+    /// Whether the value is text (stored with `settings_set_str`) rather than a number.
+    pub fn is_text(self) -> bool {
+        matches!(self, Kind::Str | Kind::Color)
+    }
 }
 
 /// Who owns a setting, which decides where its value lives.
@@ -192,7 +201,16 @@ impl SettingDef {
                 };
                 if legal { value } else { self.default_int }
             }
-            Kind::Str => value,
+            Kind::Str | Kind::Color => value,
+        }
+    }
+
+    /// The default as a [`Value`].
+    pub fn default_value(&self) -> Value {
+        if self.kind.is_text() {
+            Value::Str(self.default_str.clone())
+        } else {
+            Value::Int(self.default_int)
         }
     }
 }
@@ -276,6 +294,9 @@ impl Registry {
         }
         let value = match def.kind {
             Kind::Str => Value::Str(value.str().to_owned()),
+            Kind::Color => Value::Str(
+                crate::color::normalize(value.str()).unwrap_or_else(|| def.default_str.clone()),
+            ),
             _ => Value::Int(def.clamp(value.int())),
         };
         self.records.push(Record { def, value });
@@ -320,6 +341,12 @@ impl Registry {
                 let mut s = value.str().to_owned();
                 truncate_utf8(&mut s, W2R_MAX_SETTING_STR as usize);
                 r.value = Value::Str(s);
+            }
+            // Anything that is not six hex digits leaves the value as it was.
+            (_, Kind::Color) => {
+                if let Some(hex) = crate::color::normalize(value.str()) {
+                    r.value = Value::Str(hex);
+                }
             }
             _ => r.value = Value::Int(r.def.clamp(value.int())),
         }
@@ -488,10 +515,12 @@ impl Editor {
             if def.owner == Owner::Game {
                 continue;
             }
-            let value = owners.load(def).unwrap_or_else(|| match def.kind {
-                Kind::Str => Value::Str(def.default_str.clone()),
-                _ => Value::Int(def.default_int),
-            });
+            let value = owners.load(def).unwrap_or_else(|| def.default_value());
+            if def.kind == Kind::Color && crate::color::normalize(value.str()).is_none() {
+                let fallback = def.default_value();
+                self.registry.set(i, fallback, &mut NoNative);
+                continue;
+            }
             self.registry.set(i, value, &mut NoNative);
         }
         self.snapshot = self.registry.snapshot(native);
@@ -611,6 +640,7 @@ pub fn validate(
         W2R_SETTING_INT => Kind::Int,
         W2R_SETTING_CHOICE => Kind::Choice,
         W2R_SETTING_STRING => Kind::Str,
+        W2R_SETTING_COLOR => Kind::Color,
         _ => return Err(W2R_E_INVALID),
     };
     match kind {
@@ -635,6 +665,9 @@ pub fn validate(
         }
         Kind::Str if d.default_str.len() > W2R_MAX_SETTING_STR as usize => {
             return Err(W2R_E_LIMIT);
+        }
+        Kind::Color if crate::color::normalize(&d.default_str).is_none() => {
+            return Err(W2R_E_INVALID);
         }
         _ => {}
     }
@@ -676,6 +709,9 @@ pub fn validate(
             def.choices = d.choices;
         }
         Kind::Str => def.default_str = d.default_str,
+        Kind::Color => {
+            def.default_str = crate::color::normalize(&d.default_str).unwrap_or_default();
+        }
         Kind::Bool => {}
     }
     def.active_when = active_when;
@@ -1183,6 +1219,48 @@ mod tests {
             "the cancelled edit never reached the owner"
         );
         assert!(!e.dirty());
+    }
+
+    #[test]
+    fn colors_are_declared_with_a_hex_default_and_stored_lowercase() {
+        let mut d = decl(W2R_SETTING_COLOR, "team_hex");
+        d.default_str = "25E65F".into();
+        let def = check(d, &[]).unwrap();
+        assert_eq!(def.kind, Kind::Color);
+        assert_eq!(def.default_str, "25e65f");
+        let mut bad = decl(W2R_SETTING_COLOR, "bad");
+        bad.default_str = "#25e65f".into();
+        assert_eq!(check(bad, &[]), Err(W2R_E_INVALID));
+
+        let mut r = Registry::new();
+        let mut g = FakeGame::default();
+        let i = r.register(def, Value::Str("not hex".into()));
+        assert_eq!(
+            r.get(i, &g),
+            Value::Str("25e65f".into()),
+            "a bad value is the default"
+        );
+        r.set(i, Value::Str("ABCDEF".into()), &mut g);
+        assert_eq!(r.get(i, &g), Value::Str("abcdef".into()));
+        r.set(i, Value::Str("nope".into()), &mut g);
+        assert_eq!(
+            r.get(i, &g),
+            Value::Str("abcdef".into()),
+            "a bad edit is ignored"
+        );
+    }
+
+    #[test]
+    fn entering_replaces_a_stored_color_that_is_not_hex() {
+        let mut d = decl(W2R_SETTING_COLOR, "c");
+        d.default_str = "112233".into();
+        let mut r = Registry::new();
+        let i = r.register(check(d, &[]).unwrap(), Value::Str("445566".into()));
+        let mut e = Editor::new(r);
+        let mut o = FakeOwners::default();
+        o.stored.insert("c".into(), Value::Str("purple".into()));
+        e.enter(&FakeGame::default(), &o);
+        assert_eq!(e.get(i, &FakeGame::default()), Value::Str("112233".into()));
     }
 
     #[test]

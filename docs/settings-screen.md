@@ -19,6 +19,13 @@ Every setting the game, the host and the plugins have, in one screen. Ported fro
 - A row is **greyed**, not hidden, while the checkbox it depends on is off (`active_when`), or
   where the stock tabs grey it (the UI scale factor outside Fixed mode, the health-bar position
   when bars are never drawn).
+- A **color** setting shows a swatch and a button with its hex value. The button opens the color
+  editor in place of the settings pane: a saturation / brightness square with a hue strip beside
+  it (click or drag in either), the new and the current color, a hex box, and OK / Cancel. OK
+  puts the color in the setting; the screen's own Apply or Save and Exit then saves it, as for
+  any other setting. The category list and the footer are greyed while the editor is open. The
+  square and the strip are two small game textures; if the game cannot make them, the editor
+  shows Hue, Saturation and Brightness sliders instead.
 
 It replaces the game's options screen for both entries: the main menu's, and the pause menu's in a
 match (on a backdrop of its own; leaving returns to the pause menu's root, which has the game's

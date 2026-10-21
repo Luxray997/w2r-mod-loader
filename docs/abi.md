@@ -101,7 +101,7 @@ settings there by declaring them.
 | Field | Rule |
 |---|---|
 | `struct_size` | at least `W2R_SETTING_DEF_V1_SIZE` (`W2R_E_INVALID` otherwise) |
-| `kind` | `W2R_SETTING_BOOL` (a checkbox, stored with `settings_set_i64` as 0 or 1), `_INT` (a slider when `min < max`, a read-only row otherwise), `_CHOICE` (a dropdown, stored as the chosen index) or `_STRING` (a text box, `settings_set_str`); anything else `W2R_E_INVALID` |
+| `kind` | `W2R_SETTING_BOOL` (a checkbox, stored with `settings_set_i64` as 0 or 1), `_INT` (a slider when `min < max`, a read-only row otherwise), `_CHOICE` (a dropdown, stored as the chosen index), `_STRING` (a text box, `settings_set_str`) or `_COLOR` (a color picker, stored with `settings_set_str` as six lowercase hex digits, `rrggbb`); anything else `W2R_E_INVALID`. A host from before `_COLOR` refuses it with `W2R_E_INVALID`, so a plugin that wants to run on one declares the setting again as `_STRING` |
 | `flags` | 0, or `W2R_SETTING_HIDDEN`: stored and readable as usual, never shown; other bits `W2R_E_INVALID` |
 | `key` | the settings-key rule above; declared once per plugin (`W2R_E_CONFLICT` the second time); at most 128 declarations, the same cap as stored keys |
 | `label` | 1 to 64 bytes. Title Case, like the rest of the screen |
@@ -109,7 +109,7 @@ settings there by declaring them.
 | `category`, `subcategory` | at most 32 bytes each. Several plugins may name the same category, which is the point: related settings end up together. An empty category is the plugin's name; an empty subcategory is "General" |
 | `default_int` | the default: 0 or 1 for a bool, a value in `[min, max]` for a slider, an index into `choices` for a choice (`W2R_E_INVALID` otherwise) |
 | `min`, `max` | `_INT` only; `min > max` is `W2R_E_INVALID` |
-| `default_str` | `_STRING` only; at most 1,024 bytes |
+| `default_str` | `_STRING`: at most 1,024 bytes. `_COLOR`: six hex digits without `#` (`W2R_E_INVALID` otherwise) |
 | `choices`, `choice_count` | `_CHOICE` only: 2 to 16 labels of 1 to 64 bytes (`W2R_E_LIMIT` above 16, `W2R_E_INVALID` below 2) |
 | `active_when` | empty, or the key of a `_BOOL` this plugin declared earlier, or `host:<key>` for one of the host's own bools (for example `host:enhanced_create_screen`). The row is greyed while that checkbox is off. An unknown key is `W2R_E_NOT_FOUND`, a non-bool `W2R_E_INVALID` |
 

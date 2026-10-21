@@ -313,6 +313,8 @@ pub const W2R_SETTING_INT: u32 = 1;
 pub const W2R_SETTING_CHOICE: u32 = 2;
 /// A text box, `settings_set_str`.
 pub const W2R_SETTING_STRING: u32 = 3;
+/// A color picker. Stored with `settings_set_str` as six lowercase hex digits, `rrggbb`.
+pub const W2R_SETTING_COLOR: u32 = 4;
 
 /// `W2rSettingDef.flags`: loaded, saved and readable as usual, but not shown on the screen.
 pub const W2R_SETTING_HIDDEN: u32 = 1;
@@ -323,7 +325,7 @@ pub const W2R_SETTING_HIDDEN: u32 = 1;
 pub struct W2rSettingDef {
     /// `size_of::<W2rSettingDef>()` of the ABI the plugin was built against.
     pub struct_size: u32,
-    /// `W2R_SETTING_BOOL`, `_INT`, `_CHOICE` or `_STRING`.
+    /// `W2R_SETTING_BOOL`, `_INT`, `_CHOICE`, `_STRING` or `_COLOR`.
     pub kind: u32,
     /// `W2R_SETTING_HIDDEN` or 0.
     pub flags: u32,
@@ -343,7 +345,7 @@ pub struct W2rSettingDef {
     /// `W2R_SETTING_INT` only: the slider's range, inclusive. `min == max` draws no slider.
     pub min: i32,
     pub max: i32,
-    /// `W2R_SETTING_STRING` only: the default text.
+    /// `W2R_SETTING_STRING`: the default text. `W2R_SETTING_COLOR`: the default, `rrggbb`.
     pub default_str: W2rStr,
     /// `W2R_SETTING_CHOICE` only: 2 to `W2R_MAX_SETTING_CHOICES` labels, in dropdown order.
     pub choices: *const W2rStr,

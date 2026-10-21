@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
 
+use crate::color::{self, Hsv, Rgb};
 use crate::hooks::{self, Owner};
 use crate::host::Log;
 use crate::pe::Image;
@@ -46,6 +47,9 @@ const PANEL_CLIP_W: usize = 0x44;
 const PANEL_CLIP_H: usize = 0x48;
 const PANEL_ROW_HEIGHT: usize = 0x6c;
 const USER_FONT_HEIGHT: usize = 0x04;
+/// The left mouse button: non-zero while held, and whether it went down this frame.
+const CTX_MOUSE_LEFT_DOWN: usize = 0x17c;
+const CTX_MOUSE_LEFT_CLICKED: usize = 0x180;
 const SCROLLBAR_SHOW_BUTTONS: usize = 0xe8;
 
 /// NK_EDIT_FIELD, the flags the game passes for its own search box.
@@ -54,6 +58,11 @@ const TEXT_EDIT_FLAGS: u32 = 0x260;
 const ALIGN_TITLE: i32 = 0x12;
 const ALIGN_ROW: i32 = 0x11;
 const GROUP_NO_SCROLLBAR: u32 = 0x20;
+/// Nuklear window flags: kept behind other windows, and read-only (drawn, but takes no input).
+const WINDOW_BACKGROUND: u32 = 0x100;
+const WINDOW_ROM: u32 = 0x1000;
+const WINDOW_FLAGS: usize = 0x48;
+const PANEL_FLAGS: usize = 0x04;
 
 const GAME_STATE_MAIN_MENU: i32 = 0x04;
 /// Values of the pause menu's sub-screen selector. (0 means no pause menu and is never written.)
@@ -106,6 +115,38 @@ const BACKDROP_BORDER: u32 = rgba(120, 96, 48, 255);
 const BACKDROP_PAD: f32 = 28.0;
 const BACKDROP_BORDER_W: f32 = 5.0;
 
+// The color editor.
+/// Room between the popup frame's edge and its contents. The frame art is ragged and does not
+/// fill its rectangle, so this is generous.
+const POPUP_PAD_X: f32 = 160.0;
+const POPUP_PAD_Y: f32 = 150.0;
+const PICKER_SIDE: f32 = 760.0;
+const HUE_WIDTH: f32 = 90.0;
+const HUE_GAP: f32 = 40.0;
+const COLUMN_GAP: f32 = 80.0;
+const SWATCH: f32 = 220.0;
+const SWATCH_GAP: f32 = 40.0;
+const SECTION_GAP: f32 = 50.0;
+const BUTTON_WIDTH: f32 = 380.0;
+const BUTTON_HEIGHT: f32 = 120.0;
+const BUTTON_GAP: f32 = 60.0;
+/// Between a color row's swatch and its button.
+const SWATCH_ROW_GAP: f32 = 24.0;
+/// Dims the screen behind the color popup.
+const POPUP_SHADE: u32 = rgba(0, 0, 0, 150);
+const MARKER: f32 = 14.0;
+const MARKER_LINE: f32 = 4.0;
+const BLACK: u32 = rgba(0, 0, 0, 255);
+const WHITE: u32 = rgba(255, 255, 255, 255);
+/// Texture sizes; drawn larger with linear filtering, which keeps the gradients smooth.
+const SQUARE_TEXELS: i32 = 64;
+const HUE_TEXELS: i32 = 128;
+const HUE_TEXEL_WIDTH: i32 = 4;
+const GL_RGBA: u32 = 0x1908;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const FORMAT_RGBA8: i32 = 0;
+const FILTER_LINEAR: i32 = 1;
+
 const EDIT_BUFFER: usize = 256;
 const SEARCH_BUFFER: usize = 128;
 /// Pages listed after the categories.
@@ -137,6 +178,31 @@ type WrappedLabelFn = unsafe extern "C" fn(*mut c_void, *const c_char, u32);
 type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
 type LocalizedFn = unsafe extern "C" fn(*const c_char) -> *const c_char;
 type TransitionFn = unsafe extern "C" fn(i32);
+type WidgetSpaceFn = unsafe extern "C" fn(*mut f32, *mut c_void, *mut c_void, i32);
+type CreateTextureFn =
+    unsafe extern "C" fn(*mut *mut GameTexture, i32, i32, *const c_void, i32, i32) -> *mut c_void;
+type DrawImageFn = unsafe extern "C" fn(*mut c_void, f32, f32, f32, f32, *const NkImage, u32);
+type SubImageFn = unsafe extern "system" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void);
+
+/// The game's texture object, as `CreateGameTexture` fills it in.
+#[repr(C)]
+struct GameTexture {
+    w: i32,
+    h: i32,
+    gl_name: u32,
+    format: i32,
+    filter: i32,
+}
+
+/// Nuklear's image: the texture and the part of it to draw.
+#[repr(C)]
+struct NkImage {
+    handle: *mut c_void,
+    w: u16,
+    h: u16,
+    region: [u16; 4],
+}
+
 type ScrollbarFn = unsafe extern "C" fn(
     *mut c_void,
     *mut c_void,
@@ -195,9 +261,17 @@ pub struct Fns {
     skin_alt_flag: *const u8,
     skin_content: *const u32,
     skin_text_edit: *const u32,
+    skin_popup: *const u32,
+    skin_popup_alt: *const u32,
     localized: LocalizedFn,
     transition: TransitionFn,
     pause_screen: *mut u32,
+    widget_space: WidgetSpaceFn,
+    skip_cell: CtxFn,
+    create_texture: CreateTextureFn,
+    draw_image: DrawImageFn,
+    /// The game's slot for glTextureSubImage2D; zero until its renderer is up.
+    sub_image_slot: *const usize,
 }
 
 // SAFETY: game function and data addresses, fixed for the session; used on the main thread only.
@@ -251,9 +325,16 @@ impl Fns {
             skin_alt_flag: symbols.address("SkinAltFlag")? as *const u8,
             skin_content: symbols.address("SkinContentPanel")? as *const u32,
             skin_text_edit: symbols.address("SkinTextEdit")? as *const u32,
+            skin_popup: symbols.address("SkinPopupFrame")? as *const u32,
+            skin_popup_alt: symbols.address("SkinPopupFrameAlt")? as *const u32,
             localized: sym!(symbols, "LookupLocalized", LocalizedFn),
             transition: sym!(symbols, "TransitionGameState", TransitionFn),
             pause_screen: symbols.address("PauseMenuScreen")? as *mut u32,
+            widget_space: sym!(symbols, "NkLayoutWidgetSpace", WidgetSpaceFn),
+            skip_cell: sym!(symbols, "Spacing", CtxFn),
+            create_texture: sym!(symbols, "CreateGameTexture", CreateTextureFn),
+            draw_image: sym!(symbols, "NkDrawImage", DrawImageFn),
+            sub_image_slot: symbols.address("GlTextureSubImage2DSlot")? as *const usize,
         })
     }
 
@@ -382,6 +463,34 @@ struct Screen {
     /// Dropdowns open this frame. No tooltip is drawn while one is open.
     combos_this_frame: u32,
     tip: Option<Tip>,
+    /// The color being picked, while the color editor is open.
+    color: Option<ColorEdit>,
+    picker: Picker,
+}
+
+/// The color editor's state.
+struct ColorEdit {
+    index: usize,
+    hsv: Hsv,
+    original: Rgb,
+    hex: [u8; 8],
+    drag: Drag,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drag {
+    None,
+    Square,
+    Hue,
+}
+
+/// The editor's two gradient textures, made on first use and kept for the session.
+struct Picker {
+    square: usize,
+    hue: usize,
+    /// The hue the square was last drawn for.
+    square_hue: f32,
+    failed: bool,
 }
 
 /// The hovered setting's tooltip. Captured while its row is drawn inside the scrolling group, and
@@ -403,6 +512,13 @@ thread_local! {
             combo_open: Vec::new(),
             combos_this_frame: 0,
             tip: None,
+            color: None,
+            picker: Picker {
+                square: 0,
+                hue: 0,
+                square_hue: -1.0,
+                failed: false,
+            },
         })
     };
 }
@@ -590,6 +706,7 @@ fn draw_screen(
         editor.enter(native, owners);
         screen.edits.clear();
         screen.search = [0; SEARCH_BUFFER];
+        screen.color = None;
         screen.categories = editor.registry.categories();
         screen.categories.push(PLUGINS_CATEGORY.to_owned());
         screen.categories.push(SEARCH_CATEGORY.to_owned());
@@ -609,24 +726,21 @@ fn draw_screen(
     let content_h = PANEL_HEIGHT - FOOTER_HEIGHT - GAP;
     let footer_y = PANEL_TOP + content_h + GAP;
 
+    // While the color popup is open, the screen stays behind it and takes no input.
+    let editing = screen.color.is_some();
+    let flags = if editing {
+        GROUP_NO_SCROLLBAR | WINDOW_BACKGROUND
+    } else {
+        GROUP_NO_SCROLLBAR
+    };
     let prev_skin = fns.push_skin(fns.window_skin());
     let name = c"w2r_settings";
-    if unsafe {
-        (fns.begin_window)(
-            ctx,
-            name.as_ptr(),
-            0.0,
-            0.0,
-            ui_w,
-            UI_HEIGHT,
-            GROUP_NO_SCROLLBAR,
-        )
-    } == 0
-    {
+    if unsafe { (fns.begin_window)(ctx, name.as_ptr(), 0.0, 0.0, ui_w, UI_HEIGHT, flags) } == 0 {
         unsafe { (fns.end_window)(ctx) };
         fns.push_skin(prev_skin);
         return false;
     }
+    set_read_only(ctx, editing);
     unsafe { (fns.space_begin)(ctx, 1, 0.0, 1000) };
 
     // Commands draw in the order they are pushed, so the backdrop goes first.
@@ -714,18 +828,25 @@ fn draw_screen(
     rect(fns, ctx, panel_x, footer_y, panel_w, FOOTER_HEIGHT);
     if unsafe { (fns.begin_group)(ctx, c"w2r_settings_footer".as_ptr(), GROUP_NO_SCROLLBAR) } != 0 {
         let (editor, native, owners) = host.parts();
-        close = draw_footer(fns, ctx, FOOTER_HEIGHT - GAP, editor, native, owners);
+        close = draw_footer(fns, ctx, FOOTER_HEIGHT - GAP, editor, native, owners) && !editing;
         unsafe { (fns.end_group)(ctx) };
     }
 
     // Last, so it is drawn over everything.
-    draw_tooltip(fns, ctx, ui_w, screen);
+    if !editing {
+        draw_tooltip(fns, ctx, ui_w, screen);
+    }
 
     unsafe {
         (fns.space_end)(ctx);
         (fns.end_window)(ctx);
     }
     fns.push_skin(prev_skin);
+    // Drawn after the screen, so it is on top. Also when it was opened during this frame.
+    if screen.color.is_some() {
+        let (editor, native, _) = host.parts();
+        draw_color_popup(fns, ctx, ui_w, screen, editor, native);
+    }
     close
 }
 
@@ -857,8 +978,484 @@ fn draw_category_panel(fns: &Fns, ctx: *mut c_void, screen: &mut Screen) {
     }
 }
 
+/// The rectangle of the next cell of the current row, on screen, without using it up.
+fn next_cell(fns: &Fns, ctx: *mut c_void) -> Option<[f32; 4]> {
+    let mut b = [0f32; 4];
+    unsafe { (fns.widget_space)(b.as_mut_ptr(), ctx, core::ptr::null_mut(), 0) };
+    (b[2] > 0.0 && b[3] > 0.0).then_some(b)
+}
+
+/// A filled rectangle on the current window's canvas.
+fn fill(ctx: *mut c_void, fns: &Fns, [x, y, w, h]: [f32; 4], colour: u32) {
+    let win = current_window(ctx);
+    if win.is_null() || w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let canvas = unsafe { win.cast::<u8>().add(WINDOW_BUFFER).cast::<c_void>() };
+    unsafe { (fns.fill_rect)(canvas, x, y, w, h, 0.0, colour) };
+}
+
+/// A rectangle's outline, `t` thick, inside its edges.
+fn outline(ctx: *mut c_void, fns: &Fns, [x, y, w, h]: [f32; 4], t: f32, colour: u32) {
+    fill(ctx, fns, [x, y, w, t], colour);
+    fill(ctx, fns, [x, y + h - t, w, t], colour);
+    fill(ctx, fns, [x, y, t, h], colour);
+    fill(ctx, fns, [x + w - t, y, t, h], colour);
+}
+
+fn inside([x, y, w, h]: [f32; 4], px: f32, py: f32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
+}
+
+fn open_color_editor(screen: &mut Screen, index: usize, hex: &str, default: &str) {
+    let original = color::parse_hex(hex)
+        .or_else(|| color::parse_hex(default))
+        .unwrap_or(Rgb { r: 0, g: 0, b: 0 });
+    let mut edit = ColorEdit {
+        index,
+        hsv: color::to_hsv(original),
+        original,
+        hex: [0; 8],
+        drag: Drag::None,
+    };
+    set_hex_buffer(&mut edit.hex, original);
+    screen.color = Some(edit);
+}
+
+fn set_hex_buffer(buf: &mut [u8; 8], c: Rgb) {
+    *buf = [0; 8];
+    buf[..6].copy_from_slice(color::to_hex(c).as_bytes());
+}
+
+/// Makes the editor's textures, once. False if the game cannot make them yet or at all.
+fn ensure_picker_textures(fns: &Fns, picker: &mut Picker) -> bool {
+    if picker.square != 0 && picker.hue != 0 {
+        return true;
+    }
+    if picker.failed || unsafe { *fns.sub_image_slot } == 0 {
+        return false;
+    }
+    let make = |w: i32, h: i32, pixels: &[u8]| -> usize {
+        let mut tex: *mut GameTexture = core::ptr::null_mut();
+        unsafe {
+            (fns.create_texture)(
+                &mut tex,
+                w,
+                h,
+                pixels.as_ptr().cast(),
+                FORMAT_RGBA8,
+                FILTER_LINEAR,
+            )
+        };
+        let ok = !tex.is_null() && unsafe { (*tex).gl_name != 0 && (*tex).w == w && (*tex).h == h };
+        if ok { tex as usize } else { 0 }
+    };
+    picker.square = make(
+        SQUARE_TEXELS,
+        SQUARE_TEXELS,
+        &color::square_pixels(0.0, SQUARE_TEXELS as usize),
+    );
+    picker.square_hue = 0.0;
+    picker.hue = make(
+        HUE_TEXEL_WIDTH,
+        HUE_TEXELS,
+        &color::hue_pixels(HUE_TEXEL_WIDTH as usize, HUE_TEXELS as usize),
+    );
+    if picker.square == 0 || picker.hue == 0 {
+        picker.failed = true;
+        crate::session::host_line(
+            W2R_LOG_WARN,
+            "settings",
+            "the game would not make the color picker's textures; using sliders",
+        );
+        return false;
+    }
+    true
+}
+
+/// Redraws the square's texture for `hue` when it changed.
+fn update_square(fns: &Fns, picker: &mut Picker, hue: f32) {
+    if (picker.square_hue - hue).abs() < 0.5 {
+        return;
+    }
+    let upload = unsafe { *fns.sub_image_slot };
+    if upload == 0 {
+        return;
+    }
+    let upload: SubImageFn = unsafe { core::mem::transmute(upload) };
+    let pixels = color::square_pixels(hue, SQUARE_TEXELS as usize);
+    let tex = picker.square as *mut GameTexture;
+    unsafe {
+        upload(
+            (*tex).gl_name,
+            0,
+            0,
+            0,
+            SQUARE_TEXELS,
+            SQUARE_TEXELS,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels.as_ptr().cast(),
+        )
+    };
+    picker.square_hue = hue;
+}
+
+fn draw_texture(
+    ctx: *mut c_void,
+    fns: &Fns,
+    texture: usize,
+    size: (i32, i32),
+    [x, y, w, h]: [f32; 4],
+) {
+    let win = current_window(ctx);
+    if win.is_null() {
+        return;
+    }
+    let canvas = unsafe { win.cast::<u8>().add(WINDOW_BUFFER).cast::<c_void>() };
+    let image = NkImage {
+        handle: texture as *mut c_void,
+        w: size.0 as u16,
+        h: size.1 as u16,
+        region: [0, 0, size.0 as u16, size.1 as u16],
+    };
+    unsafe { (fns.draw_image)(canvas, x, y, w, h, &image, WHITE) };
+}
+
+/// Sets or clears Nuklear's read-only flag on the current window and its panel. The panel takes
+/// its copy of the window's flags when the window begins, so both are written; groups begun
+/// afterwards inherit it from the window.
+fn set_read_only(ctx: *mut c_void, on: bool) {
+    let win = current_window(ctx);
+    let panel = current_panel(ctx);
+    for (base, offset) in [(win, WINDOW_FLAGS), (panel, PANEL_FLAGS)] {
+        if base.is_null() {
+            continue;
+        }
+        let flags = unsafe { base.cast::<u8>().add(offset).cast::<u32>() };
+        let value = unsafe { flags.read_unaligned() };
+        let value = if on {
+            value | WINDOW_ROM
+        } else {
+            value & !WINDOW_ROM
+        };
+        unsafe { flags.write_unaligned(value) };
+    }
+}
+
+/// The color popup: a window of its own over the whole screen, dimming it, with the picker in a
+/// popup frame in the middle. A saturation / brightness square, a hue strip beside it, the new
+/// and the current color, a hex box, and OK / Cancel. Falls back to three sliders if the game
+/// cannot make the textures. The screen behind it is read-only while it is open.
+fn draw_color_popup(
+    fns: &Fns,
+    ctx: *mut c_void,
+    ui_w: f32,
+    screen: &mut Screen,
+    editor: &mut Editor,
+    native: &mut dyn Native,
+) {
+    let prev_skin = fns.push_skin(fns.window_skin());
+    let opened = unsafe {
+        (fns.begin_window)(
+            ctx,
+            c"w2r_settings_color".as_ptr(),
+            0.0,
+            0.0,
+            ui_w,
+            UI_HEIGHT,
+            GROUP_NO_SCROLLBAR,
+        )
+    } != 0;
+    if opened {
+        unsafe { (fns.space_begin)(ctx, 1, 0.0, 1000) };
+        fill(ctx, fns, [0.0, 0.0, ui_w, UI_HEIGHT], POPUP_SHADE);
+        let layout = PickerLayout::centred(ui_w);
+        draw_color_picker(fns, ctx, screen, editor, native, &layout);
+        unsafe { (fns.space_end)(ctx) };
+    }
+    unsafe { (fns.end_window)(ctx) };
+    fns.push_skin(prev_skin);
+}
+
+type Area = [f32; 4];
+
+/// Where everything in the color popup goes, in UI units.
+struct PickerLayout {
+    frame: Area,
+    title: Area,
+    square: Area,
+    hue: Area,
+    swatch_labels: [Area; 2],
+    swatches: [Area; 2],
+    hex_label: Area,
+    hex_box: Area,
+    reset: Area,
+    cancel: Area,
+    ok: Area,
+}
+
+impl PickerLayout {
+    /// The popup sized to its contents plus padding, centred on a screen `ui_w` wide.
+    fn centred(ui_w: f32) -> PickerLayout {
+        let column_w = SWATCH * 2.0 + SWATCH_GAP;
+        let content_w = PICKER_SIDE + HUE_GAP + HUE_WIDTH + COLUMN_GAP + column_w;
+        let content_h = ROW_HEIGHT + SECTION_GAP + PICKER_SIDE + SECTION_GAP + BUTTON_HEIGHT;
+        let frame_w = content_w + POPUP_PAD_X * 2.0;
+        let frame_h = content_h + POPUP_PAD_Y * 2.0;
+        let fx = ((ui_w - frame_w) * 0.5).floor();
+        let fy = ((UI_HEIGHT - frame_h) * 0.5).floor();
+        let x = fx + POPUP_PAD_X;
+        let y = fy + POPUP_PAD_Y;
+
+        let top = y + ROW_HEIGHT + SECTION_GAP;
+        let hue_x = x + PICKER_SIDE + HUE_GAP;
+        let col_x = hue_x + HUE_WIDTH + COLUMN_GAP;
+        let swatch_y = top + ROW_HEIGHT;
+        let hex_y = swatch_y + SWATCH + SECTION_GAP;
+        let reset_y = hex_y + ROW_HEIGHT + SEARCH_ROW_HEIGHT + SECTION_GAP;
+        let buttons_y = top + PICKER_SIDE + SECTION_GAP;
+        let buttons_x = x + (content_w - BUTTON_WIDTH * 2.0 - BUTTON_GAP) * 0.5;
+        let second = col_x + SWATCH + SWATCH_GAP;
+        PickerLayout {
+            frame: [fx, fy, frame_w, frame_h],
+            title: [x, y, content_w, ROW_HEIGHT],
+            square: [x, top, PICKER_SIDE, PICKER_SIDE],
+            hue: [hue_x, top, HUE_WIDTH, PICKER_SIDE],
+            swatch_labels: [
+                [col_x, top, SWATCH, ROW_HEIGHT],
+                [second, top, SWATCH, ROW_HEIGHT],
+            ],
+            swatches: [
+                [col_x, swatch_y, SWATCH, SWATCH],
+                [second, swatch_y, SWATCH, SWATCH],
+            ],
+            hex_label: [col_x, hex_y, column_w, ROW_HEIGHT],
+            hex_box: [col_x, hex_y + ROW_HEIGHT, column_w, SEARCH_ROW_HEIGHT],
+            reset: [col_x, reset_y, column_w, BUTTON_HEIGHT],
+            cancel: [buttons_x, buttons_y, BUTTON_WIDTH, BUTTON_HEIGHT],
+            ok: [
+                buttons_x + BUTTON_WIDTH + BUTTON_GAP,
+                buttons_y,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+            ],
+        }
+    }
+}
+
+fn place(fns: &Fns, ctx: *mut c_void, [x, y, w, h]: Area) {
+    rect(fns, ctx, x, y, w, h);
+}
+
+fn draw_color_picker(
+    fns: &Fns,
+    ctx: *mut c_void,
+    screen: &mut Screen,
+    editor: &mut Editor,
+    native: &mut dyn Native,
+    layout: &PickerLayout,
+) {
+    let Some(edit) = screen.color.as_mut() else {
+        return;
+    };
+    let d = editor.registry.def(edit.index).clone();
+
+    // The frame the game's own popups use.
+    let skin = unsafe {
+        if fns.alt() {
+            *fns.skin_popup_alt
+        } else {
+            *fns.skin_popup
+        }
+    };
+    place(fns, ctx, layout.frame);
+    let prev = fns.push_skin(skin);
+    let framed = unsafe {
+        (fns.begin_group)(
+            ctx,
+            c"w2r_settings_color_frame".as_ptr(),
+            GROUP_NO_SCROLLBAR,
+        )
+    } != 0;
+    fns.push_skin(prev);
+    if framed {
+        unsafe { (fns.end_group)(ctx) };
+    }
+    place(fns, ctx, layout.title);
+    label(fns, ctx, &fns.localize(&d.label), ALIGN_TITLE);
+
+    let square = layout.square;
+    let hue = layout.hue;
+    let side = square[2];
+    if ensure_picker_textures(fns, &mut screen.picker) {
+        // Dragging: a press inside the square or the strip starts it, releasing ends it.
+        let mx = read_f32(ctx, CTX_MOUSE_X);
+        let my = read_f32(ctx, CTX_MOUSE_Y);
+        let down = unsafe {
+            ctx.cast::<u8>()
+                .add(CTX_MOUSE_LEFT_DOWN)
+                .cast::<i32>()
+                .read_unaligned()
+        } != 0;
+        let clicked = unsafe {
+            ctx.cast::<u8>()
+                .add(CTX_MOUSE_LEFT_CLICKED)
+                .cast::<u32>()
+                .read_unaligned()
+        } != 0;
+        if down && clicked {
+            edit.drag = if inside(square, mx, my) {
+                Drag::Square
+            } else if inside(hue, mx, my) {
+                Drag::Hue
+            } else {
+                Drag::None
+            };
+        }
+        if !down {
+            edit.drag = Drag::None;
+        }
+        let fraction = |v: f32, from: f32, len: f32| ((v - from) / len).clamp(0.0, 1.0);
+        match edit.drag {
+            Drag::Square => {
+                edit.hsv.s = fraction(mx, square[0], side);
+                edit.hsv.v = 1.0 - fraction(my, square[1], side);
+            }
+            Drag::Hue => edit.hsv.h = (360.0 * fraction(my, hue[1], side)).min(359.9),
+            Drag::None => {}
+        }
+        if edit.drag != Drag::None {
+            set_hex_buffer(&mut edit.hex, color::to_rgb(edit.hsv));
+        }
+
+        update_square(fns, &mut screen.picker, edit.hsv.h);
+        draw_texture(
+            ctx,
+            fns,
+            screen.picker.square,
+            (SQUARE_TEXELS, SQUARE_TEXELS),
+            square,
+        );
+        draw_texture(
+            ctx,
+            fns,
+            screen.picker.hue,
+            (HUE_TEXEL_WIDTH, HUE_TEXELS),
+            hue,
+        );
+        outline(ctx, fns, square, 2.0, BLACK);
+        outline(ctx, fns, hue, 2.0, BLACK);
+
+        // Markers: a ring at the picked saturation and brightness, a bar at the picked hue.
+        let rx = square[0] + edit.hsv.s * side;
+        let ry = square[1] + (1.0 - edit.hsv.v) * side;
+        let ring = if edit.hsv.v > 0.6 && edit.hsv.s < 0.4 {
+            BLACK
+        } else {
+            WHITE
+        };
+        outline(
+            ctx,
+            fns,
+            [rx - MARKER, ry - MARKER, MARKER * 2.0, MARKER * 2.0],
+            MARKER_LINE,
+            ring,
+        );
+        let hy = hue[1] + edit.hsv.h / 360.0 * side;
+        outline(
+            ctx,
+            fns,
+            [hue[0] - 8.0, hy - 6.0, hue[2] + 16.0, 12.0],
+            MARKER_LINE,
+            WHITE,
+        );
+    } else {
+        // Hue, saturation and brightness as three sliders.
+        let mut parts = [
+            ("Hue", edit.hsv.h.round() as u32, 359u32),
+            ("Saturation", (edit.hsv.s * 100.0).round() as u32, 100),
+            ("Brightness", (edit.hsv.v * 100.0).round() as u32, 100),
+        ];
+        let mut changed = false;
+        for (k, (name, value, max)) in parts.iter_mut().enumerate() {
+            let ry = square[1] + k as f32 * (ROW_HEIGHT + GAP) * 2.0;
+            rect(fns, ctx, square[0], ry, side, ROW_HEIGHT);
+            label(fns, ctx, &format!("{name}: {value}"), ALIGN_ROW);
+            rect(fns, ctx, square[0], ry + ROW_HEIGHT, side, ROW_HEIGHT);
+            let (mut lo, mut step) = (0u32, 1u32);
+            changed |= unsafe { (fns.slider)(value, &mut lo, max, &mut step) };
+        }
+        if changed {
+            edit.hsv = Hsv {
+                h: parts[0].1 as f32,
+                s: parts[1].1 as f32 / 100.0,
+                v: parts[2].1 as f32 / 100.0,
+            };
+            set_hex_buffer(&mut edit.hex, color::to_rgb(edit.hsv));
+        }
+    }
+
+    // The new and the current color, side by side.
+    let new = color::to_rgb(edit.hsv);
+    for (k, (name, c)) in [("New", new), ("Current", edit.original)]
+        .into_iter()
+        .enumerate()
+    {
+        place(fns, ctx, layout.swatch_labels[k]);
+        label(fns, ctx, name, ALIGN_ROW);
+        fill(ctx, fns, layout.swatches[k], color::nk_color(c));
+        outline(ctx, fns, layout.swatches[k], 2.0, BLACK);
+    }
+
+    place(fns, ctx, layout.hex_label);
+    label(fns, ctx, "Hex", ALIGN_ROW);
+    place(fns, ctx, layout.hex_box);
+    let prev = fns.push_skin(unsafe { *fns.skin_text_edit });
+    let state = unsafe {
+        (fns.text_edit)(
+            ctx,
+            TEXT_EDIT_FLAGS,
+            edit.hex.as_mut_ptr().cast(),
+            7,
+            fns.text_edit_filter,
+        )
+    };
+    fns.push_skin(prev);
+    // A typed color takes effect once it is six hex digits.
+    if state & 1 != 0 && edit.drag == Drag::None {
+        if let Some(c) = color::parse_hex(&buffer_text(&edit.hex)) {
+            if c != color::to_rgb(edit.hsv) {
+                edit.hsv = color::to_hsv(c);
+            }
+        }
+    }
+
+    place(fns, ctx, layout.reset);
+    if button(fns, ctx, "Reset to Default") {
+        if let Some(c) = color::parse_hex(&d.default_str) {
+            edit.hsv = color::to_hsv(c);
+            set_hex_buffer(&mut edit.hex, c);
+        }
+    }
+
+    place(fns, ctx, layout.cancel);
+    let cancel = button(fns, ctx, "Cancel");
+    place(fns, ctx, layout.ok);
+    let ok = button(fns, ctx, "OK");
+    if ok {
+        let index = edit.index;
+        let picked = color::to_hex(color::to_rgb(edit.hsv));
+        editor.set(index, Value::Str(picked), native);
+    }
+    if ok || cancel {
+        screen.color = None;
+    }
+}
+
+/// Rows as tall as a text box, which get the wider gap.
 fn is_text_row(d: &SettingDef) -> bool {
-    d.kind == Kind::Str
+    d.kind.is_text()
 }
 
 /// The selected category's settings. Spacing is set before every row, because pushing a skin
@@ -1017,6 +1614,23 @@ fn draw_setting_row(
                 if unsafe { (fns.slider)(&mut v, &mut lo, &mut hi, &mut step) } {
                     editor.set(i, Value::Int(i64::from(v) + d.min), native);
                 }
+            }
+        }
+        Kind::Color => {
+            row(fns, ctx, SEARCH_ROW_HEIGHT, 3);
+            label(fns, ctx, &caption, ALIGN_ROW);
+            let hex = value.str().to_owned();
+            if let Some([x, y, w, h]) = next_cell(fns, ctx) {
+                let rgb = color::parse_hex(&hex).unwrap_or(Rgb { r: 0, g: 0, b: 0 });
+                let inset = h * 0.15;
+                let side = (h - inset * 2.0).min(w - SWATCH_ROW_GAP);
+                let swatch = [x + w - side - SWATCH_ROW_GAP, y + inset, side, side];
+                fill(ctx, fns, swatch, color::nk_color(rgb));
+                outline(ctx, fns, swatch, 2.0, BLACK);
+            }
+            unsafe { (fns.skip_cell)(ctx) };
+            if button(fns, ctx, &format!("#{hex}")) {
+                open_color_editor(screen, i, &hex, &d.default_str);
             }
         }
         Kind::Str if !allow_text_edit => {
@@ -1280,4 +1894,55 @@ fn draw_footer(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn within(inner: Area, outer: Area) -> bool {
+        inner[0] >= outer[0]
+            && inner[1] >= outer[1]
+            && inner[0] + inner[2] <= outer[0] + outer[2]
+            && inner[1] + inner[3] <= outer[1] + outer[3]
+    }
+
+    #[test]
+    fn the_color_popup_fits_its_padded_frame_and_the_screen() {
+        for ui_w in [2880.0, 3840.0, 5120.0] {
+            let l = PickerLayout::centred(ui_w);
+            let f = l.frame;
+            let content = [
+                f[0] + POPUP_PAD_X,
+                f[1] + POPUP_PAD_Y,
+                f[2] - POPUP_PAD_X * 2.0,
+                f[3] - POPUP_PAD_Y * 2.0,
+            ];
+            assert!(within(f, [0.0, 0.0, ui_w, UI_HEIGHT]));
+            let parts = [
+                l.title,
+                l.square,
+                l.hue,
+                l.swatch_labels[0],
+                l.swatch_labels[1],
+                l.swatches[0],
+                l.swatches[1],
+                l.hex_label,
+                l.hex_box,
+                l.reset,
+                l.cancel,
+                l.ok,
+            ];
+            for p in parts {
+                assert!(within(p, content), "{p:?} outside {content:?}");
+            }
+            // The right column ends at the content's edge: no dead space beside it.
+            assert_eq!(l.reset[0] + l.reset[2], content[0] + content[2]);
+            assert!(l.reset[1] + l.reset[3] <= l.square[1] + l.square[3]);
+            // The buttons are centred.
+            let left = l.cancel[0] - content[0];
+            let right = content[0] + content[2] - (l.ok[0] + l.ok[2]);
+            assert!((left - right).abs() < 0.01);
+        }
+    }
 }

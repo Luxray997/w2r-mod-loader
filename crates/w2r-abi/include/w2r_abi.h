@@ -121,7 +121,8 @@ enum {
     W2R_SETTING_BOOL = 0,   /* a checkbox; settings_set_i64 with 0 or 1 */
     W2R_SETTING_INT = 1,    /* settings_set_i64; a slider when min < max, read-only otherwise */
     W2R_SETTING_CHOICE = 2, /* a dropdown over choices; settings_set_i64 with the index */
-    W2R_SETTING_STRING = 3  /* a text box; settings_set_str */
+    W2R_SETTING_STRING = 3, /* a text box; settings_set_str */
+    W2R_SETTING_COLOR = 4   /* a color picker; settings_set_str with six hex digits, "rrggbb" */
 };
 #define W2R_SETTING_HIDDEN 1u /* flags: stored and readable as usual, never shown */
 
@@ -137,7 +138,7 @@ typedef struct W2rSettingDef {
     W2rStr subcategory;    /* heading inside the category; empty = "General" */
     int32_t default_int;   /* bool 0/1, int value, choice index */
     int32_t min, max;      /* W2R_SETTING_INT only, inclusive; min == max draws no slider */
-    W2rStr default_str;    /* W2R_SETTING_STRING only */
+    W2rStr default_str;    /* W2R_SETTING_STRING, or W2R_SETTING_COLOR as "rrggbb" */
     const W2rStr *choices; /* W2R_SETTING_CHOICE only: 2..W2R_MAX_SETTING_CHOICE_COUNT labels */
     uint32_t choice_count;
     W2rStr active_when;    /* greyed while this BOOL is off: an earlier key of this plugin, or
