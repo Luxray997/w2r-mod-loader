@@ -46,7 +46,7 @@ use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
 use crate::ui::{self, Widgets};
 #[cfg(target_arch = "x86")]
-use crate::ui::{Action, PluginRow, Status};
+use crate::ui::{Action, PluginRow};
 
 struct Session {
     registry: Registry,
@@ -60,9 +60,9 @@ struct Session {
     /// The plugins in the fingerprint.
     #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     simulation: Vec<String>,
-    /// Plugin id to author, read once from the manifests for the plugin screen.
+    /// Each plugin's name, author and description, read once from the manifests.
     #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
-    authors: BTreeMap<String, String>,
+    plugin_info: BTreeMap<String, plugins::PluginInfo>,
     /// How many plugins `state.json` had enabled at startup, for the title screen's summary.
     enabled_at_start: usize,
     net: Rc<Net>,
@@ -595,7 +595,7 @@ pub fn plugins_chat_line() -> Option<String> {
 fn settings_registry(
     native: Option<&[crate::nativesettings::Entry]>,
     plugins: &Registry,
-    names: &BTreeMap<String, String>,
+    names: &BTreeMap<String, plugins::PluginInfo>,
 ) -> settings::Registry {
     let mut r = settings::Registry::new();
     if let Some(entries) = native {
@@ -606,7 +606,9 @@ fn settings_registry(
         r.register(d, v);
     }
     for slot in plugins.slots().filter(|s| s.is_active()) {
-        let name = names.get(&slot.id).cloned().unwrap_or_else(|| slot.id.clone());
+        let name = names
+            .get(&slot.id)
+            .map_or_else(|| slot.id.clone(), |i| i.name.clone());
         for mut d in slot.declared() {
             if d.category.is_empty() {
                 d.category = name.clone();
@@ -725,59 +727,49 @@ impl settings::Owners for SessionOwners<'_> {
     }
 }
 
-/// The Plugins page: the installed plugins with their enable switches, and any rows a plugin
-/// still draws itself.
+/// Draws the plugin manager's list with `w` and saves the user's enable toggles to state.json.
+/// Called from the main menu's plugin popup.
 #[cfg(target_arch = "x86")]
-struct PluginPage<'a> {
-    state: &'a mut State,
-    root: &'a Path,
-    plugins: &'a Registry,
-    authors: &'a BTreeMap<String, String>,
-    fingerprint: [u8; 4],
-    simulation: &'a [String],
-    nk: Option<options::Nk>,
-}
-
-#[cfg(target_arch = "x86")]
-impl PluginPage<'_> {
-    fn draw(&mut self, ctx: *mut core::ffi::c_void) {
-        let Some(nk) = self.nk else { return };
-        let w = options::GameWidgets::new(&nk, ctx);
-        let mut rows: Vec<PluginRow> = self
+pub fn draw_plugin_list(w: &dyn Widgets) {
+    SESSION.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(s) = slot.as_mut() else {
+            return;
+        };
+        let mut rows: Vec<PluginRow> = s
             .state
             .plugins
             .iter()
             .map(|p| {
-                let (status, slow) = match self.plugins.find(&p.id) {
-                    Some(s) => match s.state() {
-                        SlotState::Active => (Status::Active, s.is_slow()),
-                        SlotState::Disabled { reason } => (Status::Disabled(reason), false),
-                    },
-                    None => (Status::NotLoaded, false),
-                };
+                let info = s.plugin_info.get(&p.id);
                 PluginRow {
                     id: p.id.clone(),
+                    name: info.map_or_else(|| p.id.clone(), |i| i.name.clone()),
                     version: state_version(p),
-                    author: self.authors.get(&p.id).cloned(),
+                    author: info.map(|i| i.author.clone()),
+                    description: info.map(|i| i.description.clone()),
                     enabled: p.enabled,
-                    status,
-                    slow,
+                    running: s
+                        .registry
+                        .find(&p.id)
+                        .is_some_and(|slot| matches!(slot.state(), SlotState::Active)),
                 }
             })
             .collect();
-        let plugins = self.plugins;
+        let plugins = &s.registry;
         let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-        let action =
-            ui::draw_plugin_list(&w, self.fingerprint, self.simulation, &mut rows, |w, i| {
-                if let Some(s) = plugins.find(&ids[i]) {
-                    ui::with_frame(w, |table| plugins.call_on_ui(s, table));
-                }
-            });
+        let action = ui::draw_plugin_list(w, s.fingerprint, &s.simulation, &mut rows, |w, i| {
+            if let Some(slot) = plugins.find(&ids[i]) {
+                ui::with_frame(w, |table| plugins.call_on_ui(slot, table));
+            }
+        });
         if let Action::Toggle(i) = action {
             let row = &rows[i];
-            self.state.set_enabled(&row.id, row.enabled);
-            let path = self.root.join("config").join("state.json");
-            match state::write(&path, self.state) {
+            s.state.set_enabled(&row.id, row.enabled);
+            let path = s.root.join("config").join("state.json");
+            match state::write(&path, &s.state) {
                 Ok(()) => StartupLog.line(
                     W2R_LOG_INFO,
                     "host",
@@ -794,7 +786,7 @@ impl PluginPage<'_> {
                 ),
             }
         }
-    }
+    });
 }
 
 /// What the options screen draws with: the session's parts, borrowed for one frame.
@@ -803,17 +795,12 @@ struct SessionScreen<'a> {
     editor: &'a mut Editor,
     native: &'a mut dyn settings::Native,
     owners: SessionOwners<'a>,
-    page: PluginPage<'a>,
 }
 
 #[cfg(target_arch = "x86")]
 impl crate::settingsscreen::ScreenHost for SessionScreen<'_> {
     fn parts(&mut self) -> (&mut Editor, &mut dyn settings::Native, &mut dyn settings::Owners) {
         (&mut *self.editor, &mut *self.native, &mut self.owners)
-    }
-
-    fn draw_plugins(&mut self, ctx: *mut core::ffi::c_void) {
-        self.page.draw(ctx);
     }
 }
 
@@ -844,15 +831,6 @@ pub fn draw_settings_screen(variant: i32) -> bool {
                 root: &s.root,
                 plugins: &s.registry,
                 net: &s.net,
-            },
-            page: PluginPage {
-                state: &mut s.state,
-                root: &s.root,
-                plugins: &s.registry,
-                authors: &s.authors,
-                fingerprint: s.fingerprint,
-                simulation: &s.simulation,
-                nk: s.nk,
             },
         };
         crate::settingsscreen::draw(variant, &mut screen)
@@ -1095,7 +1073,7 @@ fn start() -> Session {
             config: HostConfig::default(),
             fingerprint: [0; 4],
             simulation: Vec::new(),
-            authors: BTreeMap::new(),
+            plugin_info: BTreeMap::new(),
             enabled_at_start: 0,
             net,
             editor: Editor::default(),
@@ -1226,8 +1204,7 @@ fn start() -> Session {
         crate::createscreen::set_auto_game_name(config.auto_game_name);
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
-    let authors = plugins::authors(&startup.root, &loaded.state);
-    let names = plugins::names(&startup.root, &loaded.state);
+    let plugin_info = plugins::infos(&startup.root, &loaded.state);
     let enabled_at_start = loaded.state.plugins.iter().filter(|p| p.enabled).count();
     #[cfg(target_arch = "x86")]
     let native = startup.image.as_ref().and_then(|image| {
@@ -1250,7 +1227,7 @@ fn start() -> Session {
     let editor = Editor::new(settings_registry(
         entries.as_deref(),
         &loaded.registry,
-        &names,
+        &plugin_info,
     ));
     host_line(
         W2R_LOG_INFO,
@@ -1271,7 +1248,7 @@ fn start() -> Session {
         config,
         fingerprint: loaded.fingerprint,
         simulation: loaded.simulation,
-        authors,
+        plugin_info,
         enabled_at_start,
         net,
         editor,

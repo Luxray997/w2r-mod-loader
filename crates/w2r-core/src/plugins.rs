@@ -156,29 +156,18 @@ impl Loaded {
     }
 }
 
-/// The author of each listed plugin, from its `plugin.json`, for the plugin screen. Display only:
-/// a plugin whose manifest is missing or invalid has no entry (the load checks report why), and
-/// nothing here decides whether a plugin runs.
-pub fn authors(root: &Path, state: &State) -> BTreeMap<String, String> {
-    state
-        .plugins
-        .iter()
-        .filter_map(|st| {
-            let raw = read_bounded(
-                &root.join("plugins").join(&st.id).join("plugin.json"),
-                manifest::MAX_BYTES,
-            )
-            .ok()?;
-            let m = manifest::validate(&raw).ok()?;
-            Some((st.id.clone(), m.author))
-        })
-        .collect()
+/// What a listed plugin's `plugin.json` says about it, for display.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginInfo {
+    pub name: String,
+    pub author: String,
+    pub description: String,
 }
 
-/// The display name of each listed plugin, from its `plugin.json`, for the options screen (a
-/// plugin's category when it named none, and the tooltip's "Plugin:" line). Display only, as
-/// [`authors`].
-pub fn names(root: &Path, state: &State) -> BTreeMap<String, String> {
+/// Each listed plugin's name, author and description, from its `plugin.json`. Display only: a
+/// plugin whose manifest is missing or invalid has no entry (the load checks report why), and
+/// nothing here decides whether a plugin runs.
+pub fn infos(root: &Path, state: &State) -> BTreeMap<String, PluginInfo> {
     state
         .plugins
         .iter()
@@ -189,7 +178,14 @@ pub fn names(root: &Path, state: &State) -> BTreeMap<String, String> {
             )
             .ok()?;
             let m = manifest::validate(&raw).ok()?;
-            Some((st.id.clone(), m.name))
+            Some((
+                st.id.clone(),
+                PluginInfo {
+                    name: m.name,
+                    author: m.author,
+                    description: m.description,
+                },
+            ))
         })
         .collect()
 }

@@ -66,8 +66,8 @@ Implicit capabilities need no approval: `log`, `settings`, `ui`, `fs.data`.
 | `hook_install`, `hook_remove` | `hooks.raw` (shown as **dangerous**) | `target` is a `symbol_lookup` handle of a function symbol (`W2R_E_NOT_FOUND` for a bad handle, `W2R_E_INVALID` for a global), so a hook is always inside the game module's code; `original_out` receives the trampoline before the hook goes live; no overlap with any host patch or other hook (`W2R_E_CONFLICT`); at most 64 hooks per plugin |
 
 The UI (`W2rUi`) is passed to `on_ui` and is valid only inside that call. It offers `label`,
-`button`, `checkbox` and `slider_int`; each call draws one row in the plugin's card on the options
-screen's Plugins page. A plugin's settings belong in its declarations instead (next section), so
+`button`, `checkbox` and `slider_int`; each call draws one row in the plugin's card in the plugin
+manager (opened from the title screen). A plugin's settings belong in its declarations instead (next section), so
 they appear in the options screen's categories with everyone else's; `on_ui` remains for what a
 declaration cannot express. Strings are at most 128 bytes of UTF-8;
 a longer or invalid string, a null value pointer or `min >= max` makes the call a no-op that
@@ -235,8 +235,7 @@ Plugins send through `peer_send`; the host builds the envelope:
   do the equivalent.
 - `on_unload` is best effort and may be skipped after a fault. The host never relies on it to keep
   its own state consistent.
-- The host cannot preempt a slow callback. It logs callbacks over 50 ms, and after 10 in a row the
-  plugin list shows a slow-plugin warning.
+- The host cannot preempt a slow callback. It logs every callback over 50 ms.
 
 ## Minimal plugin
 

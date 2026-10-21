@@ -3,9 +3,8 @@
 Every setting the game, the host and the plugins have, in one screen. Ported from wc2r-plus
 `core/settings/` (MIT), where it has shipped since 1.0.0, so it looks and behaves the same:
 
-- **Categories** down the left, sorted alphabetically, then two pages of the host's own:
-  **Plugins** (the installed plugins) and **Search**. The selected category is greyed ("you are
-  here").
+- **Categories** down the left, sorted alphabetically, then the **Search** page. The selected
+  category is greyed ("you are here").
 - The selected category's settings on the right, **grouped under subcategory headings** in the
   order they were first registered, so a plugin can add a setting to a subcategory that already
   exists.
@@ -35,7 +34,7 @@ session has not started.
 
 Code: `src/settings.rs` (the model: registry, editor, declarations; tested everywhere),
 `src/settingsscreen.rs` (drawing, x86), `src/nativesettings.rs` (the game's settings),
-`src/hostsettings.rs` (the host's), `options.rs` (the hook and the Plugins page's widgets).
+`src/hostsettings.rs` (the host's), `options.rs` (the hook, and the plugin manager below).
 
 ## Where the settings come from
 
@@ -94,11 +93,24 @@ The lobby locks are set on the Create Multiplayer Game screen and are not here. 
 game, which removes the empty strip under scrolling lists; it is applied in a hook on
 `nk_do_scrollbarv`, the one point every vertical scrollbar passes through.
 
-### The Plugins page
+## The plugin manager
 
-The session's simulation fingerprint, then one card per installed plugin: id and version, an
-"Enabled (next launch)" checkbox (`state.json`), author, status, and under them any rows the
-plugin still draws itself through `on_ui`.
+Not a setting, so not on this screen: the title screen's version lines have a **Manage** button
+after the plugin count, which opens a popup over the title screen: its own window, dimming the
+screen, on a dark panel with a gold border like the in-match settings backdrop. The game's own
+menu is not built while it is open, so nothing behind it can be clicked. It lists the session's
+simulation fingerprint, then one card per installed plugin:
+
+- The name, with the version against the right edge, and under it `Author: <author>` (the author
+  in gold). The name,
+  author and description come from the plugin's `plugin.json`; without one, the id alone.
+- The status, with an **Enable** box against the right edge: `Status: Running` or
+  `Status: Disabled`, followed by `(restart to update)` when the box no longer matches what is
+  running. The box is `enabled` in `state.json`, which takes effect at the next launch.
+- `Description: <description>`, wrapped.
+- Under them, any rows the plugin still draws itself through `on_ui`.
+
+Close returns to the title screen; leaving the title screen closes it too.
 
 ## Style for declared settings
 

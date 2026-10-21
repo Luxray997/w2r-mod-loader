@@ -1,4 +1,4 @@
-//! The widget API (`W2rUi`, docs/abi.md) and the in-game plugin screen. Widgets are behind
+//! The widget API (`W2rUi`, docs/abi.md) and the plugin manager's list. Widgets are behind
 //! [`Widgets`] so the plugin-facing rules are testable with a fake; `options.rs` binds them to
 //! the game's own menu widgets.
 //!
@@ -24,6 +24,10 @@ pub const CARD_TOP_H: f32 = 70.0;
 /// An edit row. The game's edit box pads its text, and the plugin screen's font is 80 high, so a
 /// 90-high row clips the text away and leaves only the caret (seen in game).
 pub const EDIT_ROW_H: f32 = 150.0;
+/// Room added to a measured text width, so neighbouring cells do not touch.
+pub const CELL_PAD: f32 = 24.0;
+/// The author's name on a plugin card: the game's gold, packed as Nuklear packs colors.
+pub const AUTHOR_COLOUR: u32 = 0xff00_ccff;
 
 /// One row of widgets. `label` and friends each take the whole row.
 pub trait Widgets {
@@ -48,6 +52,38 @@ pub trait Widgets {
         true
     }
     fn card_end(&self) {}
+    /// How wide `text` is drawn, in UI units.
+    fn text_width(&self, text: &str) -> f32 {
+        text.len() as f32 * 40.0
+    }
+    /// How many lines `text` wraps to at `width`.
+    fn text_lines(&self, _text: &str, _width: f32) -> i32 {
+        1
+    }
+    /// The height of one line of text.
+    fn line_height(&self) -> f32 {
+        ROW_H
+    }
+    /// The width a row's cells share.
+    fn row_width(&self) -> f32 {
+        1000.0
+    }
+    /// A row of cells of the given widths, left to right. A width of 0 shares what the others
+    /// leave.
+    fn row_cells(&self, height: f32, widths: &[f32]) {
+        self.row(height, widths.len() as i32);
+    }
+    fn label_coloured(&self, text: &str, _colour: u32) {
+        self.label(text);
+    }
+    /// A label against the right edge of its cell.
+    fn label_right(&self, text: &str) {
+        self.label(text);
+    }
+    /// A label that wraps onto as many lines as its row is tall.
+    fn label_wrapped(&self, text: &str) {
+        self.label(text);
+    }
 }
 
 /// Forwards to `inner` and adds up the height of the rows drawn through it, so a card can be
@@ -82,6 +118,31 @@ impl Widgets for Measured<'_> {
     }
     fn disable_end(&self) {
         self.inner.disable_end();
+    }
+    fn text_width(&self, text: &str) -> f32 {
+        self.inner.text_width(text)
+    }
+    fn text_lines(&self, text: &str, width: f32) -> i32 {
+        self.inner.text_lines(text, width)
+    }
+    fn line_height(&self) -> f32 {
+        self.inner.line_height()
+    }
+    fn row_width(&self) -> f32 {
+        self.inner.row_width()
+    }
+    fn row_cells(&self, height: f32, widths: &[f32]) {
+        self.height.set(self.height.get() + height + ROW_GAP);
+        self.inner.row_cells(height, widths);
+    }
+    fn label_coloured(&self, text: &str, colour: u32) {
+        self.inner.label_coloured(text, colour);
+    }
+    fn label_right(&self, text: &str) {
+        self.inner.label_right(text);
+    }
+    fn label_wrapped(&self, text: &str) {
+        self.inner.label_wrapped(text);
     }
 }
 
@@ -276,26 +337,19 @@ mod cb {
     }
 }
 
-/// A plugin as the screen shows it.
+/// A plugin as the manager shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginRow {
     pub id: String,
+    /// The name from `plugin.json`, or the id when it cannot be read.
+    pub name: String,
     pub version: String,
-    /// The author from `plugin.json`, when it can be read (shown even for plugins not loaded).
     pub author: Option<String>,
-    /// `enabled` in state.json (takes effect at the next launch).
+    pub description: Option<String>,
+    /// `enabled` in state.json, which takes effect at the next launch.
     pub enabled: bool,
-    /// What the host did with it this session.
-    pub status: Status,
-    pub slow: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    Active,
-    Disabled(String),
-    /// Enabled in state.json but refused before it got a slot, or not enabled.
-    NotLoaded,
+    /// Whether the plugin is running this session.
+    pub running: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,10 +359,21 @@ pub enum Action {
     Toggle(usize),
 }
 
-/// The options screen's Plugins page (docs/settings-screen.md): the session's simulation
-/// fingerprint, then one framed card per plugin with its enable switch, author and status, and
-/// under them any rows the plugin still draws itself through `on_ui`. A plugin's declared
-/// settings are not here: they sit in their categories with everyone else's.
+/// A card's status line. A restart is needed when the enable box no longer matches what is
+/// running.
+pub fn status_text(running: bool, enabled: bool) -> String {
+    let state = if running { "Running" } else { "Disabled" };
+    if running == enabled {
+        format!("Status: {state}")
+    } else {
+        format!("Status: {state} (restart to update)")
+    }
+}
+
+/// The plugin manager's list (docs/settings-screen.md): the session's simulation fingerprint,
+/// then a card per plugin with its name, author and version, its status and enable box, its
+/// description, and under them any rows the plugin still draws itself through `on_ui`.
+/// `draw_section` draws a running plugin's own rows.
 pub fn draw_plugin_list(
     w: &dyn Widgets,
     fingerprint: [u8; 4],
@@ -327,8 +392,6 @@ pub fn draw_plugin_list(
             simulation.join(", ")
         }
     ));
-    w.row(HEADING_H, 1);
-    w.label(&format!("Plugins ({})", rows.len()));
     if rows.is_empty() {
         w.row(ROW_H, 1);
         w.label("No plugins installed. Use the W2R Mod Loader to add some.");
@@ -344,27 +407,38 @@ pub fn draw_plugin_list(
             inner: w,
             height: Cell::new(CARD_TOP_H + ROW_GAP),
         };
-        m.row(ROW_H, 2);
-        m.label(&format!("{} {}", row.id, row.version));
+
+        // The name, with the version against the right edge, then the author in gold.
+        let version_w = m.text_width(&row.version) + CELL_PAD;
+        m.row_cells(ROW_H, &[0.0, version_w]);
+        m.label(&row.name);
+        m.label_right(&row.version);
+        if let Some(author) = &row.author {
+            let caption_w = m.text_width("Author:") + CELL_PAD;
+            m.row_cells(ROW_H, &[caption_w, 0.0]);
+            m.label("Author:");
+            m.label_coloured(author, AUTHOR_COLOUR);
+        }
+
+        // The status, with the enable box against the right edge.
+        let enable_w = m.text_width(" Enable") + ROW_H + CELL_PAD;
+        m.row_cells(ROW_H, &[0.0, enable_w]);
+        m.label(&status_text(row.running, row.enabled));
         let mut enabled = row.enabled;
-        if m.checkbox("Enabled (next launch)", &mut enabled) {
+        if m.checkbox("Enable", &mut enabled) {
             row.enabled = enabled;
             action = Action::Toggle(i);
         }
-        m.row(ROW_H, 1);
-        m.label(&format!(
-            "Author: {}",
-            row.author.as_deref().unwrap_or("unknown")
-        ));
-        m.row(ROW_H, 1);
-        let status = match &row.status {
-            Status::Active if row.slow => "Status: running (slow callbacks)".to_owned(),
-            Status::Active => "Status: running".to_owned(),
-            Status::Disabled(reason) => format!("Status: disabled, {reason}"),
-            Status::NotLoaded => "Status: not loaded this session (w2r.log says why)".to_owned(),
-        };
-        m.label(&status);
-        if row.status == Status::Active {
+
+        if let Some(description) = row.description.as_deref().filter(|d| !d.is_empty()) {
+            let text = format!("Description: {description}");
+            let lines = m.text_lines(&text, m.row_width()).max(1);
+            let height = (lines as f32 * m.line_height()).max(ROW_H);
+            m.row_cells(height, &[0.0]);
+            m.label_wrapped(&text);
+        }
+
+        if row.running {
             draw_section(&m, i);
         }
         w.card_end();
@@ -542,36 +616,38 @@ mod tests {
     }
 
     #[test]
-    fn the_plugin_page_lists_and_toggles() {
+    fn status_lines_say_when_a_restart_is_needed() {
+        assert_eq!(status_text(true, true), "Status: Running");
+        assert_eq!(status_text(true, false), "Status: Running (restart to update)");
+        assert_eq!(status_text(false, false), "Status: Disabled");
+        assert_eq!(status_text(false, true), "Status: Disabled (restart to update)");
+    }
+
+    #[test]
+    fn the_plugin_list_draws_cards_and_toggles() {
         let fake = FakeWidgets::default();
-        fake.flip.borrow_mut().push("Enabled (next launch)".into());
+        fake.flip.borrow_mut().push("Enable".into());
         let mut rows = vec![
             PluginRow {
                 id: "a".into(),
+                name: "Alpha".into(),
                 version: "1.0.0".into(),
                 author: Some("Ann".into()),
+                description: Some("Does a.".into()),
                 enabled: true,
-                status: Status::Active,
-                slow: false,
+                running: true,
             },
             PluginRow {
                 id: "b".into(),
+                name: "b".into(),
                 version: "2.0.0".into(),
                 author: None,
+                description: None,
                 enabled: false,
-                status: Status::NotLoaded,
-                slow: false,
-            },
-            PluginRow {
-                id: "c".into(),
-                version: "0.1.0".into(),
-                author: Some("Cy".into()),
-                enabled: true,
-                status: Status::Disabled("boom".into()),
-                slow: true,
+                running: false,
             },
         ];
-        let simulation = vec!["a".to_owned(), "c".to_owned()];
+        let simulation = vec!["a".to_owned()];
         let mut sections = Vec::new();
         let action = draw_plugin_list(
             &fake,
@@ -580,26 +656,23 @@ mod tests {
             &mut rows,
             |_, i| sections.push(i),
         );
-        // Every row's checkbox flipped; the last flip wins as the reported action.
-        assert_eq!(action, Action::Toggle(2));
-        assert!(!rows[0].enabled && rows[1].enabled && !rows[2].enabled);
-        assert_eq!(sections, vec![0], "only active plugins draw their section");
+        // Every card's box flipped; the last flip wins as the reported action.
+        assert_eq!(action, Action::Toggle(1));
+        assert!(!rows[0].enabled && rows[1].enabled);
+        assert_eq!(sections, vec![0], "only running plugins draw their section");
         let calls = fake.calls.borrow();
-        assert_eq!(calls[1], "label \"Fingerprint: aabbccdd (a, c)\"");
-        assert_eq!(calls[3], "label \"Plugins (3)\"");
-        assert!(calls.iter().any(|c| c == "label \"Author: Ann\""));
-        assert!(calls.iter().any(|c| c == "label \"Author: unknown\""));
-        assert!(calls.iter().any(|c| c == "label \"Status: running\""));
-        assert!(
-            calls
-                .iter()
-                .any(|c| c.starts_with("label \"Status: not loaded"))
-        );
-        assert!(
-            calls
-                .iter()
-                .any(|c| c == "label \"Status: disabled, boom\"")
-        );
+        assert_eq!(calls[1], "label \"Fingerprint: aabbccdd (a)\"");
+        for line in [
+            "label \"Alpha\"",
+            "label \"Author:\"",
+            "label \"Ann\"",
+            "label \"1.0.0\"",
+            "label \"Status: Running\"",
+            "label \"Description: Does a.\"",
+            "label \"Status: Disabled\"",
+        ] {
+            assert!(calls.iter().any(|c| c == line), "{line} missing: {calls:?}");
+        }
         drop(calls);
 
         let fake = FakeWidgets::default();

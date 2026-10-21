@@ -1,7 +1,7 @@
 //! The options screen (docs/settings-screen.md): every setting the game, the host and the
 //! plugins have, in one screen. Categories down the left, the selected category's settings on the
 //! right under subcategory headings, a search page, hover descriptions, and Cancel / Apply /
-//! Save and Exit along the bottom. A "Plugins" page lists the installed plugins.
+//! Save and Exit along the bottom.
 //!
 //! It replaces the game's options screen on the main menu (variant 0) and in the pause menu
 //! (variant 1). The model is [`crate::settings`]; this file only draws it. Layout numbers are in
@@ -152,8 +152,7 @@ const FILTER_LINEAR: i32 = 1;
 
 const EDIT_BUFFER: usize = 256;
 const SEARCH_BUFFER: usize = 128;
-/// Pages listed after the categories.
-const PLUGINS_CATEGORY: &str = "Plugins";
+/// The page listed after the categories.
 const SEARCH_CATEGORY: &str = "Search";
 /// After this long without the screen being built, the next build is a fresh entry.
 const REENTRY_GAP_MS: u64 = 250;
@@ -531,7 +530,6 @@ thread_local! {
 /// What the screen needs from the session.
 pub trait ScreenHost {
     fn parts(&mut self) -> (&mut Editor, &mut dyn Native, &mut dyn Owners);
-    fn draw_plugins(&mut self, ctx: *mut c_void);
 }
 
 static FNS: OnceLock<Fns> = OnceLock::new();
@@ -713,7 +711,6 @@ fn draw_screen(
         screen.search = [0; SEARCH_BUFFER];
         screen.color = None;
         screen.categories = editor.registry.categories();
-        screen.categories.push(PLUGINS_CATEGORY.to_owned());
         screen.categories.push(SEARCH_CATEGORY.to_owned());
         screen.category = screen.categories[0].clone();
     }
@@ -774,7 +771,6 @@ fn draw_screen(
     }
 
     let searching = screen.category.eq_ignore_ascii_case(SEARCH_CATEGORY);
-    let plugins = screen.category.eq_ignore_ascii_case(PLUGINS_CATEGORY);
     let mut content_top = PANEL_TOP;
     let mut content_space = content_h;
     // The search box is placed directly in the window, not in a group: a text box inside a group
@@ -815,15 +811,11 @@ fn draw_screen(
     ) {
         let saved = read_f32(ctx, CTX_SPACING_Y);
         set_row_spacing(ctx, ROW_SPACING);
-        if plugins {
-            host.draw_plugins(ctx);
+        let (editor, native, _) = host.parts();
+        if searching {
+            draw_search_pane(fns, ctx, screen, editor, native);
         } else {
-            let (editor, native, _) = host.parts();
-            if searching {
-                draw_search_pane(fns, ctx, screen, editor, native);
-            } else {
-                draw_settings_pane(fns, ctx, screen, editor, native);
-            }
+            draw_settings_pane(fns, ctx, screen, editor, native);
         }
         set_row_spacing(ctx, saved);
         end_padded_panel(fns, ctx);
