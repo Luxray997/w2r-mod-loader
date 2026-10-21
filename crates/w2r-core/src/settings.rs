@@ -154,12 +154,13 @@ impl SettingDef {
         self.kind == Kind::Int && self.min < self.max
     }
 
-    /// The text that goes in the tooltip: the description, then which plugin declared it.
-    pub fn tooltip(&self) -> String {
-        match (&self.source, self.description.is_empty()) {
-            (Some(name), true) => format!("Plugin: {name}"),
-            (Some(name), false) => format!("{} (Plugin: {name})", self.description),
-            (None, _) => self.description.clone(),
+    /// What the setting belongs to, for the tooltip: the game, the mod loader, or the plugin
+    /// (its display name, or its id when it has none).
+    pub fn source_name(&self) -> String {
+        match &self.owner {
+            Owner::Game => "Warcraft II: Remastered".to_owned(),
+            Owner::Host => "W2R Mod Loader".to_owned(),
+            Owner::Plugin(id) => self.source.clone().unwrap_or_else(|| id.clone()),
         }
     }
 
@@ -1008,13 +1009,15 @@ mod tests {
     }
 
     #[test]
-    fn tooltips_name_the_plugin() {
+    fn the_source_names_the_game_the_loader_or_the_plugin() {
+        let game = SettingDef::new(Owner::Game, "music", Kind::Int, "Sound", "Volume");
+        assert_eq!(game.source_name(), "Warcraft II: Remastered");
+        let host = SettingDef::new(Owner::Host, "map_sharing", Kind::Bool, "M", "S");
+        assert_eq!(host.source_name(), "W2R Mod Loader");
         let mut d = SettingDef::new(plugin("w2r-chat"), "fade", Kind::Int, "Chat", "Behavior");
-        assert_eq!(d.tooltip(), "");
+        assert_eq!(d.source_name(), "w2r-chat");
         d.source = Some("Chat".into());
-        assert_eq!(d.tooltip(), "Plugin: Chat");
-        d.description = "Seconds before a line fades.".into();
-        assert_eq!(d.tooltip(), "Seconds before a line fades. (Plugin: Chat)");
+        assert_eq!(d.source_name(), "Chat");
     }
 
     fn decl(kind: u32, key: &str) -> DeclaredSetting {

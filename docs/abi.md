@@ -105,7 +105,7 @@ settings there by declaring them.
 | `flags` | 0, or `W2R_SETTING_HIDDEN`: stored and readable as usual, never shown; other bits `W2R_E_INVALID` |
 | `key` | the settings-key rule above; declared once per plugin (`W2R_E_CONFLICT` the second time); at most 128 declarations, the same cap as stored keys |
 | `label` | 1 to 64 bytes. Title Case, like the rest of the screen |
-| `description` | at most 256 bytes; may be empty. The hover text, followed by "(Plugin: name)" |
+| `description` | at most 256 bytes; may be empty. The hover text. The tooltip's last line names the plugin (its manifest `name`) |
 | `category`, `subcategory` | at most 32 bytes each. Several plugins may name the same category, which is the point: related settings end up together. An empty category is the plugin's name; an empty subcategory is "General" |
 | `default_int` | the default: 0 or 1 for a bool, a value in `[min, max]` for a slider, an index into `choices` for a choice (`W2R_E_INVALID` otherwise) |
 | `min`, `max` | `_INT` only; `min > max` is `W2R_E_INVALID` |

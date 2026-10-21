@@ -108,6 +108,9 @@ const fn rgba(r: u32, g: u32, b: u32, a: u32) -> u32 {
 const TIP_FILL: u32 = rgba(12, 10, 8, 244);
 const TIP_BORDER_COLOUR: u32 = rgba(120, 96, 48, 255);
 const TIP_TEXT_FALLBACK: u32 = rgba(255, 255, 255, 255);
+/// The tooltip's last line, naming what the setting belongs to.
+const TIP_SOURCE_COLOUR: u32 = rgba(165, 160, 150, 255);
+const TIP_SOURCE_GAP: f32 = 16.0;
 /// The pause-menu variant's backdrop. The game's in-match window art has its own panel layout
 /// drawn into it, which does not fit this screen, so a plain panel is drawn instead.
 const BACKDROP: u32 = rgba(26, 20, 14, 246);
@@ -496,7 +499,9 @@ struct Picker {
 /// The hovered setting's tooltip. Captured while its row is drawn inside the scrolling group, and
 /// drawn after every group has ended so the group does not clip it.
 struct Tip {
-    text: String,
+    description: String,
+    /// What the setting belongs to, on its own line at the bottom.
+    source: String,
     mouse_x: f32,
     mouse_y: f32,
 }
@@ -1717,10 +1722,6 @@ fn combo_begin(
 /// Records the tooltip if the mouse is over the setting just drawn, between `y0` and `y1` in
 /// layout space. The group's scroll offset is subtracted to compare them with the mouse.
 fn capture_tooltip(ctx: *mut c_void, screen: &mut Screen, d: &SettingDef, y0: f32, y1: f32) {
-    let text = d.tooltip();
-    if text.is_empty() {
-        return;
-    }
     let panel = current_panel(ctx);
     if panel.is_null() {
         return;
@@ -1752,7 +1753,8 @@ fn capture_tooltip(ctx: *mut c_void, screen: &mut Screen, d: &SettingDef, y0: f3
         return;
     }
     screen.tip = Some(Tip {
-        text,
+        description: d.description.clone(),
+        source: d.source_name(),
         mouse_x: mx,
         mouse_y: my,
     });
@@ -1789,14 +1791,20 @@ fn draw_tooltip(fns: &Fns, ctx: *mut c_void, ui_w: f32, screen: &Screen) {
         return;
     }
     let canvas = unsafe { win.cast::<u8>().add(WINDOW_BUFFER).cast::<c_void>() };
-    let text = cstr(&tip.text);
+    let text = cstr(&tip.description);
+    let source = cstr(&tip.source);
     let line_h = font_line_height(ctx);
     let wrap_w = TIP_MAX_WIDTH - TIP_PAD * 2.0;
-    let lines =
+    let lines = if tip.description.is_empty() {
+        0
+    } else {
         unsafe { (fns.count_lines)(ctx, text.as_ptr().cast(), (text.len() - 1) as i32, wrap_w) }
-            .clamp(1, TIP_MAX_LINES);
+            .clamp(1, TIP_MAX_LINES)
+    };
+    let text_h = lines as f32 * line_h;
+    let source_gap = if lines > 0 { TIP_SOURCE_GAP } else { 0.0 };
     let tip_w = TIP_MAX_WIDTH;
-    let tip_h = lines as f32 * line_h + TIP_PAD * 2.0;
+    let tip_h = text_h + source_gap + line_h + TIP_PAD * 2.0;
     // Below and right of the cursor, moved back on screen if it would not fit.
     let mut x = tip.mouse_x + TIP_CURSOR_OFFSET;
     let mut y = tip.mouse_y + TIP_CURSOR_OFFSET;
@@ -1828,15 +1836,19 @@ fn draw_tooltip(fns: &Fns, ctx: *mut c_void, ui_w: f32, screen: &Screen) {
     if colour >> 24 == 0 {
         colour = TIP_TEXT_FALLBACK;
     }
+    if lines > 0 {
+        rect(fns, ctx, x + TIP_PAD, y + TIP_PAD, wrap_w, text_h);
+        unsafe { (fns.wrapped_label)(ctx, text.as_ptr().cast(), colour) };
+    }
     rect(
         fns,
         ctx,
         x + TIP_PAD,
-        y + TIP_PAD,
-        tip_w - TIP_PAD * 2.0,
-        tip_h - TIP_PAD * 2.0,
+        y + TIP_PAD + text_h + source_gap,
+        wrap_w,
+        line_h,
     );
-    unsafe { (fns.wrapped_label)(ctx, text.as_ptr().cast(), colour) };
+    unsafe { (fns.wrapped_label)(ctx, source.as_ptr().cast(), TIP_SOURCE_COLOUR) };
 }
 
 /// The pause-menu variant's backdrop, from the title down through the footer.

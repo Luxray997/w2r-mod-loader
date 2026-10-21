@@ -11,8 +11,9 @@ Every setting the game, the host and the plugins have, in one screen. Ported fro
   exists.
 - **Search** matches every shown setting's label (as displayed, so a translated game label is
   found in the player's language), its key and its category.
-- **Hover** shows the setting's description in a box beside the cursor; a plugin's setting adds
-  "(Plugin: name)".
+- **Hover** shows the setting's description in a box beside the cursor, with what the setting
+  belongs to on a last line in a dimmer color: "Warcraft II: Remastered" for the game's own
+  settings, "W2R Mod Loader" for the host's, and the plugin's name for a plugin's.
 - **Cancel / Apply / Save and Exit** along the bottom. Apply is greyed until something changed.
   Cancel puts back everything changed since the screen opened (or since the last Apply), the
   game's own settings included.
