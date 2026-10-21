@@ -148,7 +148,10 @@ impl Registry {
         };
         slot.table.set(table);
 
-        match guarded(|| unsafe { on_load(host) }) {
+        slot.set_loading(true);
+        let loaded = guarded(|| unsafe { on_load(host) });
+        slot.set_loading(false);
+        match loaded {
             Ok(W2R_OK) => Ok(index),
             Ok(status) => Err(self.refuse(index, "E_LOAD", format!("on_load returned {status}"))),
             Err(fault) => Err(self.refuse(index, "E_LOAD", format!("on_load faulted: {fault}"))),
@@ -223,6 +226,27 @@ impl Registry {
             slot.disable(format!("on_event({W2R_EVT_PEER_MESSAGE}): {fault}"));
         }
         true
+    }
+
+    /// `W2R_EVT_SETTINGS_CHANGED` to one plugin, if it is active and subscribed: the options
+    /// screen stored new values for it.
+    pub fn settings_changed(&self, slot: &Slot) {
+        if !slot.is_active() || !slot.subscribed(W2R_EVT_SETTINGS_CHANGED) {
+            return;
+        }
+        let Some(on_event) = slot.table.get().on_event else {
+            return;
+        };
+        let event = W2rEvent {
+            struct_size: size_of::<W2rEvent>() as u32,
+            id: W2R_EVT_SETTINGS_CHANGED,
+            payload: core::ptr::null(),
+        };
+        let started = std::time::Instant::now();
+        if let Err(fault) = guarded(|| unsafe { on_event(&event) }) {
+            slot.disable(format!("on_event({W2R_EVT_SETTINGS_CHANGED}): {fault}"));
+        }
+        slot.note_duration(started.elapsed().as_millis(), "on_event");
     }
 
     pub fn slots(&self) -> impl Iterator<Item = &Slot> {
@@ -544,7 +568,7 @@ mod tests {
         let (mut reg, log) = registry();
         let i = reg.load_entry("p", entry).unwrap();
         let h = unsafe { &*reg.slot(i).host() };
-        assert_eq!(h.struct_size, W2R_HOST_MAP_FOLDER_SIZE);
+        assert_eq!(h.struct_size, W2R_HOST_SETTINGS_DECLARE_SIZE);
         assert_eq!(h.abi_version, W2R_ABI_VERSION);
 
         let long = "x".repeat(W2R_MAX_LOG_BYTES as usize + 1);

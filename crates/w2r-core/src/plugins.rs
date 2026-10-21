@@ -175,6 +175,25 @@ pub fn authors(root: &Path, state: &State) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The display name of each listed plugin, from its `plugin.json`, for the options screen (a
+/// plugin's category when it named none, and the tooltip's "Plugin:" line). Display only, as
+/// [`authors`].
+pub fn names(root: &Path, state: &State) -> BTreeMap<String, String> {
+    state
+        .plugins
+        .iter()
+        .filter_map(|st| {
+            let raw = read_bounded(
+                &root.join("plugins").join(&st.id).join("plugin.json"),
+                manifest::MAX_BYTES,
+            )
+            .ok()?;
+            let m = manifest::validate(&raw).ok()?;
+            Some((st.id.clone(), m.name))
+        })
+        .collect()
+}
+
 /// Loads everything `state.json` enables.
 pub fn load_all(
     root: &Path,

@@ -1,8 +1,9 @@
-//! The game's options screen, taken over for the plugin list: the host hooks
-//! `BuildOptionsMenuScreen` and draws a small "Plugins" button over the game's own screen; while
-//! the user is on the plugin screen the game's screen is not built at all and ours is, with the
-//! game's own menu widgets and skins. Layout numbers are in the game's 2160-high UI space and
-//! follow wc2r-plus's settings screen (MIT). x86 only.
+//! The game's options screen hook: `BuildOptionsMenuScreen` hands both its entries (the main
+//! menu's and the pause menu's) to the settings screen (`settingsscreen.rs`,
+//! docs/settings-screen.md), and the game's own screen is not built at all. Also the game's menu
+//! widgets behind [`Widgets`], which the settings screen's Plugins page draws plugin cards and
+//! `on_ui` rows with, and the title screen's version line. Layout numbers are in the game's
+//! 2160-high UI space and follow wc2r-plus's settings screen (MIT). x86 only.
 
 use core::ffi::{c_char, c_void};
 use std::cell::Cell;
@@ -18,15 +19,6 @@ use crate::symbols::Symbols;
 use crate::ui::Widgets;
 
 pub const SYMBOL: &str = "BuildOptionsMenuScreen";
-const UI_HEIGHT: f32 = 2160.0;
-const PANEL_TOP: f32 = 320.0;
-const PANEL_HEIGHT: f32 = 1580.0;
-const PANEL_WIDTH_PERCENT: f32 = 60.0;
-const TITLE_TOP: f32 = 150.0;
-const TITLE_HEIGHT: f32 = 120.0;
-const BUTTON_W: f32 = 380.0;
-const BUTTON_H: f32 = 100.0;
-const ALIGN_TITLE: i32 = 0x12;
 const ALIGN_ROW: i32 = 0x11;
 const WINDOW_NO_SCROLLBAR: u32 = 0x20;
 /// Nuklear's NK_WINDOW_NO_INPUT: the window never takes the mouse from what is under it.
@@ -34,18 +26,16 @@ const WINDOW_NO_INPUT: u32 = 0x400;
 /// Nuklear's NK_WINDOW_BACKGROUND: kept behind every other window, so it never overlaps (and
 /// turns read-only) the game's own screen drawn before it.
 const WINDOW_BACKGROUND: u32 = 0x100;
-const GROUP_PLAIN: u32 = 0;
 /// A group without scrollbars, as the create screen's frames.
 const GROUP_CARD: u32 = 0x20;
 /// The edit box's flags and the row spacing offset in the game's Nuklear context, as the other
 /// screens use them (`screenkit.rs`, wc2r-plus `struct_offsets.h`).
 const TEXT_EDIT_FLAGS: u32 = 0x260;
 const CTX_SPACING_Y: usize = 0x2004;
-/// The plugin screen's breathing room: a left margin (a fraction of the row, taken by an empty
-/// first cell) and the gap between rows (the context's item spacing, in UI units).
+/// The plugin cards' breathing room: a left margin, a fraction of the row taken by an empty
+/// first cell.
 const ROW_INSET: f32 = 0.02;
 const CARD_INSET: f32 = 0.05;
-const ROW_GAP: f32 = crate::ui::ROW_GAP;
 
 /// Column ratios for rows of 1 to 8 widgets after the margin cell. The game's layout keeps the
 /// pointer it is given and reads it as each widget of the row is placed, so these must outlive
@@ -87,17 +77,6 @@ type MenuButtonFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> i8;
 type CheckboxFn = unsafe extern "C" fn(*const c_char, *mut u32, u32) -> u8;
 type SliderFn = unsafe extern "C" fn(*mut u32, *mut u32, *mut u32, *mut u32) -> u8;
 type TextEditFn = unsafe extern "C" fn(*mut c_void, u32, *mut c_char, i32, *mut c_void) -> u32;
-/// Found in `BuildOptionsMenuScreen` (0x5429a0) for the pause-menu variant: the popup's
-/// rectangle function `(out x,y,w,h, scale)` and its skin globals (alt flag 1 uses the alt).
-const POPUP_LAYOUT: usize = 0x0054_7320;
-const PAUSE_SKIN: usize = 0x0095_dd84;
-const PAUSE_SKIN_ALT: usize = 0x0095_dd88;
-type PopupLayoutFn = unsafe extern "C" fn(*mut [f32; 4], f32) -> *mut [f32; 4];
-fn rebase(symbols: &Symbols, static_addr: usize) -> usize {
-    symbols.base() + (static_addr - 0x0040_0000)
-}
-/// Frame room around the in-game popup's contents.
-const POPUP_MARGIN: f32 = 60.0;
 type SetSkinFn = unsafe extern "thiscall" fn(*mut c_void, u32) -> u32;
 
 /// The game functions the screen needs, resolved once. Plain pointers, so copies are cheap and
@@ -127,14 +106,7 @@ pub struct Nk {
     skin_text_edit: *const u32,
     set_skin: SetSkinFn,
     skin_manager: *mut c_void,
-    skin_window: *const u32,
-    skin_window_alt: *const u32,
-    skin_alt_flag: *const u8,
-    skin_content: *const u32,
     skin_card: *const u32,
-    skin_pause: *const u32,
-    skin_pause_alt: *const u32,
-    popup_layout: PopupLayoutFn,
 }
 
 macro_rules! sym {
@@ -169,16 +141,7 @@ impl Nk {
             skin_text_edit: symbols.address("SkinTextEdit")? as *const u32,
             set_skin: sym!(symbols, "SetSkin", SetSkinFn),
             skin_manager: symbols.address("SkinManager")? as *mut c_void,
-            skin_window: symbols.address("SkinWindow")? as *const u32,
-            skin_window_alt: symbols.address("SkinWindowAlt")? as *const u32,
-            skin_alt_flag: symbols.address("SkinAltFlag")? as *const u8,
-            skin_content: symbols.address("SkinContentPanel")? as *const u32,
             skin_card: symbols.address("SkinLobbyCreationLeft")? as *const u32,
-            skin_pause: rebase(symbols, PAUSE_SKIN) as *const u32,
-            skin_pause_alt: rebase(symbols, PAUSE_SKIN_ALT) as *const u32,
-            popup_layout: unsafe {
-                core::mem::transmute::<usize, PopupLayoutFn>(rebase(symbols, POPUP_LAYOUT))
-            },
         })
     }
 
@@ -188,26 +151,6 @@ impl Nk {
 
     pub(crate) fn push_skin(&self, id: u32) -> u32 {
         unsafe { (self.set_skin)(self.skin_manager, id) }
-    }
-
-    pub(crate) fn pause_skin(&self) -> u32 {
-        unsafe {
-            if *self.skin_alt_flag == 1 {
-                *self.skin_pause_alt
-            } else {
-                *self.skin_pause
-            }
-        }
-    }
-
-    pub(crate) fn window_skin(&self) -> u32 {
-        unsafe {
-            if *self.skin_alt_flag != 0 {
-                *self.skin_window_alt
-            } else {
-                *self.skin_window
-            }
-        }
     }
 }
 
@@ -230,6 +173,15 @@ pub struct GameWidgets<'a> {
 }
 
 impl<'a> GameWidgets<'a> {
+    /// The widgets on `ctx`, the game's menu context of this frame.
+    pub fn new(nk: &'a Nk, ctx: *mut c_void) -> GameWidgets<'a> {
+        GameWidgets {
+            nk,
+            ctx,
+            in_card: Cell::new(false),
+        }
+    }
+
     fn call<R: Default>(what: &str, f: impl FnOnce() -> R) -> R {
         match guarded(f) {
             Ok(r) => r,
@@ -355,18 +307,8 @@ impl Widgets for GameWidgets<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    Game,
-    Plugins,
-}
-
 thread_local! {
-    static MODE: Cell<Mode> = const { Cell::new(Mode::Game) };
-    static LAST_BUILD_MS: Cell<u64> = const { Cell::new(0) };
     static PAUSE_MS: Cell<u64> = const { Cell::new(0) };
-    /// Set while the plugin screen replaces the pause menu's options (the game is visible behind).
-    static IN_GAME: Cell<bool> = const { Cell::new(false) };
 }
 
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -415,166 +357,25 @@ unsafe extern "C" fn detour(variant: i32) {
     let original: BuildOptionsMenuScreenFn =
         unsafe { core::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let now = crate::chat::now_ms();
-    let fresh = LAST_BUILD_MS.with(|t| now.saturating_sub(t.replace(now)) > REENTRY_GAP_MS);
-    if fresh {
-        MODE.with(|m| m.set(Mode::Game));
-    }
     // The game may build the main-menu variant (0) behind the pause menu's (1) in the same frame;
-    // only the visible one gets the button or the plugin screen, or both would draw on top of each
-    // other.
+    // only the visible one gets the settings screen, or both would draw on top of each other.
     if variant == 1 {
         PAUSE_MS.with(|t| t.set(now));
     }
     let shadowed = variant == 0 && now.saturating_sub(PAUSE_MS.with(|t| t.get())) < REENTRY_GAP_MS;
-    // Only the main-menu (0) and pause-menu (1) options screens get the button.
-    let ours =
-        (variant == 0 || variant == 1) && !shadowed && MODE.with(|m| m.get()) == Mode::Plugins;
-    if !ours {
-        unsafe { original(variant) };
-        if (variant == 0 || variant == 1) && !shadowed {
-            if let Err(fault) = guarded(|| crate::session::with_nk(draw_button)) {
-                crate::session::host_fault("options button", &fault);
-            }
+    if (variant == 0 || variant == 1) && !shadowed {
+        let mut drawn = false;
+        if let Err(fault) = guarded(|| drawn = crate::session::draw_settings_screen(variant)) {
+            crate::session::host_fault("settings screen", &fault);
         }
-        return;
-    }
-    IN_GAME.with(|g| g.set(variant == 1));
-    if let Err(fault) = guarded(|| crate::session::with_nk(draw_screen)) {
-        crate::session::host_fault("plugin screen", &fault);
-        // Do not leave the user on a screen that cannot draw.
-        MODE.with(|m| m.set(Mode::Game));
-    }
-}
-
-/// The "Plugins" button in the top-right corner, over the game's own options screen.
-fn draw_button(nk: &Nk) {
-    let ctx = nk.ctx();
-    if ctx.is_null() {
-        return;
-    }
-    let width = unsafe { (nk.ui_width)() };
-    let x = width - BUTTON_W - 40.0;
-    let name = c"w2rpm_button";
-    // The window is only a carrier for the game's menu button: under the game's current skin it
-    // paints a plank of its own behind the button (a double paint), so use the near-clear panel.
-    let prev_skin = nk.push_skin(unsafe { *nk.skin_content });
-    unsafe {
-        if (nk.begin_window)(
-            ctx,
-            name.as_ptr(),
-            x,
-            40.0,
-            BUTTON_W,
-            BUTTON_H,
-            WINDOW_NO_SCROLLBAR,
-        ) != 0
-        {
-            (nk.row)(ctx, BUTTON_H - 20.0, 1);
-            let w = GameWidgets {
-                nk,
-                ctx,
-                in_card: Cell::new(false),
-            };
-            if w.button("Plugins") {
-                MODE.with(|m| m.set(Mode::Plugins));
-            }
-        }
-        (nk.end_window)(ctx);
-    }
-    nk.push_skin(prev_skin);
-}
-
-/// The plugin screen in place of the game's options screen.
-fn draw_screen(nk: &Nk) {
-    let ctx = nk.ctx();
-    if ctx.is_null() {
-        return;
-    }
-    let width = unsafe { (nk.ui_width)() }.floor();
-    let panel_w = (width * PANEL_WIDTH_PERCENT / 100.0).floor();
-    let panel_x = ((width - panel_w) / 2.0).floor();
-    let in_game = IN_GAME.with(|g| g.get());
-    // In game the screen is the pause menu's popup, with the game's own rectangle and skin; on
-    // the main menu it fills the screen. `title`/`list` are window-relative.
-    let (window, title_r, list_r) = if in_game {
-        let mut r = [0.0f32; 4];
-        unsafe { (nk.popup_layout)(&mut r, 1.0) };
-        (
-            r,
-            [
-                POPUP_MARGIN,
-                POPUP_MARGIN,
-                r[2] - 2.0 * POPUP_MARGIN,
-                TITLE_HEIGHT,
-            ],
-            [
-                POPUP_MARGIN,
-                POPUP_MARGIN + TITLE_HEIGHT + POPUP_MARGIN / 2.0,
-                r[2] - 2.0 * POPUP_MARGIN,
-                r[3] - TITLE_HEIGHT - 2.5 * POPUP_MARGIN,
-            ],
-        )
-    } else {
-        (
-            [0.0, 0.0, width, UI_HEIGHT],
-            [panel_x, TITLE_TOP, panel_w, TITLE_HEIGHT],
-            [panel_x, PANEL_TOP, panel_w, PANEL_HEIGHT],
-        )
-    };
-    let skin = if in_game {
-        nk.pause_skin()
-    } else {
-        nk.window_skin()
-    };
-    let prev_skin = nk.push_skin(skin);
-    let name = c"w2rpm_plugins";
-    unsafe {
-        if (nk.begin_window)(
-            ctx,
-            name.as_ptr(),
-            window[0],
-            window[1],
-            window[2],
-            window[3],
-            WINDOW_NO_SCROLLBAR,
-        ) == 0
-        {
-            (nk.end_window)(ctx);
-            nk.push_skin(prev_skin);
+        if drawn {
+            crate::settingsscreen::finish(variant);
             return;
         }
-        (nk.space_begin)(ctx, 1, 0.0, 1000);
-        (nk.rect)(ctx, title_r[0], title_r[1], title_r[2], title_r[3]);
-        let title = c"W2R Mod Loader";
-        (nk.label)(ctx, title.as_ptr(), ALIGN_TITLE);
-
-        (nk.rect)(ctx, list_r[0], list_r[1], list_r[2], list_r[3]);
-        let prev_content = if in_game {
-            nk.push_skin(skin)
-        } else {
-            nk.push_skin(*nk.skin_content)
-        };
-        let group = c"w2rpm_plugins_list";
-        let gap_at = (ctx as *mut u8).add(CTX_SPACING_Y).cast::<f32>();
-        let gap_before = gap_at.read_unaligned();
-        gap_at.write_unaligned(ROW_GAP);
-        if (nk.begin_group)(ctx, group.as_ptr(), GROUP_PLAIN) != 0 {
-            let w = GameWidgets {
-                nk,
-                ctx,
-                in_card: Cell::new(false),
-            };
-            if crate::session::draw_plugin_screen(&w) == crate::ui::Action::Back {
-                MODE.with(|m| m.set(Mode::Game));
-            }
-            (nk.end_group)(ctx);
-        }
-        gap_at.write_unaligned(gap_before);
-        nk.push_skin(prev_content);
-        (nk.space_end)(ctx);
-        (nk.end_window)(ctx);
     }
-    nk.push_skin(prev_skin);
+    // Any other variant, a shadowed one, or no screen (symbols missing, no session yet): the
+    // game's own, so there is always a working options screen.
+    unsafe { original(variant) };
 }
 
 const MAIN_MENU_SYMBOL: &str = "MainMenuScreen";
