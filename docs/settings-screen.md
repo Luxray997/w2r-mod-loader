@@ -102,11 +102,14 @@ menu is not built while it is open, so nothing behind it can be clicked. It list
 simulation fingerprint, then one card per installed plugin:
 
 - The name, with the version against the right edge, and under it `Author: <author>` (the author
-  in gold). The name,
-  author and description come from the plugin's `plugin.json`; without one, the id alone.
+  in gold). The name, author and description come from the plugin's `plugin.json`; without one,
+  the id alone.
 - The status, with an **Enable** box against the right edge: `Status: Running` or
-  `Status: Disabled`, followed by `(restart to update)` when the box no longer matches what is
-  running. The box is `enabled` in `state.json`, which takes effect at the next launch.
+  `Status: Disabled`, followed in brackets by `slow callbacks` (after 10 slow callbacks in a row),
+  `error` (it faulted or was refused at load), and `restart to update` (the box changed since
+  launch). The box is `enabled` in `state.json`, which takes effect at the next launch.
+- `Error: <reason>` when there is an error: the fault or the refusal, or that it was not loaded
+  (`w2r.log` says why).
 - `Description: <description>`, wrapped.
 - Under them, any rows the plugin still draws itself through `on_ui`.
 

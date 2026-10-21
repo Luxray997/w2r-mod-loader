@@ -10,7 +10,7 @@
 //! calling the game is x86 only ([`game`]). Ported from wc2r-plus
 //! `core/settings/native_settings_*` (MIT).
 
-use crate::settings::{Kind, Owner, Registry, SettingDef, Value};
+use crate::settings::{Condition, Kind, Owner, Registry, SettingDef, Value};
 
 /// One row of the game's settings table, as read from memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -319,6 +319,12 @@ pub fn catalog(entries: &[Entry]) -> Vec<SettingDef> {
             if HIDDEN_AFTER_DERIVED.contains(&d.key.as_str()) {
                 d.hidden = true;
             }
+            // The health bar position means nothing when bars are never drawn (choice 1).
+            if d.key == "healthbars_below" {
+                *d = d
+                    .clone()
+                    .active_if(Owner::Game, "healthbar_mode", Condition::IsNot(1));
+            }
         }
     }
     defs
@@ -353,6 +359,10 @@ fn entry_def(e: &Entry) -> SettingDef {
         }
         2 => {}
         _ => d.kind = Kind::Str,
+    }
+    // The fixed scale factor is used only in Fixed mode, 1 in the ini's numbering.
+    if e.key.eq_ignore_ascii_case("ui_scale_fixed") {
+        d = d.active_if(Owner::Game, "ui_scale_mode", Condition::Is(1));
     }
     // After the type above, which it overrides.
     if placement.is_some() {
@@ -713,6 +723,45 @@ mod tests {
         assert_eq!(by("healthbar_mode").kind, Kind::Choice);
         assert_eq!(by("resourcebar_align").choices.len(), 3);
         assert_eq!(by("portrait_style").category, "Gameplay");
+    }
+
+    #[test]
+    fn the_stock_greying_rules_are_conditions() {
+        let defs = catalog(&[
+            entry(1, "ui_scale_fixed", 1, 4, 1),
+            entry(1, "ui_scale_mode", 0, 2, 0),
+            entry(1, "healthbars_below", 0, 1, 0),
+            entry(2, "show_healthbars", 0, FLAG_SHOW_HEALTHBARS, 0),
+        ]);
+        let mut r = Registry::new();
+        for d in defs {
+            r.register(d, Value::Int(0));
+        }
+        let mut g = Game::default();
+        let fixed = r.find(&Owner::Game, "ui_scale_fixed").unwrap();
+        let below = r.find(&Owner::Game, "healthbars_below").unwrap();
+        assert!(r.inactive(fixed, &g), "auto mode");
+        g.0.insert("ui_scale_mode".into(), 1);
+        assert!(!r.inactive(fixed, &g), "fixed mode");
+        assert!(!r.inactive(below, &g));
+        g.0.insert("healthbar_mode".into(), 1);
+        assert!(r.inactive(below, &g), "never drawn");
+    }
+
+    #[derive(Default)]
+    struct Game(std::collections::BTreeMap<String, i64>);
+
+    impl crate::settings::Native for Game {
+        fn get(&self, key: &str) -> i64 {
+            self.0.get(key).copied().unwrap_or(0)
+        }
+        fn get_str(&self, _: &str) -> String {
+            String::new()
+        }
+        fn set(&mut self, key: &str, value: i64) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn persist(&mut self) {}
     }
 
     #[test]

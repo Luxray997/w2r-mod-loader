@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN};
+use w2r_abi::{W2R_LOG_ERROR, W2R_LOG_INFO, W2R_LOG_WARN, W2R_MAX_SETTING_STR};
 
 use crate::color::{self, Hsv, Rgb};
 use crate::hooks::{self, Owner};
@@ -150,7 +150,8 @@ const GL_UNSIGNED_BYTE: u32 = 0x1401;
 const FORMAT_RGBA8: i32 = 0;
 const FILTER_LINEAR: i32 = 1;
 
-const EDIT_BUFFER: usize = 256;
+/// A text box's buffer: the longest string setting, and the terminator.
+const EDIT_BUFFER: usize = W2R_MAX_SETTING_STR as usize + 1;
 const SEARCH_BUFFER: usize = 128;
 /// The page listed after the categories.
 const SEARCH_CATEGORY: &str = "Search";
@@ -459,7 +460,7 @@ struct Screen {
     last_frame_ms: u64,
     search: [u8; SEARCH_BUFFER],
     /// Text box buffers by setting index, cleared on each entry.
-    edits: Vec<(usize, [u8; EDIT_BUFFER])>,
+    edits: Vec<TextBox>,
     /// Whether each dropdown was open last frame: its header is drawn with a different skin.
     combo_open: Vec<u8>,
     /// Dropdowns open this frame. No tooltip is drawn while one is open.
@@ -468,6 +469,14 @@ struct Screen {
     /// The color being picked, while the color editor is open.
     color: Option<ColorEdit>,
     picker: Picker,
+}
+
+/// A string setting's text box.
+struct TextBox {
+    index: usize,
+    buf: Vec<u8>,
+    /// The box had focus last frame.
+    focused: bool,
 }
 
 /// The color editor's state.
@@ -603,23 +612,9 @@ unsafe extern "C" fn scrollbar_detour(
     input: *mut c_void,
     font: *mut c_void,
 ) -> f32 {
-    static SAVED: AtomicUsize = AtomicUsize::new(usize::MAX);
-    if !style.is_null() {
-        let show = unsafe { style.cast::<u8>().add(SCROLLBAR_SHOW_BUTTONS).cast::<i32>() };
-        let current = unsafe { show.read_unaligned() };
-        if SAVED.load(Ordering::Relaxed) == usize::MAX {
-            SAVED.store(current as usize, Ordering::Relaxed);
-        }
-        let value = if HIDE_ARROWS.load(Ordering::Acquire) {
-            0
-        } else {
-            SAVED.load(Ordering::Relaxed) as i32
-        };
-        unsafe { show.write_unaligned(value) };
-    }
     let original: ScrollbarFn =
         unsafe { core::mem::transmute(SCROLLBAR_ORIGINAL.load(Ordering::Acquire)) };
-    unsafe {
+    let call = || unsafe {
         original(
             state,
             out,
@@ -636,7 +631,17 @@ unsafe extern "C" fn scrollbar_detour(
             input,
             font,
         )
+    };
+    if style.is_null() || !HIDE_ARROWS.load(Ordering::Acquire) {
+        return call();
     }
+    // Hidden for this one call; the style keeps its own value for everything else.
+    let show = unsafe { style.cast::<u8>().add(SCROLLBAR_SHOW_BUTTONS).cast::<i32>() };
+    let before = unsafe { show.read_unaligned() };
+    unsafe { show.write_unaligned(0) };
+    let result = call();
+    unsafe { show.write_unaligned(before) };
+    result
 }
 
 /// Draws the screen for `variant` (0 main menu, 1 pause menu). False when the screen is not
@@ -1637,23 +1642,32 @@ fn draw_setting_row(
         Kind::Str => {
             row(fns, ctx, SEARCH_ROW_HEIGHT, 2);
             label(fns, ctx, &caption, ALIGN_ROW);
-            let slot = match screen.edits.iter().position(|(k, _)| *k == i) {
+            let slot = match screen.edits.iter().position(|b| b.index == i) {
                 Some(p) => p,
                 None => {
-                    let mut buf = [0u8; EDIT_BUFFER];
+                    let mut buf = vec![0u8; EDIT_BUFFER];
                     let bytes = value.str().as_bytes();
                     let n = bytes.len().min(EDIT_BUFFER - 1);
                     buf[..n].copy_from_slice(&bytes[..n]);
-                    screen.edits.push((i, buf));
+                    screen.edits.push(TextBox {
+                        index: i,
+                        buf,
+                        focused: false,
+                    });
                     screen.edits.len() - 1
                 }
             };
-            let typing = text_edit(fns, ctx, &mut screen.edits[slot].1);
-            // Stored only once the box loses focus, so the value never holds half-typed text.
-            let text = buffer_text(&screen.edits[slot].1);
-            if !typing && text != value.str() {
-                editor.set(i, Value::Str(text), native);
+            let tb = &mut screen.edits[slot];
+            let typing = text_edit(fns, ctx, &mut tb.buf);
+            // Stored when the box loses focus, so the value never holds half-typed text, and only
+            // after it had focus, so merely showing a value never rewrites it.
+            if tb.focused && !typing {
+                let text = buffer_text(&tb.buf);
+                if text != value.str() {
+                    editor.set(i, Value::Str(text), native);
+                }
             }
+            tb.focused = typing;
         }
     }
     if inactive {

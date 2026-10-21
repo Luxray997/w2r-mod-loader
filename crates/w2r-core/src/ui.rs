@@ -14,7 +14,6 @@ use w2r_abi::{W2rStr, W2rUi};
 pub const MAX_TEXT: usize = 128;
 /// Row height in the game's UI space (2160 high), the options screen's value.
 pub const ROW_H: f32 = 90.0;
-pub const HEADING_H: f32 = 160.0;
 /// The gap the plugin screen puts between rows (set on the game's layout context).
 pub const ROW_GAP: f32 = 24.0;
 /// What a plugin's card needs beyond its rows: the frame's own padding, top and bottom.
@@ -348,8 +347,14 @@ pub struct PluginRow {
     pub description: Option<String>,
     /// `enabled` in state.json, which takes effect at the next launch.
     pub enabled: bool,
+    /// `enabled` as it was at launch.
+    pub enabled_at_launch: bool,
     /// Whether the plugin is running this session.
     pub running: bool,
+    /// Its callbacks have been slow (`Slot::is_slow`).
+    pub slow: bool,
+    /// Why it is not running, when that is a failure: a fault, or a refusal at load.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,15 +364,32 @@ pub enum Action {
     Toggle(usize),
 }
 
-/// A card's status line. A restart is needed when the enable box no longer matches what is
-/// running.
-pub fn status_text(running: bool, enabled: bool) -> String {
-    let state = if running { "Running" } else { "Disabled" };
-    if running == enabled {
+/// A card's status line. A restart is needed when the enable box changed since launch.
+pub fn status_text(row: &PluginRow) -> String {
+    let state = if row.running { "Running" } else { "Disabled" };
+    let mut notes = Vec::new();
+    if row.running && row.slow {
+        notes.push("slow callbacks");
+    }
+    if row.error.is_some() {
+        notes.push("error");
+    }
+    if row.enabled != row.enabled_at_launch {
+        notes.push("restart to update");
+    }
+    if notes.is_empty() {
         format!("Status: {state}")
     } else {
-        format!("Status: {state} (restart to update)")
+        format!("Status: {state} ({})", notes.join(", "))
     }
+}
+
+/// `text` wrapped onto as many lines as it needs, in a row of its own.
+fn paragraph(w: &dyn Widgets, text: &str) {
+    let lines = w.text_lines(text, w.row_width()).max(1);
+    let height = (lines as f32 * w.line_height()).max(ROW_H);
+    w.row_cells(height, &[0.0]);
+    w.label_wrapped(text);
 }
 
 /// The plugin manager's list (docs/settings-screen.md): the session's simulation fingerprint,
@@ -423,19 +445,18 @@ pub fn draw_plugin_list(
         // The status, with the enable box against the right edge.
         let enable_w = m.text_width(" Enable") + ROW_H + CELL_PAD;
         m.row_cells(ROW_H, &[0.0, enable_w]);
-        m.label(&status_text(row.running, row.enabled));
+        m.label(&status_text(row));
         let mut enabled = row.enabled;
         if m.checkbox("Enable", &mut enabled) {
             row.enabled = enabled;
             action = Action::Toggle(i);
         }
 
+        if let Some(error) = &row.error {
+            paragraph(&m, &format!("Error: {error}"));
+        }
         if let Some(description) = row.description.as_deref().filter(|d| !d.is_empty()) {
-            let text = format!("Description: {description}");
-            let lines = m.text_lines(&text, m.row_width()).max(1);
-            let height = (lines as f32 * m.line_height()).max(ROW_H);
-            m.row_cells(height, &[0.0]);
-            m.label_wrapped(&text);
+            paragraph(&m, &format!("Description: {description}"));
         }
 
         if row.running {
@@ -617,10 +638,35 @@ mod tests {
 
     #[test]
     fn status_lines_say_when_a_restart_is_needed() {
-        assert_eq!(status_text(true, true), "Status: Running");
-        assert_eq!(status_text(true, false), "Status: Running (restart to update)");
-        assert_eq!(status_text(false, false), "Status: Disabled");
-        assert_eq!(status_text(false, true), "Status: Disabled (restart to update)");
+        let row = |running, enabled, launched| PluginRow {
+            id: "p".into(),
+            name: "p".into(),
+            version: "1.0.0".into(),
+            author: None,
+            description: None,
+            enabled,
+            enabled_at_launch: launched,
+            running,
+            slow: false,
+            error: None,
+        };
+        assert_eq!(status_text(&row(true, true, true)), "Status: Running");
+        assert_eq!(
+            status_text(&row(true, false, true)),
+            "Status: Running (restart to update)"
+        );
+        assert_eq!(status_text(&row(false, false, false)), "Status: Disabled");
+        assert_eq!(
+            status_text(&row(false, true, false)),
+            "Status: Disabled (restart to update)"
+        );
+        // A plugin that faulted is not waiting for a restart.
+        let mut faulted = row(false, true, true);
+        faulted.error = Some("on_ui: access violation".into());
+        assert_eq!(status_text(&faulted), "Status: Disabled (error)");
+        let mut slow = row(true, true, true);
+        slow.slow = true;
+        assert_eq!(status_text(&slow), "Status: Running (slow callbacks)");
     }
 
     #[test]
@@ -635,7 +681,10 @@ mod tests {
                 author: Some("Ann".into()),
                 description: Some("Does a.".into()),
                 enabled: true,
+                enabled_at_launch: true,
                 running: true,
+                slow: false,
+                error: None,
             },
             PluginRow {
                 id: "b".into(),
@@ -644,7 +693,10 @@ mod tests {
                 author: None,
                 description: None,
                 enabled: false,
+                enabled_at_launch: true,
                 running: false,
+                slow: false,
+                error: Some("E_LOAD: on_load returned -4".into()),
             },
         ];
         let simulation = vec!["a".to_owned()];
@@ -669,7 +721,8 @@ mod tests {
             "label \"1.0.0\"",
             "label \"Status: Running\"",
             "label \"Description: Does a.\"",
-            "label \"Status: Disabled\"",
+            "label \"Status: Disabled (error, restart to update)\"",
+            "label \"Error: E_LOAD: on_load returned -4\"",
         ] {
             assert!(calls.iter().any(|c| c == line), "{line} missing: {calls:?}");
         }

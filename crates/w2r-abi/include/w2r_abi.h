@@ -126,24 +126,29 @@ enum {
 };
 #define W2R_SETTING_HIDDEN 1u /* flags: stored and readable as usual, never shown */
 
-/* Every string is copied during the call. */
+/* Every string is copied during the call. Fields a kind does not use are ignored. The order keeps
+   every field at the same offset under any 32-bit compiler (each 64-bit field 8-aligned, the size a
+   multiple of 8). */
 typedef struct W2rSettingDef {
-    uint32_t struct_size;  /* sizeof(W2rSettingDef) */
+    uint32_t struct_size;  /* W2R_SETTING_DEF_V1_SIZE */
     uint32_t kind;         /* W2R_SETTING_* */
+    int64_t default_int;   /* bool 0/1, int value, choice index */
+    int64_t min, max;      /* W2R_SETTING_INT only, inclusive; min == max draws no slider */
     uint32_t flags;        /* W2R_SETTING_HIDDEN or 0 */
+    uint32_t choice_count;
+    const W2rStr *choices; /* W2R_SETTING_CHOICE only: 2..W2R_MAX_SETTING_CHOICE_COUNT labels */
+    uint32_t reserved;     /* must be 0 */
     W2rStr key;            /* the settings key, same rule as settings_set_* */
     W2rStr label;          /* the row's text, Title Case */
     W2rStr description;    /* hover text; may be empty */
     W2rStr category;       /* left-hand list entry, shared across plugins; empty = plugin name */
     W2rStr subcategory;    /* heading inside the category; empty = "General" */
-    int32_t default_int;   /* bool 0/1, int value, choice index */
-    int32_t min, max;      /* W2R_SETTING_INT only, inclusive; min == max draws no slider */
     W2rStr default_str;    /* W2R_SETTING_STRING, or W2R_SETTING_COLOR as "rrggbb" */
-    const W2rStr *choices; /* W2R_SETTING_CHOICE only: 2..W2R_MAX_SETTING_CHOICE_COUNT labels */
-    uint32_t choice_count;
     W2rStr active_when;    /* greyed while this BOOL is off: an earlier key of this plugin, or
                               "host:<key>" for one of the host's; empty = always active */
 } W2rSettingDef;
+
+#define W2R_SETTING_DEF_V1_SIZE ((uint32_t)sizeof(W2rSettingDef))
 
 /* ---- UI (only valid inside on_ui) ------------------------------------------------------ */
 typedef struct W2rUi {

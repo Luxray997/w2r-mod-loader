@@ -101,21 +101,24 @@ settings there by declaring them.
 | Field | Rule |
 |---|---|
 | `struct_size` | at least `W2R_SETTING_DEF_V1_SIZE` (`W2R_E_INVALID` otherwise) |
-| `kind` | `W2R_SETTING_BOOL` (a checkbox, stored with `settings_set_i64` as 0 or 1), `_INT` (a slider when `min < max`, a read-only row otherwise), `_CHOICE` (a dropdown, stored as the chosen index), `_STRING` (a text box, `settings_set_str`) or `_COLOR` (a color picker, stored with `settings_set_str` as six lowercase hex digits, `rrggbb`); anything else `W2R_E_INVALID`. A host from before `_COLOR` refuses it with `W2R_E_INVALID`, so a plugin that wants to run on one declares the setting again as `_STRING` |
+| `reserved` | 0 (`W2R_E_INVALID` otherwise) |
+| `kind` | `W2R_SETTING_BOOL` (a checkbox, stored with `settings_set_i64` as 0 or 1), `_INT` (a slider when `min < max`, a read-only row otherwise), `_CHOICE` (a dropdown, stored as the chosen index), `_STRING` (a text box, `settings_set_str`) or `_COLOR` (a color picker, stored with `settings_set_str` as six lowercase hex digits, `rrggbb`); anything else `W2R_E_INVALID` |
 | `flags` | 0, or `W2R_SETTING_HIDDEN`: stored and readable as usual, never shown; other bits `W2R_E_INVALID` |
 | `key` | the settings-key rule above; declared once per plugin (`W2R_E_CONFLICT` the second time); at most 128 declarations, the same cap as stored keys |
 | `label` | 1 to 64 bytes. Title Case, like the rest of the screen |
 | `description` | at most 256 bytes; may be empty. The hover text. The tooltip's last line names the plugin (its manifest `name`) |
 | `category`, `subcategory` | at most 32 bytes each. Several plugins may name the same category, which is the point: related settings end up together. An empty category is the plugin's name; an empty subcategory is "General" |
-| `default_int` | the default: 0 or 1 for a bool, a value in `[min, max]` for a slider, an index into `choices` for a choice (`W2R_E_INVALID` otherwise) |
-| `min`, `max` | `_INT` only; `min > max` is `W2R_E_INVALID` |
+| `default_int` | 64-bit, like the stored value. 0 or 1 for a bool, a value in `[min, max]` for a slider, an index into `choices` for a choice (`W2R_E_INVALID` otherwise) |
+| `min`, `max` | 64-bit; `_INT` only; `min > max` is `W2R_E_INVALID` |
 | `default_str` | `_STRING`: at most 1,024 bytes. `_COLOR`: six hex digits without `#` (`W2R_E_INVALID` otherwise) |
 | `choices`, `choice_count` | `_CHOICE` only: 2 to 16 labels of 1 to 64 bytes (`W2R_E_LIMIT` above 16, `W2R_E_INVALID` below 2) |
 | `active_when` | empty, or the key of a `_BOOL` this plugin declared earlier, or `host:<key>` for one of the host's own bools (for example `host:enhanced_create_screen`). The row is greyed while that checkbox is off. An unknown key is `W2R_E_NOT_FOUND`, a non-bool `W2R_E_INVALID` |
 
-Every text field is printable ASCII (the screen draws through the game's font atlas, which has no
-other glyphs): anything else is `W2R_E_INVALID`, and an over-long field `W2R_E_LIMIT`. A refused
-declaration is logged with its key and status.
+The host reads only the fields the kind uses, so the others may be left uninitialised; the
+field order keeps every offset the same under any 32-bit compiler. Every text field is printable
+ASCII (the screen draws through the game's font atlas, which has no other glyphs): anything else
+is `W2R_E_INVALID`, and an over-long field `W2R_E_LIMIT`. A refused declaration is logged with
+its key and status.
 
 Values stay where they always were, in `config\<plugin-id>.json`, and the plugin reads them with
 `settings_get_i64` / `settings_get_str` as before. A declared key that was never stored reads as
@@ -235,7 +238,8 @@ Plugins send through `peer_send`; the host builds the envelope:
   do the equivalent.
 - `on_unload` is best effort and may be skipped after a fault. The host never relies on it to keep
   its own state consistent.
-- The host cannot preempt a slow callback. It logs every callback over 50 ms.
+- The host cannot preempt a slow callback. It logs callbacks over 50 ms, and after 10 in a row the
+  plugin manager shows the plugin's status as slow.
 
 ## Minimal plugin
 

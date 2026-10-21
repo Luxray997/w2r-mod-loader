@@ -820,7 +820,7 @@ mod cb {
             let Some(raw) = (unsafe { def.as_ref() }) else {
                 return W2R_E_INVALID;
             };
-            if raw.struct_size < W2R_SETTING_DEF_V1_SIZE {
+            if raw.struct_size < W2R_SETTING_DEF_V1_SIZE || raw.reserved != 0 {
                 return W2R_E_INVALID;
             }
             if slot.declared.borrow().len() >= crate::store::MAX_KEYS {
@@ -860,9 +860,10 @@ mod cb {
     }
 
     /// The strings of a `W2rSettingDef`, copied. Lengths are checked before any byte is read,
-    /// so an absurd length is a status rather than a read past the plugin's buffer.
+    /// so an absurd length is a status rather than a read past the plugin's buffer. Only the
+    /// fields the kind uses are read, so a plugin may leave the others uninitialised.
     unsafe fn copy_declaration(raw: &W2rSettingDef) -> Result<DeclaredSetting, W2rStatus> {
-        if raw.kind == W2R_SETTING_CHOICE && raw.choice_count > W2R_MAX_SETTING_CHOICES {
+        if raw.kind == W2R_SETTING_CHOICE && raw.choice_count > W2R_MAX_SETTING_CHOICE_COUNT {
             return Err(W2R_E_LIMIT);
         }
         let choices = if raw.kind == W2R_SETTING_CHOICE && raw.choice_count > 0 {
@@ -889,10 +890,16 @@ mod cb {
                 default_int: raw.default_int,
                 min: raw.min,
                 max: raw.max,
-                default_str: owned(raw.default_str, W2R_MAX_SETTING_STR)?,
+                default_str: if raw.kind == W2R_SETTING_STRING || raw.kind == W2R_SETTING_COLOR {
+                    owned(raw.default_str, W2R_MAX_SETTING_STR)?
+                } else {
+                    String::new()
+                },
                 choices,
-                // "host:" plus a key.
-                active_when: owned(raw.active_when, W2R_MAX_SETTING_KEY + 5)?,
+                active_when: owned(
+                    raw.active_when,
+                    W2R_MAX_SETTING_KEY + settings::HOST_PREFIX.len() as u32,
+                )?,
             })
         }
     }
@@ -1633,6 +1640,7 @@ mod tests {
             default_str: s(""),
             choices: core::ptr::null(),
             choice_count: 0,
+            reserved: 0,
             active_when: s(""),
         }
     }
@@ -1664,6 +1672,14 @@ mod tests {
         bad.max = 1;
         let mut short = setting_def(W2R_SETTING_BOOL, "short");
         short.struct_size = 4;
+        let mut reserved = setting_def(W2R_SETTING_BOOL, "reserved");
+        reserved.reserved = 1;
+        // A field the kind does not use is never read, whatever it holds.
+        let mut unused = setting_def(W2R_SETTING_BOOL, "unused");
+        unused.default_str = W2rStr {
+            ptr: core::ptr::dangling(),
+            len: u32::MAX,
+        };
         let results = [
             unsafe { (h.settings_declare)(h.token, &fade) },
             unsafe { (h.settings_declare)(h.token, &channels) },
@@ -1673,6 +1689,8 @@ mod tests {
             unsafe { (h.settings_declare)(h.token, &bad) },
             unsafe { (h.settings_declare)(h.token, &short) },
             unsafe { (h.settings_declare)(h.token, core::ptr::null()) },
+            unsafe { (h.settings_declare)(h.token, &reserved) },
+            unsafe { (h.settings_declare)(h.token, &unused) },
         ];
         DECLARE_RESULTS.with(|r| r.borrow_mut().extend(results));
         W2R_OK
@@ -1704,16 +1722,22 @@ mod tests {
                 W2R_E_CONFLICT,
                 W2R_E_INVALID,
                 W2R_E_INVALID,
-                W2R_E_INVALID
+                W2R_E_INVALID,
+                W2R_E_INVALID,
+                W2R_OK
             ]
         );
         let slot = reg.slot(i);
         let declared = slot.declared();
-        assert_eq!(declared.len(), 4);
+        assert_eq!(declared.len(), 5);
         assert_eq!(declared[2].choices, vec!["Off", "Some", "All"]);
         assert_eq!(
             declared[2].active_when,
-            Some((settings::Owner::Plugin("w2r-chat".into()), "channels".into()))
+            Some(settings::ActiveWhen {
+                owner: settings::Owner::Plugin("w2r-chat".into()),
+                key: "channels".into(),
+                test: settings::Condition::On,
+            })
         );
 
         // After on_load: refused.

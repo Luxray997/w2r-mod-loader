@@ -9,7 +9,7 @@
 
 use w2r_abi::{
     W2R_E_CONFLICT, W2R_E_INVALID, W2R_E_LIMIT, W2R_E_NOT_FOUND, W2R_MAX_SETTING_CATEGORY,
-    W2R_MAX_SETTING_CHOICE, W2R_MAX_SETTING_CHOICES, W2R_MAX_SETTING_DESCRIPTION,
+    W2R_MAX_SETTING_CHOICE, W2R_MAX_SETTING_CHOICE_COUNT, W2R_MAX_SETTING_DESCRIPTION,
     W2R_MAX_SETTING_LABEL, W2R_MAX_SETTING_STR, W2R_SETTING_BOOL, W2R_SETTING_CHOICE,
     W2R_SETTING_COLOR, W2R_SETTING_HIDDEN, W2R_SETTING_INT, W2R_SETTING_STRING, W2rStatus,
 };
@@ -36,6 +36,33 @@ impl Kind {
     /// Whether the value is text (stored with `settings_set_str`) rather than a number.
     pub fn is_text(self) -> bool {
         matches!(self, Kind::Str | Kind::Color)
+    }
+}
+
+/// When a setting is active: while another setting's value passes `test`. Read live, so changing
+/// that setting frees or greys the row at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveWhen {
+    pub owner: Owner,
+    pub key: String,
+    pub test: Condition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Condition {
+    /// The value is not 0 (a checkbox is ticked).
+    On,
+    Is(i64),
+    IsNot(i64),
+}
+
+impl Condition {
+    pub fn holds(self, value: i64) -> bool {
+        match self {
+            Condition::On => value != 0,
+            Condition::Is(v) => value == v,
+            Condition::IsNot(v) => value != v,
+        }
     }
 }
 
@@ -76,8 +103,8 @@ pub struct SettingDef {
     pub choice_values: Vec<i64>,
     /// Loaded, saved and readable as usual, but never drawn.
     pub hidden: bool,
-    /// Greyed while this bool setting is off.
-    pub active_when: Option<(Owner, String)>,
+    /// Greyed unless this holds.
+    pub active_when: Option<ActiveWhen>,
     /// The declaring plugin's display name, shown in the tooltip.
     pub source: Option<String>,
 }
@@ -144,8 +171,18 @@ impl SettingDef {
         self
     }
 
-    pub fn active_when(mut self, owner: Owner, key: &str) -> SettingDef {
-        self.active_when = Some((owner, key.to_owned()));
+    /// Greyed while the bool setting `key` is off.
+    pub fn active_when(self, owner: Owner, key: &str) -> SettingDef {
+        self.active_if(owner, key, Condition::On)
+    }
+
+    /// Greyed unless setting `key`'s value passes `test`.
+    pub fn active_if(mut self, owner: Owner, key: &str, test: Condition) -> SettingDef {
+        self.active_when = Some(ActiveWhen {
+            owner,
+            key: key.to_owned(),
+            test,
+        });
         self
     }
 
@@ -420,32 +457,14 @@ impl Registry {
             .collect()
     }
 
-    /// Whether a setting is greyed: its `active_when` switch is off, or a stock rule applies (the
-    /// UI scale factor outside Fixed mode, the health bar position when bars are never drawn).
+    /// Whether a setting is greyed: its `active_when` condition does not hold. A condition on a
+    /// setting that is not registered never greys anything.
     pub fn inactive(&self, i: usize, native: &dyn Native) -> bool {
-        let d = &self.records[i].def;
-        if let Some((owner, key)) = &d.active_when {
-            return match self.find(owner, key) {
-                Some(on) => self.get(on, native).int() == 0,
-                None => false,
-            };
-        }
-        if d.owner != Owner::Game {
+        let Some(when) = &self.records[i].def.active_when else {
             return false;
-        }
-        if d.key.eq_ignore_ascii_case("ui_scale_fixed") {
-            // 1 is Fixed in the ini's numbering.
-            return self
-                .find(&Owner::Game, "ui_scale_mode")
-                .is_none_or(|m| self.get(m, native).int() != 1);
-        }
-        if d.key.eq_ignore_ascii_case("healthbars_below") {
-            // Index 1 of the derived health-bar dropdown is "Never".
-            return self
-                .find(&Owner::Game, "healthbar_mode")
-                .is_some_and(|m| self.get(m, native).int() == 1);
-        }
-        false
+        };
+        self.find(&when.owner, &when.key)
+            .is_some_and(|s| !when.test.holds(self.get(s, native).int()))
     }
 
     /// Every value as it is now, for undoing the screen's edits.
@@ -594,9 +613,9 @@ pub struct DeclaredSetting {
     pub description: String,
     pub category: String,
     pub subcategory: String,
-    pub default_int: i32,
-    pub min: i32,
-    pub max: i32,
+    pub default_int: i64,
+    pub min: i64,
+    pub max: i64,
     pub default_str: String,
     pub choices: Vec<String>,
     pub active_when: String,
@@ -651,7 +670,7 @@ pub fn validate(
             return Err(W2R_E_INVALID);
         }
         Kind::Choice => {
-            if d.choices.len() > W2R_MAX_SETTING_CHOICES as usize {
+            if d.choices.len() > W2R_MAX_SETTING_CHOICE_COUNT as usize {
                 return Err(W2R_E_LIMIT);
             }
             if d.choices.len() < 2 {
@@ -660,7 +679,7 @@ pub fn validate(
             for c in &d.choices {
                 text(c, W2R_MAX_SETTING_CHOICE, true)?;
             }
-            if !(0..d.choices.len() as i32).contains(&d.default_int) {
+            if !(0..d.choices.len() as i64).contains(&d.default_int) {
                 return Err(W2R_E_INVALID);
             }
         }
@@ -678,10 +697,18 @@ pub fn validate(
         if !host_bools.contains(&host_key) {
             return Err(W2R_E_NOT_FOUND);
         }
-        Some((Owner::Host, host_key.to_owned()))
+        Some(ActiveWhen {
+            owner: Owner::Host,
+            key: host_key.to_owned(),
+            test: Condition::On,
+        })
     } else {
         match earlier.iter().find(|e| e.key == d.active_when) {
-            Some(e) if e.kind == Kind::Bool => Some((Owner::Plugin(id.to_owned()), e.key.clone())),
+            Some(e) if e.kind == Kind::Bool => Some(ActiveWhen {
+                owner: Owner::Plugin(id.to_owned()),
+                key: e.key.clone(),
+                test: Condition::On,
+            }),
             Some(_) => return Err(W2R_E_INVALID),
             None => return Err(W2R_E_NOT_FOUND),
         }
@@ -700,10 +727,10 @@ pub fn validate(
     )
     .label(&d.label)
     .describe(&d.description)
-    .default(i64::from(d.default_int))
+    .default(d.default_int)
     .hidden(d.flags & W2R_SETTING_HIDDEN != 0);
     match kind {
-        Kind::Int => def = def.range(i64::from(d.min), i64::from(d.max)),
+        Kind::Int => def = def.range(d.min, d.max),
         Kind::Choice => {
             def.min = 0;
             def.max = d.choices.len() as i64 - 1;
@@ -903,56 +930,41 @@ mod tests {
     }
 
     #[test]
-    fn the_stock_greying_rules_hold() {
+    fn conditions_compare_the_live_value() {
         let mut r = Registry::new();
         let mut g = FakeGame::default();
-        let fixed = r.register(
-            SettingDef::new(
+        let mode = || SettingDef::new(Owner::Game, "mode", Kind::Choice, "P", "S");
+        r.register(mode(), Value::Int(0));
+        let only_one = r.register(
+            SettingDef::new(Owner::Game, "a", Kind::Int, "P", "S").active_if(
                 Owner::Game,
-                "ui_scale_fixed",
-                Kind::Int,
-                "Preferences",
-                "UI Scale",
-            )
-            .range(1, 4),
-            Value::Int(0),
-        );
-        r.register(
-            SettingDef::new(
-                Owner::Game,
-                "ui_scale_mode",
-                Kind::Choice,
-                "Preferences",
-                "UI Scale",
+                "mode",
+                Condition::Is(1),
             ),
             Value::Int(0),
         );
-        let below = r.register(
-            SettingDef::new(
+        let not_one = r.register(
+            SettingDef::new(Owner::Game, "b", Kind::Int, "P", "S").active_if(
                 Owner::Game,
-                "healthbars_below",
-                Kind::Choice,
-                "Gameplay",
-                "Health Bars",
+                "mode",
+                Condition::IsNot(1),
             ),
             Value::Int(0),
         );
-        r.register(
-            SettingDef::new(
+        let orphan = r.register(
+            SettingDef::new(Owner::Game, "c", Kind::Int, "P", "S").active_if(
                 Owner::Game,
-                "healthbar_mode",
-                Kind::Choice,
-                "Gameplay",
-                "Health Bars",
+                "missing",
+                Condition::Is(1),
             ),
             Value::Int(0),
         );
-        assert!(r.inactive(fixed, &g));
-        g.set("ui_scale_mode", 1);
-        assert!(!r.inactive(fixed, &g));
-        assert!(!r.inactive(below, &g));
-        g.set("healthbar_mode", 1);
-        assert!(r.inactive(below, &g));
+        assert!(r.inactive(only_one, &g));
+        assert!(!r.inactive(not_one, &g));
+        g.set("mode", 1);
+        assert!(!r.inactive(only_one, &g));
+        assert!(r.inactive(not_one, &g));
+        assert!(!r.inactive(orphan, &g), "an unknown switch greys nothing");
     }
 
     #[test]
@@ -1120,7 +1132,11 @@ mod tests {
         d.active_when = "on".into();
         assert_eq!(
             check(d, &earlier).unwrap().active_when,
-            Some((plugin("w2r-chat"), "on".to_owned()))
+            Some(ActiveWhen {
+                owner: plugin("w2r-chat"),
+                key: "on".to_owned(),
+                test: Condition::On,
+            })
         );
         let mut d = decl(W2R_SETTING_INT, "b");
         d.active_when = "num".into();
@@ -1132,7 +1148,11 @@ mod tests {
         d.active_when = "host:enhanced_create_screen".into();
         assert_eq!(
             check(d, &earlier).unwrap().active_when,
-            Some((Owner::Host, "enhanced_create_screen".to_owned()))
+            Some(ActiveWhen {
+                owner: Owner::Host,
+                key: "enhanced_create_screen".to_owned(),
+                test: Condition::On,
+            })
         );
         let mut d = decl(W2R_SETTING_INT, "e");
         d.active_when = "host:nope".into();

@@ -5,10 +5,8 @@
 //! elsewhere wait in a queue for the next frame.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, VecDeque};
-#[cfg(target_arch = "x86")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -36,17 +34,12 @@ use crate::manifest::Build;
 use crate::options;
 use crate::peer::{self, NoTransport, PluginMessage, Presence, Roster, Transport};
 use crate::plugins;
-use crate::settings::{self, Editor};
-#[cfg(target_arch = "x86")]
-use crate::settings::{SettingDef, Owner};
+use crate::settings::{self, Editor, Owner, SettingDef};
 use crate::state::{self, State};
-#[cfg(target_arch = "x86")]
 use crate::store::Val;
 use crate::symbols::Symbols;
 use crate::target::GAME_VERSION;
-use crate::ui::{self, Widgets};
-#[cfg(target_arch = "x86")]
-use crate::ui::{Action, PluginRow};
+use crate::ui::{self, Action, PluginRow, Widgets};
 
 struct Session {
     registry: Registry,
@@ -55,19 +48,16 @@ struct Session {
     state: State,
     root: PathBuf,
     config: HostConfig,
-    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     fingerprint: [u8; 4],
     /// The plugins in the fingerprint.
-    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     simulation: Vec<String>,
     /// Each plugin's name, author and description, read once from the manifests.
-    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     plugin_info: BTreeMap<String, plugins::PluginInfo>,
-    /// How many plugins `state.json` had enabled at startup, for the title screen's summary.
-    enabled_at_start: usize,
+    /// The plugins `state.json` had enabled at startup.
+    enabled_at_start: BTreeSet<String>,
     net: Rc<Net>,
     /// The options screen's settings: the game's, the host's and every plugin's
-    /// (docs/settings-screen.md).
+    /// (docs/settings-screen.md). Only the x86 screen draws it.
     #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     editor: Editor,
     /// The game's own settings table, when it passed validation.
@@ -86,7 +76,7 @@ pub fn plugin_summary() -> Option<String> {
             .filter(|&i| matches!(s.registry.slot(i).state(), SlotState::Disabled { .. }))
             .count();
         let active = s.registry.len() - disabled;
-        let failed = disabled + s.enabled_at_start.saturating_sub(s.registry.len());
+        let failed = disabled + s.enabled_at_start.len().saturating_sub(s.registry.len());
         let noun = |n: usize| if n == 1 { "plugin" } else { "plugins" };
         Some(if failed == 0 {
             format!("{active} {} loaded", noun(active))
@@ -623,22 +613,27 @@ fn settings_registry(
 
 /// Re-applies `host.json` to the parts of the host that read it, after the options screen
 /// changed it. Each of these is cheap and idempotent, so all of them run.
-#[cfg(target_arch = "x86")]
+// Called only by the x86 options screen; kept on every target so the tests below run on all.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 fn apply_host_config(config: &HostConfig, net: &Net) {
     if let Ok(mut h) = net.handshake.try_borrow_mut() {
         h.set_map_sharing(config.map_sharing);
     }
-    crate::replayrec::set_enabled(config.record_replays);
-    crate::createscreen::set_auto_game_name(config.auto_game_name);
-    crate::apm::configure(config);
-    crate::netpanel::configure(config);
-    crate::ping::configure(config);
-    crate::settingsscreen::set_hide_arrows(config.hide_scrollbar_arrows);
+    #[cfg(target_arch = "x86")]
+    {
+        crate::replayrec::set_enabled(config.record_replays);
+        crate::createscreen::set_auto_game_name(config.auto_game_name);
+        crate::apm::configure(config);
+        crate::netpanel::configure(config);
+        crate::ping::configure(config);
+        crate::settingsscreen::set_hide_arrows(config.hide_scrollbar_arrows);
+    }
 }
 
 /// Where the screen's host and plugin values live: `host.json`, `sharing.json` and each plugin's
 /// `config\<id>.json`.
-#[cfg(target_arch = "x86")]
+// Built only by the x86 options screen; kept on every target so the tests below run on all.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 struct SessionOwners<'a> {
     config: &'a mut HostConfig,
     root: &'a Path,
@@ -646,7 +641,6 @@ struct SessionOwners<'a> {
     net: &'a Net,
 }
 
-#[cfg(target_arch = "x86")]
 impl settings::Owners for SessionOwners<'_> {
     fn load(&self, def: &SettingDef) -> Option<settings::Value> {
         match &def.owner {
@@ -727,9 +721,51 @@ impl settings::Owners for SessionOwners<'_> {
     }
 }
 
+/// The plugin manager's rows: every plugin `state.json` lists, with what it says about itself and
+/// what the host did with it this session.
+fn plugin_rows(
+    state: &State,
+    registry: &Registry,
+    info: &BTreeMap<String, plugins::PluginInfo>,
+    enabled_at_start: &BTreeSet<String>,
+) -> Vec<PluginRow> {
+    state
+        .plugins
+        .iter()
+        .map(|p| {
+            let about = info.get(&p.id);
+            let launched = enabled_at_start.contains(&p.id);
+            let (running, slow, error) = match registry.find(&p.id) {
+                Some(slot) => match slot.state() {
+                    SlotState::Active => (true, slot.is_slow(), None),
+                    SlotState::Disabled { reason } => (false, false, Some(reason)),
+                },
+                // Enabled at launch but refused before it was loaded.
+                None if launched => (
+                    false,
+                    false,
+                    Some("not loaded; w2r.log says why".to_owned()),
+                ),
+                None => (false, false, None),
+            };
+            PluginRow {
+                id: p.id.clone(),
+                name: about.map_or_else(|| p.id.clone(), |a| a.name.clone()),
+                version: state_version(p),
+                author: about.map(|a| a.author.clone()),
+                description: about.map(|a| a.description.clone()),
+                enabled: p.enabled,
+                enabled_at_launch: launched,
+                running,
+                slow,
+                error,
+            }
+        })
+        .collect()
+}
+
 /// Draws the plugin manager's list with `w` and saves the user's enable toggles to state.json.
 /// Called from the main menu's plugin popup.
-#[cfg(target_arch = "x86")]
 pub fn draw_plugin_list(w: &dyn Widgets) {
     SESSION.with(|cell| {
         let Ok(mut slot) = cell.try_borrow_mut() else {
@@ -738,26 +774,7 @@ pub fn draw_plugin_list(w: &dyn Widgets) {
         let Some(s) = slot.as_mut() else {
             return;
         };
-        let mut rows: Vec<PluginRow> = s
-            .state
-            .plugins
-            .iter()
-            .map(|p| {
-                let info = s.plugin_info.get(&p.id);
-                PluginRow {
-                    id: p.id.clone(),
-                    name: info.map_or_else(|| p.id.clone(), |i| i.name.clone()),
-                    version: state_version(p),
-                    author: info.map(|i| i.author.clone()),
-                    description: info.map(|i| i.description.clone()),
-                    enabled: p.enabled,
-                    running: s
-                        .registry
-                        .find(&p.id)
-                        .is_some_and(|slot| matches!(slot.state(), SlotState::Active)),
-                }
-            })
-            .collect();
+        let mut rows = plugin_rows(&s.state, &s.registry, &s.plugin_info, &s.enabled_at_start);
         let plugins = &s.registry;
         let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
         let action = ui::draw_plugin_list(w, s.fingerprint, &s.simulation, &mut rows, |w, i| {
@@ -1074,7 +1091,7 @@ fn start() -> Session {
             fingerprint: [0; 4],
             simulation: Vec::new(),
             plugin_info: BTreeMap::new(),
-            enabled_at_start: 0,
+            enabled_at_start: BTreeSet::new(),
             net,
             editor: Editor::default(),
             #[cfg(target_arch = "x86")]
@@ -1205,7 +1222,13 @@ fn start() -> Session {
         crate::replayplay::init(&startup.root, loaded.fingerprint);
     }
     let plugin_info = plugins::infos(&startup.root, &loaded.state);
-    let enabled_at_start = loaded.state.plugins.iter().filter(|p| p.enabled).count();
+    let enabled_at_start: BTreeSet<String> = loaded
+        .state
+        .plugins
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.id.clone())
+        .collect();
     #[cfg(target_arch = "x86")]
     let native = startup.image.as_ref().and_then(|image| {
         match crate::nativesettings::game::Bridge::new(image, &symbols) {
@@ -1297,4 +1320,243 @@ fn transport(symbols: &Symbols, log: &dyn Log) -> Rc<dyn Transport> {
 #[cfg(not(target_arch = "x86"))]
 fn transport(_: &Symbols, _: &dyn Log) -> Rc<dyn Transport> {
     Rc::new(NoTransport)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::Services;
+    use crate::semver::Version;
+    use crate::settings::{Kind, Owners, Value};
+    use crate::state::PluginState;
+    use w2r_abi::*;
+
+    struct Quiet;
+    impl Log for Quiet {
+        fn line(&self, _: u32, _: &str, _: &str) {}
+    }
+
+    fn s(text: &str) -> W2rStr {
+        W2rStr {
+            ptr: text.as_ptr().cast(),
+            len: text.len() as u32,
+        }
+    }
+
+    fn int_setting(key: &'static str, category: &'static str) -> W2rSettingDef {
+        W2rSettingDef {
+            struct_size: W2R_SETTING_DEF_V1_SIZE,
+            kind: W2R_SETTING_INT,
+            default_int: 7,
+            min: 0,
+            max: 60,
+            flags: 0,
+            choice_count: 0,
+            choices: core::ptr::null(),
+            reserved: 0,
+            key: s(key),
+            label: s("Label"),
+            description: s(""),
+            category: s(category),
+            subcategory: s(""),
+            default_str: s(""),
+            active_when: s(""),
+        }
+    }
+
+    thread_local! {
+        static HOST: Cell<*const W2rHost> = const { Cell::new(core::ptr::null()) };
+        /// What the listening plugin read when it heard the settings changed.
+        static HEARD: RefCell<Vec<(i64, i64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn read(h: &W2rHost, key: &str) -> i64 {
+        let mut n = -1;
+        unsafe { (h.settings_get_i64)(h.token, s(key), &mut n) };
+        n
+    }
+
+    unsafe extern "C" fn listener_load(host: *const W2rHost) -> W2rStatus {
+        HOST.with(|c| c.set(host));
+        let h = unsafe { &*host };
+        unsafe {
+            (h.settings_declare)(h.token, &int_setting("fade", ""));
+            (h.settings_declare)(h.token, &int_setting("lines", "Chat"));
+            (h.subscribe)(h.token, W2R_EVT_SETTINGS_CHANGED)
+        }
+    }
+    unsafe extern "C" fn listener_event(_: *const W2rEvent) {
+        let h = unsafe { &*HOST.with(|c| c.get()) };
+        HEARD.with(|v| v.borrow_mut().push((read(h, "fade"), read(h, "lines"))));
+    }
+    static LISTENER: W2rPlugin = W2rPlugin {
+        struct_size: W2R_PLUGIN_V1_SIZE,
+        on_load: Some(listener_load),
+        on_event: Some(listener_event),
+        on_ui: None,
+        on_unload: None,
+    };
+    unsafe extern "C" fn listener_entry(_: *const W2rHost) -> *const W2rPlugin {
+        &LISTENER
+    }
+
+    /// Declares a setting, then fails its load.
+    unsafe extern "C" fn refused_load(host: *const W2rHost) -> W2rStatus {
+        let h = unsafe { &*host };
+        unsafe { (h.settings_declare)(h.token, &int_setting("never", "")) };
+        W2R_E_STATE
+    }
+    static REFUSED: W2rPlugin = W2rPlugin {
+        struct_size: W2R_PLUGIN_V1_SIZE,
+        on_load: Some(refused_load),
+        on_event: None,
+        on_ui: None,
+        on_unload: None,
+    };
+    unsafe extern "C" fn refused_entry(_: *const W2rHost) -> *const W2rPlugin {
+        &REFUSED
+    }
+
+    fn root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("w2r-session-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        root
+    }
+
+    fn registry(root: &Path) -> Registry {
+        let services = Services {
+            root: Some(root.to_path_buf()),
+            ..Services::none()
+        };
+        let mut reg = Registry::with(Rc::new(Quiet), None, services);
+        reg.load_entry("w2r-chat", listener_entry).unwrap();
+        assert!(reg.load_entry("w2r-broken", refused_entry).is_err());
+        reg
+    }
+
+    fn info(name: &str) -> plugins::PluginInfo {
+        plugins::PluginInfo {
+            name: name.into(),
+            author: "Ann".into(),
+            description: "Does things.".into(),
+        }
+    }
+
+    #[test]
+    fn the_registry_has_the_hosts_and_active_plugins_settings() {
+        let root = root("registry");
+        let reg = registry(&root);
+        let names = BTreeMap::from([("w2r-chat".to_owned(), info("Chat"))]);
+        let r = settings_registry(None, &reg, &names);
+        let chat = Owner::Plugin("w2r-chat".into());
+        let fade = r.find(&chat, "fade").unwrap();
+        assert_eq!(r.def(fade).category, "Chat", "no category: the plugin's name");
+        assert_eq!(r.def(fade).source.as_deref(), Some("Chat"));
+        assert_eq!(r.def(r.find(&chat, "lines").unwrap()).category, "Chat");
+        assert!(
+            r.find(&Owner::Plugin("w2r-broken".into()), "never").is_none(),
+            "a plugin that failed to load contributes nothing"
+        );
+        assert!(r.find(&Owner::Host, "map_sharing").is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn owners_store_every_value_before_notifying_and_write_host_json_once() {
+        let root = root("owners");
+        let reg = registry(&root);
+        let r = settings_registry(None, &reg, &BTreeMap::new());
+        let chat = Owner::Plugin("w2r-chat".into());
+        let fade = r.def(r.find(&chat, "fade").unwrap()).clone();
+        let lines = r.def(r.find(&chat, "lines").unwrap()).clone();
+        let sharing = r.def(r.find(&Owner::Host, "map_sharing").unwrap()).clone();
+        let mut config = HostConfig::default();
+        let net = Net::idle();
+        let mut owners = SessionOwners {
+            config: &mut config,
+            root: &root,
+            plugins: &reg,
+            net: &net,
+        };
+        assert_eq!(owners.load(&fade), None, "never stored: the default is used");
+        HEARD.with(|v| v.borrow_mut().clear());
+        owners.store(&[
+            (&fade, &Value::Int(12)),
+            (&sharing, &Value::Int(0)),
+            (&lines, &Value::Int(30)),
+        ]);
+        assert_eq!(
+            HEARD.with(|v| v.borrow().clone()),
+            vec![(12, 30)],
+            "one event, after both values were stored"
+        );
+        assert_eq!(owners.load(&fade), Some(Value::Int(12)));
+        assert!(!config.map_sharing);
+        let (written, _) = hostcfg::read(&root);
+        assert!(!written.map_sharing);
+        // A value of the wrong type in the plugin's file is not used.
+        reg.find("w2r-chat")
+            .unwrap()
+            .store_setting("fade", Val::Str("x".into()))
+            .unwrap();
+        let owners = SessionOwners {
+            config: &mut config,
+            root: &root,
+            plugins: &reg,
+            net: &net,
+        };
+        assert_eq!(owners.load(&fade), None);
+        assert_eq!(fade.kind, Kind::Int);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn listed(id: &str, enabled: bool) -> PluginState {
+        PluginState {
+            id: id.into(),
+            version: Version {
+                major: 1,
+                minor: 2,
+                patch: 0,
+                pre: Vec::new(),
+            },
+            enabled,
+            sha256: [0; 32],
+            approved_capabilities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn plugin_rows_say_what_happened_to_each_plugin() {
+        let root = root("rows");
+        let reg = registry(&root);
+        let state = State {
+            plugins: vec![
+                listed("w2r-chat", false),
+                listed("w2r-broken", true),
+                listed("w2r-missing", true),
+                listed("w2r-off", false),
+            ],
+        };
+        let info = BTreeMap::from([("w2r-chat".to_owned(), info("Chat"))]);
+        let launched = BTreeSet::from([
+            "w2r-chat".to_owned(),
+            "w2r-broken".to_owned(),
+            "w2r-missing".to_owned(),
+        ]);
+        let rows = plugin_rows(&state, &reg, &info, &launched);
+        let chat = &rows[0];
+        assert_eq!((chat.name.as_str(), chat.version.as_str()), ("Chat", "1.2.0"));
+        assert!(chat.running && chat.enabled_at_launch && !chat.enabled);
+        assert_eq!(chat.author.as_deref(), Some("Ann"));
+        assert!(rows[1].error.as_deref().unwrap().starts_with("E_LOAD"));
+        assert!(!rows[1].running);
+        assert_eq!(rows[2].name, "w2r-missing", "no manifest: the id");
+        assert_eq!(
+            rows[2].error.as_deref(),
+            Some("not loaded; w2r.log says why")
+        );
+        assert_eq!(rows[3].error, None, "switched off is not an error");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
